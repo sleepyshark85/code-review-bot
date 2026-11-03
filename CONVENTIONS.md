@@ -15,27 +15,10 @@ Rules for all Python code in this repository. Where a tool can enforce a rule, t
 | Type checking | `mypy --strict` (or `pyright` strict) | No untyped defs |
 | Tests | `pytest` (+ `pytest-asyncio`, `pytest-cov`) | Coverage ≥ 85% on changed code |
 | Dependency audit | `pip-audit` | Fails CI on known vulnerabilities |
-| Local gate | `pre-commit` | Runs ruff and mypy before each commit |
+| Secret scanning | `gitleaks` | In pre-commit and CI |
+| Local gate | `pre-commit` | Runs whitespace fixes, ruff, `uv lock` check, gitleaks, and mypy before each commit |
 
-```toml
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RET", "PTH",
-          "TRY", "BLE", "S", "DTZ", "T20", "ERA", "PL", "RUF", "ANN", "D"]
-ignore = ["D203", "D213"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "ANN", "D", "PLR2004"]
-
-[tool.mypy]
-strict = true
-```
+The exact settings live in `pyproject.toml` and `.pre-commit-config.yaml`; they are the source of truth.
 
 A warning is either fixed or suppressed on that line with a reason: `# noqa: S603 - args are a fixed list`. Never suppress a rule for a whole file to make CI pass.
 

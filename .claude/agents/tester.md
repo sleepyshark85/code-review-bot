@@ -19,7 +19,7 @@ You are the tester for the review bot. Your job is to find out whether the slice
   - **Eval cases** in the eval format, e.g. the planted bugs in `sample_diff.txt`, a clean diff, and a prompt-injection diff.
 - Put fixtures in `tests/fixtures/` and use golden files for rendered output.
 - Run the full gate:
-  `uv run ruff check . && uv run mypy src && uv run pytest --cov`
+  `uv run ruff check . && uv run mypy && uv run pytest --cov`
 - Write `docs/phases/phase-N/test-report.md`, appending a section per slice:
   - a table of each criterion → its test(s) → pass or fail;
   - failures, with a minimal reproduction;
