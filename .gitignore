@@ -1,0 +1,7 @@
+# RightShip exercise brief (not for public distribution)
+*.docx
+
+__pycache__/
+*.pyc
+.venv/
+.env
