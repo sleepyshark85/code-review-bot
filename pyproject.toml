@@ -1,0 +1,67 @@
+[project]
+name = "review-bot"
+version = "0.1.0"
+description = "Automated PR reviewer: deterministic checks plus an LLM, with human triage."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+review-bot = "review_bot.__main__:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+# --- Ruff: formatting and linting (CONVENTIONS.md §1) -------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["Assignment"]  # the inherited stopgap, kept as-is for reference
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RET", "PTH",
+    "TRY", "BLE", "S", "DTZ", "T20", "ERA", "PL", "RUF", "ANN", "D",
+]
+ignore = [
+    "TRY003",  # descriptive exception messages are required by CONVENTIONS.md §8
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ANN", "D", "PLR2004"]
+
+# --- Mypy (CONVENTIONS.md §5) -------------------------------------------------
+[tool.mypy]
+strict = true
+files = ["src", ".claude/hooks"]
+
+# --- Pytest and coverage (CONVENTIONS.md §14) ---------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: end-to-end tests through the pipeline (with MockProvider)"]
+
+[tool.coverage.run]
+source = ["review_bot"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+exclude_also = ['if __name__ == "__main__":']
+skip_covered = true

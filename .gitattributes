@@ -1,0 +1,13 @@
+# Normalise line endings to LF in the repository, whatever the OS.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never touch.
+*.docx binary
+*.png binary
+*.jpg binary
+*.pdf binary

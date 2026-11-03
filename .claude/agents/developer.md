@@ -23,7 +23,7 @@ Write the **simplest implementation that meets the acceptance criteria**. Don't 
 - Write **unit tests** in `tests/unit/` for the code you add: pure functions, edge cases, error paths. The tester owns the acceptance, integration and eval tests; don't write or edit those.
 - Keep pure logic separate from I/O, and put vendor SDKs behind their interface (`CONVENTIONS.md` §6, §13).
 - Run the gate until it is green:
-  `uv run ruff format . && uv run ruff check . && uv run mypy src && uv run pytest`
+  `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
 - If the design is wrong or unclear, **stop and report it**. Don't redesign silently. A small, local implementation choice is fine; anything that would deserve an ADR goes back to the designer.
 
 ## Don't

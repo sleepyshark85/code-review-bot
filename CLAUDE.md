@@ -43,7 +43,7 @@ designer ──► USER approves design.md + ADRs
 ## Definition of done (per slice)
 
 - [ ] Every acceptance criterion has a passing test that names it.
-- [ ] `ruff format --check`, `ruff check`, `mypy --strict`, and `pytest` all pass.
+- [ ] CI `gate` is green: `ruff format --check`, `ruff check`, `mypy --strict`, `pytest --cov` (≥ 85%), pre-commit, `pip-audit`.
 - [ ] Follows `CONVENTIONS.md`; any deviation is justified in the slice notes.
 - [ ] No reviewer finding of severity `blocker` or `major` is open.
 - [ ] No secrets, no live model calls in tests (use `MockProvider`).
@@ -51,9 +51,12 @@ designer ──► USER approves design.md + ADRs
 
 ## Commands
 
-Once `pyproject.toml` exists (Phase 0, first slice):
+```
+uv sync                         # install / update the environment
+pre-commit install              # once per clone: run the hooks on every commit
+uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest --cov
+pre-commit run --all-files      # everything CI's "gate" job runs, except tests and pip-audit
+```
 
-```
-uv sync
-uv run ruff format --check . && uv run ruff check . && uv run mypy src && uv run pytest
-```
+- CI (`.github/workflows/ci.yml`, job `gate`) is a required check on `main`.
+- Claude Code hooks (`.claude/settings.json`) auto-format every edited `.py` file and block subagent writes outside their role's paths (`.claude/hooks/guard_paths.py`). The guard covers the Write and Edit tools only, not files written through Bash.
