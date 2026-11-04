@@ -26,7 +26,10 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["Assignment"]  # the inherited stopgap, kept as-is for reference
+extend-exclude = [
+    "Assignment",  # the inherited stopgap, kept as-is for reference
+    "src/review_bot/cli.py",  # temporary: unchanged baseline copy, removed in P0-S1
+]
 
 [tool.ruff.lint]
 select = [
@@ -47,6 +50,7 @@ convention = "google"
 [tool.mypy]
 strict = true
 files = ["src", ".claude/hooks"]
+exclude = ['^src/review_bot/cli\.py$']  # temporary: unchanged baseline copy, removed in P0-S1
 
 # --- Pytest and coverage (CONVENTIONS.md §14) ---------------------------------
 [tool.pytest.ini_options]
@@ -59,6 +63,7 @@ markers = ["integration: end-to-end tests through the pipeline (with MockProvide
 [tool.coverage.run]
 source = ["review_bot"]
 branch = true
+omit = ["*/review_bot/cli.py"]  # temporary: unchanged baseline copy, removed in P0-S1
 
 [tool.coverage.report]
 fail_under = 90
