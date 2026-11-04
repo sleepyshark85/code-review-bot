@@ -40,7 +40,7 @@ designer ──► USER approves design.md + slice specs + ADRs   (docs PR: docs
 - **One slice, one PR.** A slice's PR contains only that slice and sets its spec to `Status: Done`. The next slice branches from `main` after the previous one merges.
 - **Slice specs stay concise:** aim for about 30 lines and stay under 60. They state observable behaviour, not implementation, and link to `design.md` and ADRs instead of restating them.
 - Handoffs go through files, never only through chat. Each agent ends by listing the files it changed.
-- Don't commit or push; the user does that.
+- Subagents don't commit or push. The main session does, and opens the PR once the work meets its definition of done. The user reviews and merges.
 - `main` is protected: every change reaches it through a pull request from a feature branch. Direct pushes to `main` are rejected.
 - If a slice's acceptance criteria are unclear or wrong, stop and send it back to the designer. Don't guess.
 
