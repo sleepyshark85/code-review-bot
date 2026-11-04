@@ -67,16 +67,16 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 
 - **Claude Agent SDK** (`claude-agent-sdk`), default model `claude-opus-5-5`. It works with the team's existing Claude account, and it already has the tools, hooks, and subagents later phases need.
 - **Authentication:** locally, the developer's own Claude Code login; anything shared (CI, a GitHub App) uses `ANTHROPIC_API_KEY`. Anthropic doesn't allow products built on the SDK to offer claude.ai login to other users without approval. No key in source.
-- **Structure:** split into load → build prompt → call model → render · settings from environment, overridable by CLI flags · `python review_bot.py sample_diff.txt` still works · offline mode via the mock provider.
+- **Structure:** split into load → build prompt → call model → render · settings from environment, overridable by CLI flags · run with `python -m review_bot <diff>` (`Assignment/` stays untouched as the inherited reference) · offline mode via the mock provider.
 - **Locked down for single-shot review, asserted by tests:** `tools=[]` (`allowed_tools` alone only auto-approves; it doesn't restrict), `setting_sources=[]` (the default would load local `CLAUDE.md` and user settings), `max_turns=1`, our own system prompt (not the Claude Code preset), no MCP servers, hooks, or subagents.
 - **Clear errors** for a missing file, an empty or oversized diff (rejected, never truncated), a missing CLI, failed authentication, an API failure, or a refusal. The SDK reports these in two forms, and both are mapped in one place:
   - exceptions: `CLINotFoundError`, `CLIConnectionError`, `ProcessError`, `ResultError`;
   - error results: `ResultMessage.is_error` with `stop_reason="refusal"` or `terminal_reason="api_error"` (plus `api_error_status`), and `AssistantMessage.error` values such as `authentication_failed`, `billing_error`, `rate_limit`.
-- **One retry layer**, the CLI's own (`CLAUDE_CODE_MAX_RETRIES`, `API_TIMEOUT_MS` via `options.env`), so retries don't stack and wall-clock time stays bounded.
-- **Trade-off:** the SDK drives the Claude Code CLI as a subprocess, so runs start more slowly and every environment needs the CLI. The mock provider keeps tests and evals runnable without it.
+- **One retry layer**, the CLI's own (`CLAUDE_CODE_MAX_RETRIES`, `API_TIMEOUT_MS` via `options.env`), so retries don't stack, plus our own overall deadline, the only bound on wall-clock time (`API_TIMEOUT_MS` didn't cap it in testing).
+- **Trade-off:** the SDK drives the Claude Code CLI as a subprocess, so runs start more slowly, and its wheels are about 150 MB because they appear to bundle the CLI. The mock provider keeps tests and evals from ever launching it.
 - **Exit codes:** `0` no findings at or above threshold, `1` findings found, `≥ 2` a distinct code per tool error.
 - **Diff as data:** wrapped in delimiters and declared untrusted in the system prompt.
-- **Seam:** an `LLMProvider` interface that isn't tied to Claude. Prompt + `Finding` schema in → validated findings, token usage, and an error category (`auth`, `rate_limit`, `refusal`, `transient`, `permanent`) out; no SDK types leave the provider. `ClaudeAgentProvider` and `MockProvider` both implement it, and a shared conformance suite every provider must pass runs offline against the mock.
+- **Seam:** an `LLMProvider` interface that isn't tied to Claude. A review request in → validated `Finding`s and token usage out, or an error with a category (`auth`, `rate_limit`, `refusal`, `transient`, `permanent`, `unavailable`, `invalid_output`); no SDK types leave the provider. `ClaudeAgentProvider` and `MockProvider` both implement it, and a shared conformance suite every provider must pass runs offline against the mock.
 
 **Gate:** no OpenAI dependency; no secrets in source; every failure has a clear message and its own exit code; tests pass offline. **Autonomy:** suggest.
 

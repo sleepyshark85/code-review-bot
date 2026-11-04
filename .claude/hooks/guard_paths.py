@@ -20,7 +20,7 @@ ALLOWED_PATHS: dict[str, tuple[str, ...]] = {
         "tests/unit/*",
         "pyproject.toml",
         "uv.lock",
-        "docs/phases/*/design.md",  # a "Notes" line for a justified deviation
+        "docs/phases/*/slices/*",  # the spec's Notes and Status only
     ),
     "tester": ("tests/*", "docs/phases/*/test-report.md"),
     "reviewer": (),

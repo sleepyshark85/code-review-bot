@@ -1,5 +1,5 @@
 ## What and why
-<!-- One or two sentences. Link the slice (e.g. P1-S3 in docs/phases/phase-1/design.md) and any ADR. -->
+<!-- One or two sentences. One slice per PR: link its spec (e.g. docs/phases/phase-1/slices/p1-s3-anchor-check.md) and any ADR. -->
 
 Closes #
 
@@ -7,7 +7,7 @@ Closes #
 - [ ] Every acceptance criterion has a passing test that names it
 - [ ] CI `gate` is green (ruff, mypy, pytest + coverage, pip-audit, gitleaks)
 - [ ] Follows `CONVENTIONS.md`; deviations justified below
-- [ ] No open reviewer findings of severity `blocker` or `major`
+- [ ] Reviewer verdict is `approve`: no open `blocker`, `major` or `minor` findings, and the quality bar in `CLAUDE.md` is met
 - [ ] No secrets; no live model calls in tests
 - [ ] README updated if behaviour or usage changed
 

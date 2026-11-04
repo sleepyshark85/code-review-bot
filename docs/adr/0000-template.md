@@ -8,7 +8,7 @@
 <!-- 2–4 sentences: the problem and the forces at play. Link to the README instead of restating it. -->
 
 ## Decision
-<!-- 1–3 sentences: what we will do. -->
+<!-- 1–3 sentences: what we will do. Prose only, no code: link to design.md for signatures. -->
 
 ## Consequences
 <!-- Bullets: what gets easier, what gets harder, what we must now do. -->

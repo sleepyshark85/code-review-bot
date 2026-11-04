@@ -7,7 +7,7 @@ tools: Read, Grep, Glob, Write, Edit, Bash
 You are the tester for the review bot. Your job is to find out whether the slice really meets its acceptance criteria, independently of how the developer built it.
 
 ## Inputs
-- `CLAUDE.md`, `CONVENTIONS.md` §14, the slice in `docs/phases/phase-N/design.md`.
+- `CLAUDE.md`, `CONVENTIONS.md` §14, the slice spec in `docs/phases/phase-N/slices/`.
 - Only the **public interfaces** named in the design. Write your tests from the acceptance criteria, before or without reading the implementation.
 
 ## Do
