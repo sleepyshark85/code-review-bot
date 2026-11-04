@@ -8,7 +8,8 @@ Read these before working. Don't restate them in other files; link to them.
 |---|---|
 | `README.md` | Current state, north star, phases, risks |
 | `CONVENTIONS.md` | Python coding conventions (binding for all code) |
-| `docs/phases/phase-N/design.md` | Vertical slices and acceptance criteria for phase N |
+| `docs/phases/phase-N/design.md` | Phase N goal, gate, architecture, and the ordered slice index |
+| `docs/phases/phase-N/slices/pN-sM-*.md` | One slice's spec and acceptance criteria (from `docs/phases/slice-template.md`) |
 | `docs/adr/` | Architecture decisions (only the important ones) |
 | `Assignment/` | The inherited `review_bot.py` and `sample_diff.txt` |
 
@@ -26,26 +27,41 @@ The four subagents are defined in `.claude/agents/`:
 ## Workflow (per phase)
 
 ```
-designer ──► USER approves design.md + ADRs
-  for each slice, in design order:
+designer ──► USER approves design.md + slice specs + ADRs   (docs PR: docs/phase-N-design)
+  for each slice, in design order, on its own branch (feat/pN-sM-title):
     developer ∥ tester   (tester works from the acceptance criteria, not from the code)
     → automated gate: ruff format --check, ruff check, mypy, pytest (all green)
-    → reviewer (given the slice criteria + diff, not the developer's reasoning)
+    → reviewer (given the slice spec + diff, not the developer's reasoning)
     → developer fixes → reviewer re-checks   (max 2 rounds, then escalate to USER)
-    → USER accepts the slice
+    → USER accepts the slice and merges its PR
 ```
 
+- **The spec comes first and leads the code.** No slice is implemented until its spec is `Approved`. To change behaviour, change the spec first (designer), then the tests and code. Code that disagrees with its spec is a bug in one of them, and never gets resolved silently.
+- **One slice, one PR.** A slice's PR contains only that slice and sets its spec to `Status: Done`. The next slice branches from `main` after the previous one merges.
+- **Slice specs stay concise:** aim for about 30 lines and stay under 60. They state observable behaviour, not implementation, and link to `design.md` and ADRs instead of restating them.
 - Handoffs go through files, never only through chat. Each agent ends by listing the files it changed.
 - Don't commit or push; the user does that.
-- `main` is protected: every change reaches it through a pull request from a feature branch (`feat/p1-s3-anchor-check`, `docs/phase-1-design`). Direct pushes to `main` are rejected.
+- `main` is protected: every change reaches it through a pull request from a feature branch. Direct pushes to `main` are rejected.
 - If a slice's acceptance criteria are unclear or wrong, stop and send it back to the designer. Don't guess.
+
+## Quality bar
+
+Working code is the minimum, not the goal. A slice is approved only when its code is also in very good shape: a newcomer can follow it, change it safely, and find nothing worth cleaning up first.
+
+- **Clear:** names say what things mean; each function does one thing at one level of abstraction; the main path reads top to bottom.
+- **Well placed:** logic lives in the module that owns it, boundaries match `design.md`, and nothing is duplicated.
+- **Honest failure handling:** every error path is deliberate, and its message tells the user what happened and what to do.
+- **Tests that protect behaviour:** they would fail on a wrong implementation, read as specifications, and survive a refactor.
+- **Nothing extra:** no dead code, leftovers, speculative options, or comments that restate the code.
+
+A green gate doesn't meet this bar on its own. "It works" is never a reason to leave a finding open.
 
 ## Definition of done (per slice)
 
 - [ ] Every acceptance criterion has a passing test that names it.
-- [ ] CI `gate` is green: `ruff format --check`, `ruff check`, `mypy --strict`, `pytest --cov` (≥ 85%), pre-commit, `pip-audit`.
+- [ ] CI `gate` is green: `ruff format --check`, `ruff check`, `mypy --strict`, `pytest --cov` (≥ 90%), pre-commit, `pip-audit`.
 - [ ] Follows `CONVENTIONS.md`; any deviation is justified in the slice notes.
-- [ ] No reviewer finding of severity `blocker` or `major` is open.
+- [ ] The reviewer's verdict is `approve`: no finding of severity `blocker`, `major` or `minor` is open, and the code meets the quality bar above.
 - [ ] No secrets, no live model calls in tests (use `MockProvider`).
 - [ ] The README is updated if behaviour or usage changed.
 

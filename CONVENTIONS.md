@@ -13,7 +13,7 @@ Rules for all Python code in this repository. Where a tool can enforce a rule, t
 | Formatting | `ruff format` | Line length 100 |
 | Linting | `ruff check` | Rule sets below |
 | Type checking | `mypy --strict` (or `pyright` strict) | No untyped defs |
-| Tests | `pytest` (+ `pytest-asyncio`, `pytest-cov`) | Coverage ≥ 85% on changed code |
+| Tests | `pytest` (+ `pytest-asyncio`, `pytest-cov`) | Coverage ≥ 90% on changed code |
 | Dependency audit | `pip-audit` | Fails CI on known vulnerabilities |
 | Secret scanning | `gitleaks` | In pre-commit and CI |
 | Local gate | `pre-commit` | Runs whitespace fixes, ruff, `uv lock` check, gitleaks, and mypy before each commit |
