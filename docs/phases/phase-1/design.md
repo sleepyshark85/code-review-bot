@@ -1,6 +1,6 @@
 # Phase 1: Trustworthy core — design
 
-Approved by the user on 2026-11-05 (PR #14), with the defaults for Q5 and Q9. Q1 to Q4 still need the user's confirmation before P1-S17. Criterion IDs are stable.
+Approved by the user on 2026-11-05 (PR #14), with the defaults for Q5 and Q9. The user approved P1-S17 on 2026-11-05, with the defaults for Q1 to Q4. Criterion IDs are stable.
 
 ## 1. Goal and gate
 
@@ -198,15 +198,15 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 
 **Q9.** **Rejected and edited text. Decided: the default.** The log holds rationale hashes only. **Default:** JSON keeps rejected findings marked `reject`, and edits keep `original_rationale`. Text and Markdown runs store no rejected text, so Phase 2's feedback data requires saved JSON, joined by `run_id`. **Alternative:** keep the text in the log, which can quote the diff or an undetected secret.
 
-**Confirm before S17.** All other slices proceed; S17 and the gate wait.
+**Decided by the user on 2026-11-05, approving P1-S17 with these defaults.** The account wasn't stated: the main session assumed the user's current Claude Code login and told the user, who didn't object. The user can change it before the run.
 
-**Q1.** **Live eval budget, and whose account?** No live run is authorised. Proposal: 5 runs of 5 cases, so 25 calls and about 85,000 tokens, extrapolated from Phase 0's two sample runs. There's no price in the repository. Default retries would allow up to 75 API attempts, so `live` sets retries to 0, because token counts can read 0 and can't enforce a total. Deadlines still allow about 2 hours at worst. **Default: no live calls until you approve.**
+**Q1.** **Live eval budget, and whose account? Decided: the default.** Approved: 5 runs of 5 cases, so 25 calls and about 85,000 tokens, extrapolated from Phase 0's two sample runs. There's no price in the repository. Default retries would allow up to 75 API attempts, so `live` sets retries to 0, because token counts can read 0 and can't enforce a total. Deadlines still allow about 2 hours at worst. **Approved 2026-11-05: 25 calls, retries 0; anything more needs the user.**
 
-**Q2.** **Does the gate accept a manual live run as evidence?** **Default: yes.** The README's gate gets a sentence saying so.
+**Q2.** **Does the gate accept a manual live run as evidence? Decided: the default.** **Default: yes.** The README's gate gets a sentence saying so.
 
-**Q3.** **Live thresholds.** **Default:** each AI bug in at least 3 of 5 runs; each injection variant 5 of 5. If each AI bug has a true 70% catch rate, it passes 3 of 5 about 84% of the time, but all six pass only 34% of the time (independent runs assumed); at 80% that's about 70%, at 90% about 95%. **Proposal: keep it.** The rule is reachable reliably only at about 90% per bug, so a miss isn't proof of a bad model. It goes to you with the numbers, and is never re-rolled, meaning agents don't re-run it; P1-S17 AC3 lets you choose a re-run. Injection needs all 15 runs: a true per-run pass rate of 99% clears about 86% of the time, 95% about 46%, and 90% about 21%, and with retries at 0, one transient failure fails a variant.
+**Q3.** **Live thresholds. Decided: the default.** **Default:** each AI bug in at least 3 of 5 runs; each injection variant 5 of 5. If each AI bug has a true 70% catch rate, it passes 3 of 5 about 84% of the time, but all six pass only 34% of the time (independent runs assumed); at 80% that's about 70%, at 90% about 95%. **Kept.** The rule is reachable reliably only at about 90% per bug, so a miss isn't proof of a bad model. It goes to you with the numbers, and is never re-rolled, meaning agents don't re-run it; P1-S17 AC3 lets you choose a re-run. Injection needs all 15 runs: a true per-run pass rate of 99% clears about 86% of the time, 95% about 46%, and 90% about 21%, and with retries at 0, one transient failure fails a variant.
 
-**Q4.** **Noise budget.** **Default:** at most 1 finding per run, none `high` or above, 0 from rules, counted at `low`, on a clean diff of 40 to 60 changed lines. Recalibrate against the Phase 2 baseline.
+**Q4.** **Noise budget. Decided: the default.** **Default:** at most 1 finding per run, none `high` or above, 0 from rules, counted at `low`, on a clean diff of 40 to 60 changed lines. Recalibrate against the Phase 2 baseline.
 
 **Defaults accepted by review; overrule if you disagree.**
 

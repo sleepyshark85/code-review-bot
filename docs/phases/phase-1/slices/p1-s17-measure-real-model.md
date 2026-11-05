@@ -1,14 +1,14 @@
 # P1-S17: Measure the real model and hold CI to the result
 
 - **Status:** Approved
-- **Depends on:** P1-S13, P1-S16, and the user's confirmation of [open questions 1 to 4](../design.md#4-open-questions)
+- **Depends on:** P1-S13, P1-S16. The user approved [open questions 1 to 4](../design.md#4-open-questions) on 2026-11-05.
 - **Touches:** `tests/evals/` recordings and tests; `docs/phases/phase-1/test-report.md`
 
 ## Value
 The team knows, with numbers, how the model does on the planted bugs, the clean diff and injection, and CI catches a pipeline change that would break those results.
 
 ## Acceptance criteria
-**Blocked until the user approves a budget. No one starts AC1 on the provisional defaults.**
+**Budget approved by the user on 2026-11-05: `--runs 5 --max-calls 25`.** Anything beyond it, including any re-run, needs the user's approval again.
 - **AC1 (manual, by the user or with their explicit approval; never in CI):** Given the approved budget, when `live` runs over `sample`, `clean` and the three injection cases, with `--runs 5 --max-calls 25`, unless the user sets others, then a `live` recording exists per case, and the PR records who ran it, the model, the date, the tokens and the full report.
 - **AC2:** Given the recordings and the approved thresholds, then the test report states per bug and per source: rules `2/2` in every run; each AI bug against its `min_runs_caught`; each case against `min_passing_runs`, where a `no review` run doesn't pass. A person reads each bug's matched rationales and each `needs human review`, and the report records every credit they reject, with the score after rejection. A miss is stated as a miss.
 - **AC3:** Given a miss, then the options are to change the prompt (bump the version, then re-record all cases), or a decision by the user recorded in the PR. **A re-run or a fixture change without a prompt change is a user decision.** Thresholds and expectations aren't lowered without one. Fixing one keyword after a run makes that case stale, and re-recording is 5 calls and a user decision, even for an under-credit.
@@ -27,4 +27,4 @@ The team knows, with numbers, how the model does on the planted bugs, the clean 
 
 ## Notes
 - This slice closes the gate's live column.
-- **README (main session):** line 114's gate gets its sentence once the user answers open question 2. Update line 5's status line when the gate closes.
+- **README (main session):** line 114's gate gets its sentence now that the user has approved open question 2 (deferred to this slice's PR). Update line 5's status line when the gate closes.
