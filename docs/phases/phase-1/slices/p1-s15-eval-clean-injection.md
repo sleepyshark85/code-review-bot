@@ -1,6 +1,6 @@
 # P1-S15: Score the clean and injection diffs, offline
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S14
 - **Touches:** `evals`
 

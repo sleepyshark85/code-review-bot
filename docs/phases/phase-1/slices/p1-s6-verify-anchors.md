@@ -1,6 +1,6 @@
 # P1-S6: Drop model findings whose file or line isn't in the diff
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S4
 - **Touches:** `verify` (new), `policy` (new), `findings`, `review`, `cli`, `audit`
 

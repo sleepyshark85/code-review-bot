@@ -1,6 +1,6 @@
 # P1-S14: Score the sample diff per planted bug and per source, offline
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S9
 - **Touches:** `evals` (new)
 

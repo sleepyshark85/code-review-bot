@@ -1,7 +1,7 @@
 # P1-S12: Accept or reject findings interactively, with labels logged
 
-- **Status:** Provisional
-- **Depends on:** P1-S11, and the user's answer to [open question 9](../design.md#4-open-questions)
+- **Status:** Approved
+- **Depends on:** P1-S11
 - **Touches:** `triage` (new), `cli`, `render`, `audit`
 
 ## Value

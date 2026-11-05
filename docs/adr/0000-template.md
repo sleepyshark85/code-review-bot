@@ -1,6 +1,6 @@
 # NNNN: <Decision title, as a short statement>
 
-- **Status:** Proposed | Provisional | Accepted | Superseded by NNNN
+- **Status:** Proposed | Accepted | Superseded by NNNN
 - **Date:** YYYY-MM-DD
 - **Phase:** N
 

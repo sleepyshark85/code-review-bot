@@ -1,6 +1,6 @@
 # P1-S9: See one finding when a rule and the model report the same problem
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S8
 - **Touches:** `findings`, `prompt`, `verify`, `review`, `audit`
 

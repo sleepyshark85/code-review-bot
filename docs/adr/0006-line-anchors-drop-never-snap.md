@@ -1,6 +1,6 @@
 # 0006: Count anchors from hunk bodies, and drop findings that miss rather than moving them
 
-- **Status:** Provisional
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Phase:** 1
 

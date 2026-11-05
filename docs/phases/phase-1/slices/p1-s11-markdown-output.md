@@ -1,6 +1,6 @@
 # P1-S11: Get the review as Markdown
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S10
 - **Touches:** `render`, `cli`
 

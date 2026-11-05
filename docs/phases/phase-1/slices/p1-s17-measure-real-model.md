@@ -1,6 +1,6 @@
 # P1-S17: Measure the real model and hold CI to the result
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S13, P1-S16, and the user's confirmation of [open questions 1 to 4](../design.md#4-open-questions)
 - **Touches:** `tests/evals/` recordings and tests; `docs/phases/phase-1/test-report.md`
 

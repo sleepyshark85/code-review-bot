@@ -1,6 +1,6 @@
 # 0007: Evaluate models by manual live runs, and replay their recordings offline in CI
 
-- **Status:** Provisional
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Phase:** 1
 

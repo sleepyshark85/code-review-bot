@@ -1,7 +1,7 @@
 # P1-S10: Get the review as JSON
 
-- **Status:** Provisional
-- **Depends on:** P1-S9, and the user's answer to [open question 9](../design.md#4-open-questions)
+- **Status:** Approved
+- **Depends on:** P1-S9
 - **Touches:** `render`, `settings`, `cli`
 
 ## Value

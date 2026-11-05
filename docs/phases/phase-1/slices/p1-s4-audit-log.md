@@ -1,6 +1,6 @@
 # P1-S4: Trace every run in a JSONL audit log
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S3
 - **Touches:** `audit` (new), `review`, `settings`, `cli`, `errors`
 

@@ -1,6 +1,6 @@
 # P1-S13: Edit a finding during triage
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S12
 - **Touches:** `triage`, `render`, `audit`
 

@@ -1,6 +1,6 @@
 # Phase 1: Trustworthy core — design
 
-Provisional: awaiting the user's approval. Reviewed by the reviewer agent over two fix rounds; three minor findings and several nits were then applied without a further re-check. No slice has been built on it. Criterion IDs are stable from `Provisional`.
+Approved by the user on 2026-11-05 (PR #14), with the defaults for Q5 and Q9. Q1 to Q4 still need the user's confirmation before P1-S17. Criterion IDs are stable.
 
 ## 1. Goal and gate
 
@@ -190,13 +190,13 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 
 ## 4. Open questions
 
-**Needs the user before the affected work.** That work stops without an answer.
+**Decided by the user at approval.**
 
-**Q5.** **CLI stderr in the audit log (before S5's AC5 to AC10; AC1 to AC4 can ship).** **Default:** a scrubbed tail, on failed calls only. **Limit:** a fragment shorter than a diff line, a reworded diff line, or an unlisted secret format can still pass. **Alternative:** keep discarding it, which leaves failed calls undiagnosable. This matters most if logs become shared CI artifacts.
+**Q5.** **CLI stderr in the audit log. Decided: the default.** **Default:** a scrubbed tail, on failed calls only. **Limit:** a fragment shorter than a diff line, a reworded diff line, or an unlisted secret format can still pass. **Alternative:** keep discarding it, which leaves failed calls undiagnosable. This matters most if logs become shared CI artifacts.
 
-**Q9.** **Rejected and edited text (before S10 and S12).** The log holds rationale hashes only. **Default:** JSON keeps rejected findings marked `reject`, and edits keep `original_rationale`. Text and Markdown runs store no rejected text, so Phase 2's feedback data requires saved JSON, joined by `run_id`. **Alternative:** keep the text in the log, which can quote the diff or an undetected secret.
+**Q9.** **Rejected and edited text. Decided: the default.** The log holds rationale hashes only. **Default:** JSON keeps rejected findings marked `reject`, and edits keep `original_rationale`. Text and Markdown runs store no rejected text, so Phase 2's feedback data requires saved JSON, joined by `run_id`. **Alternative:** keep the text in the log, which can quote the diff or an undetected secret.
 
-**Provisional: confirm before S17.** Other slices proceed, apart from the waits above; S17 and the gate wait.
+**Confirm before S17.** All other slices proceed; S17 and the gate wait.
 
 **Q1.** **Live eval budget, and whose account?** No live run is authorised. Proposal: 5 runs of 5 cases, so 25 calls and about 85,000 tokens, extrapolated from Phase 0's two sample runs. There's no price in the repository. Default retries would allow up to 75 API attempts, so `live` sets retries to 0, because token counts can read 0 and can't enforce a total. Deadlines still allow about 2 hours at worst. **Default: no live calls until you approve.**
 

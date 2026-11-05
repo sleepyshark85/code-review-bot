@@ -1,6 +1,6 @@
 # 0003: Identify findings by file, rule and anchored line content, not by line number
 
-- **Status:** Provisional
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Phase:** 1
 

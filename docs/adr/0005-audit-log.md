@@ -1,6 +1,6 @@
 # 0005: Keep an always-on JSONL audit log that holds decisions, not content
 
-- **Status:** Provisional
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Phase:** 1
 
@@ -8,7 +8,7 @@
 [README Phase 1](../../README.md#phase-1-trustworthy-core) requires a JSONL record of every stage decision, and auditors and Phase 2's feedback data will read it. That format is costly to change once consumers exist. The log may also be shared more widely than a developer's machine, while diffs are confidential and may hold secrets the scanner can't recognise.
 
 ## Decision
-Every run appends versioned records to a local JSONL file, on by default, and an unwritable log stops the run before the diff is read. Records hold decisions, identifiers and hashes, never diff lines, rationale text or model-chosen strings such as a file name that isn't in the diff. The one exception is scrubbed, size-capped CLI diagnostics on a failed call, pending the [user's decision](../phases/phase-1/design.md#4-open-questions).
+Every run appends versioned records to a local JSONL file, on by default, and an unwritable log stops the run before the diff is read. Records hold decisions, identifiers and hashes, never diff lines, rationale text or model-chosen strings such as a file name that isn't in the diff. The one exception is scrubbed, size-capped CLI diagnostics on a failed call.
 
 ## Consequences
 - Every model call has a trace, including failed and aborted ones.

@@ -1,6 +1,6 @@
 # P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S1
 - **Touches:** `diff_parser` (new), `review`, `errors`, `cli`
 

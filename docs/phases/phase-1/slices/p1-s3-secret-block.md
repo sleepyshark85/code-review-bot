@@ -1,6 +1,6 @@
 # P1-S3: Stop a diff with a detected secret from reaching the model
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S2
 - **Touches:** `secret_scan` (new), `review`, `errors`, `cli`
 

@@ -1,7 +1,7 @@
 # P1-S16: Record a live eval run with one explicit command
 
-- **Status:** Provisional
-- **Depends on:** P1-S5 AC1 to AC4, P1-S15
+- **Status:** Approved
+- **Depends on:** P1-S5, P1-S15
 - **Touches:** `evals`
 
 ## Value

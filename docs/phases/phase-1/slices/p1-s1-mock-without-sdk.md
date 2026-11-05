@@ -1,6 +1,6 @@
 # P1-S1: Run mock reviews without loading the Claude SDK
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** none
 - **Touches:** `cli`
 

@@ -1,6 +1,6 @@
 # P1-S8: Catch `open()` without an encoding with no model
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S7
 - **Touches:** `rules`
 

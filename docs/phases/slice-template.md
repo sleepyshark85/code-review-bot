@@ -1,6 +1,6 @@
 # PN-SM: <What the user can now do, as a short statement>
 
-- **Status:** Draft | Provisional | Approved | Done
+- **Status:** Draft | Approved | Done
 - **Depends on:** PN-SM, or none
 - **Touches:** <modules expected to change>
 

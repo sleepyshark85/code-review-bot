@@ -1,6 +1,6 @@
 # P1-S7: Catch swallowed exceptions with no model, with stable fingerprints
 
-- **Status:** Provisional
+- **Status:** Approved
 - **Depends on:** P1-S6
 - **Touches:** `rules` (new), `fingerprint` (new), `findings`, `verify`, `review`, `audit`
 

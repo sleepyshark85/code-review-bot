@@ -1,6 +1,6 @@
 # 0004: Providers return warnings and failure diagnostics as values
 
-- **Status:** Provisional
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Phase:** 1
 
@@ -8,7 +8,7 @@
 The audit log must record every stage decision, but the provider writes its overridden-signal warning straight to stderr, and it discards the CLI's stderr, so neither reaches the log. A response holds only findings and usage, and a failed call produces no response at all. [ADR 0002](0002-llm-provider-interface.md) defines this interface, and a second provider must implement it in Phase 4.
 
 ## Decision
-This extends ADR 0002 without changing its operation or categories. A response also carries a list of warnings, and, pending the [user's decision](../phases/phase-1/design.md#4-open-questions) on CLI diagnostics, a provider error also carries raw diagnostics, both defaulting to empty. Providers stop writing to any stream: the orchestrator writes warnings to stderr and the audit log, and only the audit module reads diagnostics, after scrubbing them. [Signatures](../phases/phase-1/design.md#interfaces).
+This extends ADR 0002 without changing its operation or categories. A response also carries a list of warnings, and a provider error also carries raw diagnostics, both defaulting to empty. Providers stop writing to any stream: the orchestrator writes warnings to stderr and the audit log, and only the audit module reads diagnostics, after scrubbing them. [Signatures](../phases/phase-1/design.md#interfaces).
 
 ## Consequences
 - The provider becomes easier to test, as a notice is an ordinary return value, and it no longer imports the console module.
