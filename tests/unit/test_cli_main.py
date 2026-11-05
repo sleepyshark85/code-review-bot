@@ -66,6 +66,17 @@ def test_build_provider_with_mock_selected_returns_mock_provider() -> None:
     assert isinstance(build_provider(Settings(provider="mock")), MockProvider)
 
 
+def test_main_with_injected_provider_bypasses_build_provider(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A None entry makes any import of the module raise ImportError, so building Claude would fail.
+    monkeypatch.setitem(sys.modules, "review_bot.providers.claude_agent", None)
+
+    exit_code = main([str(diff_path), "--provider", "claude"], provider=MockProvider())
+
+    assert exit_code == 1
+
+
 def test_main_without_argv_reads_process_arguments(
     diff_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

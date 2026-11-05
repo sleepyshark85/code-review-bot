@@ -23,7 +23,6 @@ from review_bot.errors import (
 from review_bot.findings import Severity
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider, ReviewResponse
-from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import at_or_above, render_findings
 from review_bot.review import review_diff
@@ -53,7 +52,8 @@ _INTERNAL_ERROR_EXIT_CODE: Final = 14
 
 _INTERNAL_ERROR_MESSAGE: Final = (
     "The review did not complete, so there is no result. Check the Claude Code login and "
-    "network, and that stdout is writable, then try again."
+    "network, that the dependencies are installed (uv sync), and that stdout is writable, then "
+    "try again."
 )
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
@@ -106,6 +106,10 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
 def build_provider(settings: Settings) -> LLMProvider:
     """Create the selected provider. Nothing starts until its ``review`` is called."""
     if settings.provider == "claude":
+        # Deferred so only a Claude run pays to load the SDK. If it can't be imported, the error
+        # reaches ``main``'s catch-all, like any other failure.
+        from review_bot.providers.claude_agent import ClaudeAgentProvider  # noqa: PLC0415 - see above
+
         return ClaudeAgentProvider(settings)
     return MockProvider()
 
