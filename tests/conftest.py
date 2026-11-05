@@ -13,10 +13,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from claude_agent_sdk._internal.client import InternalClient
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 CLAUDE_EXECUTABLES = ("claude", "claude.exe", "claude.cmd", "claude.bat", "claude.ps1")
 CREDENTIAL_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+_real_query_calls: list[dict[str, Any]] = []
 
 
 def _holds_claude(directory: str) -> bool:
@@ -47,6 +51,39 @@ def offline_environment() -> Iterator[None]:
         for name in [name for name in os.environ if name.startswith("REVIEW_BOT_")]:
             patch.delenv(name)
         yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_query_guard() -> Iterator[None]:
+    """Stop the real `claude_agent_sdk.query`, for P0-S2 AC15.
+
+    The patches sit below `query` because a module that did `from claude_agent_sdk import query`
+    at import time already holds the real function. `connect` also covers a route around `query`.
+    """
+
+    def stop(_self: object, *_args: Any, **kwargs: Any) -> None:
+        _real_query_calls.append(kwargs)
+        raise AssertionError("a test reached the real claude_agent_sdk.query")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(InternalClient, "process_query", stop)
+        patch.setattr(SubprocessCLITransport, "connect", stop)
+        yield
+
+
+@pytest.fixture
+def real_query_calls() -> list[dict[str, Any]]:
+    """The arguments of each stopped call. A control test clears this to pass its teardown."""
+    return _real_query_calls
+
+
+@pytest.fixture(autouse=True)
+def fail_on_real_query() -> Iterator[None]:
+    """Fail after the test: `main` turns the guard's own exception into exit 14 (P0-S2 AC17)."""
+    yield
+    if _real_query_calls:
+        _real_query_calls.clear()
+        pytest.fail("this test reached the real claude_agent_sdk.query")
 
 
 @pytest.fixture(autouse=True)

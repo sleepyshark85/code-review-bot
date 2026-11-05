@@ -124,3 +124,125 @@ None of these blocks the slice.
 ### Observation outside the criteria
 
 `main` raises `TypeError` when `sys.stderr` or `sys.stdout` has `encoding=None`, as `io.StringIO` does: `text.encode(stream.encoding, "backslashreplace")`, seen through `contextlib.redirect_stderr(io.StringIO())`. A real process stream has an encoding, so the command isn't affected, and no criterion covers this. It only matters if `main` is ever called with redirected streams.
+
+## P0-S2: Get a real review from Claude with an explicit flag
+
+Spec: [p0-s2-claude-review.md](slices/p0-s2-claude-review.md).
+
+**Status: every criterion passes on the developer's final code, after review round 1.** AC16 is manual, and passed on the final code. AC17's subprocess cases have only run on Windows so far (gap 1).
+
+The tests were written from the spec and the design's public interfaces, and `src/` wasn't read while writing them. For the round-1 regression test, the only part of `src/` read was the logging lines in `cli.py`. The SDK was read for its classes, for where `query` hands over to the transport, and for how it starts its CLI.
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `ruff format --check .` | Pass |
+| `ruff check .` | Pass |
+| `mypy` (strict, `src` and `.claude/hooks`) | Pass |
+| `pytest --cov`, whole suite | 428 passed, 100% coverage |
+| `pytest tests/integration`, acceptance only | 311 passed, 97% coverage |
+| P0-S2 acceptance tests, run three more times | 99 passed each time |
+| `pre-commit run --all-files` | Clean on the final code, run by the main session |
+| `pip-audit` | Clean on the final code, run by the main session |
+
+### Criteria
+
+Test names are shown without the `test_p0_s2_` prefix. Files are in `tests/integration/`. The count is the number of collected cases, including parametrised ones.
+
+| AC | File `test_p0_s2_*` | Tests | Cases | Result |
+|---|---|---|---|---|
+| AC1 | `lockdown` | `ac1_claude_is_locked_down_for_any_review` (success and failure) | 2 | Pass |
+| AC2 | `lockdown` | `ac2_options_carry_exactly_the_requests_prompts_and_model`, `ac2_model_flag_and_diff_reach_the_call_through_main` | 2 | Pass |
+| AC3 | `lockdown` | `ac3_default_env_is_exact`, `ac3_flags_set_the_env_values`, `ac3_env_stays_exact_with_a_key_in_the_environment` | 3 | Pass |
+| AC4 | `lockdown` | `ac4_variable_alone_sets_the_value`, `ac4_flag_beats_variable`, `ac4_neither_gives_the_default`, `ac4_flag_wins_over_an_invalid_variable`, `ac4_variables_reach_the_options` | 13 | Pass |
+| AC5 | `lockdown` | `ac5_bad_flag_returns_2_and_names_it`, `ac5_bad_variable_returns_2_and_names_it` | 17 | Pass; see designer point 1 |
+| AC6 | `lockdown` | `ac6_a_failing_call_is_made_exactly_once` (with `--max-retries 5`) | 3 | Pass |
+| AC7 | `lockdown` | `ac7_never_ending_stream_exits_14_within_5s` (silent, and never stops sending), `ac7_deadline_variable_bounds_the_stream`, `ac7_stream_slower_than_a_short_deadline_would_allow_still_succeeds` | 4 | Pass, for the fake only; see the rulings |
+| AC8 | `lockdown` | `ac8_stderr_callback_is_set_for_any_review`, `ac8_cli_noise_reaches_neither_stream` (success and failure, through `capfd`) | 3 | Pass |
+| AC9 | `review` | `ac9_build_provider_returns_claude_and_starts_no_subprocess`, `ac9_provider_variable_also_selects_claude` | 2 | Pass |
+| AC10 | `review` | `ac10_valid_finding_is_printed_and_exits_1` (golden file), `ac10_no_findings_exits_0`, `ac10_result_is_found_after_other_messages`, `ac10_threshold_applies_to_claude_findings`, `ac10_real_review_has_no_mock_warning` | 5 | Pass |
+| AC11 | `review` | `ac11_usage_becomes_token_usage`, `ac11_summary_shows_provider_and_tokens` | 5 | Pass |
+| AC12 | `review` | `ac12_no_api_key_still_calls_the_sdk` | 1 | Pass |
+| AC13 | `failures` | `ac13_raised_exception_exits_14_without_the_text`, `ac13_exception_after_other_messages_exits_14`, `ac13_error_result_exits_14_without_the_text` (including `subtype="success"`), `ac13_error_result_with_empty_findings_is_not_a_clean_review`, `ac13_error_result_with_no_result_text_exits_14`, `ac13_stream_with_no_result_message_exits_14`, `ac13_sdk_log_line_stays_off_stderr_in_a_real_process`, `ac13_real_query_failure_leaves_only_our_one_line` (malformed JSON, non-zero exit) | 17 | Pass |
+| AC14 | `failures` | `ac14_result_that_is_not_valid_findings_exits_14` | 7 | Pass; see designer point 2 |
+| AC15 | `offline`, plus the guard in `tests/conftest.py` | `ac15_control_direct_call_fires_the_guard`, `ac15_control_default_provider_route_fires_the_guard`, `ac15_control_guard_fails_a_test_whose_assertions_hold`, `ac15_default_sdk_call_passes_the_lockdown_to_the_real_query`, and the whole suite | 4 | Pass; see gap 2 |
+| AC16 | | Manual and never in CI. Run by the main session on the user's login while the user was away, not by the user as the criterion says: `python -m review_bot Assignment/sample_diff.txt --provider claude` exited 1 with 6 valid findings and stderr `provider=claude model=claude-opus-5-5 prompt=p0-v1 input_tokens=1765 output_tokens=1489`. Re-run on the final code: exited 1 with 5 valid findings and `input_tokens=1809 output_tokens=1451`. The finding count varies between runs | | Pass, manual |
+| AC17 | `failures` | `ac17_misbehaving_provider_exits_14`, `ac17_exception_from_a_step_of_main_exits_14`, `ac17_closed_stream_exits_14_in_process`, `ac17_control_the_child_really_starts_with_stdout_closed`, `ac17_stdout_closed_exits_14`, `ac17_stdout_reader_gone_exits_14` | 11 | Pass on Windows; see gap 1 and designer point 3 |
+
+### Failures
+
+None.
+
+### How the harder tests work
+
+- **The guard (AC15)** patches below `query`, at `InternalClient.process_query` and `SubprocessCLITransport.connect`. A module that ran `from claude_agent_sdk import query` already holds the real function, so replacing the name wouldn't stop it. `main` turns the guard's exception into exit 14 (AC17), which a test could mistake for success, so the guard also records each call and an autouse fixture fails the test at teardown. Both patched names are private to the SDK; a renamed one fails loudly at the start of the run, because `setattr` raises.
+- **The guard's control** runs a real child `pytest` under a copy of `tests/conftest.py`, with a test whose own assertion holds only because `main` swallowed the guard. The child must report `2 passed, 1 error` and exit 1.
+- **Closed stdout (AC17)** uses a launcher that closes fd 1 and then starts the bot, so the bot's interpreter starts as it would under `>&-`. Calling `os.close(1)` also clears the Windows standard handle. A control proves the child sees `sys.stdout is None`. The launcher and its control were also run under Linux, through WSL.
+- **AC7** runs `main` on a daemon thread, so an implementation that never returns fails the test instead of hanging the suite.
+- **SDK log lines (AC13, review finding 1)** can only be seen in a child process, because pytest's own handlers keep `logging.lastResort` quiet. One test has an injected provider log `SENTINEL` at error level to `claude_agent_sdk._internal.query` and then fail. The other runs the real default `sdk_call`, `query` and transport against a small fake CLI, which is a real child process. It is started by replacing the transport's `_build_command`, not through `cli_path`, because the SDK refuses a batch file on Windows and a script needs one there. The child checks that the method exists before replacing it, and the test checks that the fake CLI really ran. No model or network is involved.
+
+### Can the tests fail?
+
+Before the temporary files were removed, a `sitecustomize.py` injected each bug from outside `src/`, and so reached child processes too. `src/` wasn't read or edited. The bugs wrap or replace public functions, so they simulate faults in the implementation rather than mutate its code. Each ran against the tests of its own criterion, and all 46 runs were caught. A run with no bug injected passed all 92 tests of those three files. These runs came before review round 1 and weren't repeated; the check for the round-1 tests follows the table.
+
+| AC | Injected bugs (all caught) |
+|---|---|
+| AC1 | `tools=None`; `tools=["Read"]`; `setting_sources=None`; `max_turns=2`; an allowed tool; `strict_mcp_config=False`; an MCP server; a hook; an agent |
+| AC2 | The Claude Code preset as system prompt; another model; another prompt |
+| AC3 | An extra key in `env`; values ignoring the flags; the API key passed on |
+| AC4 | Variables ignored; a variable beating its flag; wrong defaults |
+| AC5 | Bad values dropped instead of rejected |
+| AC6 | One retry; retries following `--max-retries` |
+| AC7 | No deadline; a per-message timeout, which only `never_stops_sending` catches; a timeout before the stream is read |
+| AC8 | `stderr=None`; noise printed to stderr or stdout; noise written straight to fd 2 |
+| AC9 | `MockProvider` returned; a subprocess started while building |
+| AC11 | Cache tokens not counted; one cache field not counted |
+| AC12 | A required API key |
+| AC13 | `is_error` ignored always, or only for `subtype="success"`; a stream with no result treated as empty; exception text printed; a traceback printed; 14 turned into 1 |
+| AC14 | Bad JSON treated as no findings; JSON extracted from fences or prose; 14 turned into 1 |
+| AC17 | Exception text printed; a traceback printed; 14 turned into 1; closed stdout tolerated (caught by the two subprocess cases, the reader-gone case and the in-process case) |
+
+AC10 had no bug injected: it compares exact stdout and the exit code.
+
+**Without the `NullHandler` in `cli.py`:** a temporary `sitecustomize.py` made `Logger.addHandler` ignore a `NullHandler`, with `src/` untouched, and all three new AC13 cases then failed: on the log record's `SENTINEL`, on the malformed line's `SENTINEL` through the SDK's `Fatal error in message reader`, and on that message's extra lines after a non-zero exit. On the real code, all three pass.
+
+The guard was checked by editing `tests/conftest.py` for one run each, then restoring it. With the teardown check disabled, the child-`pytest` control fails. With the recording removed, all four AC15 tests fail. Removing the patches themselves was deliberately not tried, because the next layer down is a live call.
+
+### Coverage
+
+The whole suite covers 100% of statements and branches. The acceptance tests alone reach 97%; the unit tests cover the rest:
+
+| Module | Coverage | Missing | Note |
+|---|---|---|---|
+| `__main__.py` | 0% | 3-5 | Only run through subprocesses, which aren't measured |
+| `cli.py` | 98% | 163-165 | |
+| `errors.py` | 90% | 63-64 | |
+| `providers/claude_agent.py` | 96% | 113 | |
+| `providers/mock.py` | 90% | 51 | |
+
+Everything else is at 100%.
+
+### Rulings recorded
+
+- **AC7, "within 5 seconds":** the reviewer ruled that this holds for the fake only. [design.md section 4](design.md#4-open-questions) has the real behaviour.
+- **`inf` and `nan` for `--deadline-s`:** rejecting them is an accepted addition, because they would defeat the only wall-clock bound ([spec notes](slices/p0-s2-claude-review.md#notes)).
+- **Null token fields:** counting a null `usage` field as zero is an accepted addition. It is covered by `tests/unit/test_claude_agent_provider.py`, not by an acceptance test.
+
+### For the designer
+
+None of these blocks the slice. Each test beyond a criterion's literal text passes today, so no decision is forced yet.
+
+1. **AC5 beyond its list.** `abc` on each setting, `--deadline-s nan` and `inf`, `REVIEW_BOT_API_TIMEOUT_MS=0` and `-1`, `REVIEW_BOT_DEADLINE_S=-1`, `REVIEW_BOT_MAX_RETRIES=abc` and `REVIEW_BOT_DEADLINE_S=nan` are tested as invalid. The AC names seven cases and the rest are inferred from the design's "invalid setting". `inf` and `nan` are settled in the rulings above.
+2. **AC14 beyond "not JSON".** Valid JSON that fails the schema, `result=None`, fenced JSON, prose before JSON and `[]` are also required to exit 14, from the spec's "every failed call exits 14". The same tests also require a clean stderr with no `SENTINEL`, which AC14 doesn't state and AC17 implies. P0-S3 AC3 replaces this behaviour.
+3. **AC17, "stdout closed".** The AC names `>&-`. `ac17_stdout_reader_gone_exits_14` also covers a reader that has already closed its end of the pipe, the case behind `| head`, because that is the likelier real failure. Its interest is in the exit code: a buffered write that only fails during interpreter shutdown would exit 120. The code passes, but the criterion doesn't state this.
+4. **A stream that sends a successful result and then doesn't end, or sends two `ResultMessage`s.** P0-S2 doesn't say what happens, and P0-S4 AC6 settles the first. No test is written for either here.
+5. **`usage` of `{}` or with no `output_tokens`.** AC11 doesn't name these. A one-off probe gave `TokenUsage(0, 0)` and `TokenUsage(2, 0)`, which look right, so no acceptance test pins them. Null fields are in the rulings above.
+
+### Gaps
+
+1. **AC17's bot runs have only run on Windows.** CI runs on `ubuntu-latest`. The launcher and its control were run on Linux through WSL, but the WSL Python has no dependencies, so the bot wasn't. The first Linux result for `ac17_stdout_closed_exits_14` and `ac17_stdout_reader_gone_exits_14` will come from CI.
+2. **AC15, "whether or not a CLI is present".** Run both ways on this machine: normally, with `claude` installed (the `PATH` filter hides it, and the bundled CLI stays in the wheel), and once with the SDK's CLI lookup patched to find nothing. The first now gives 428 passed. The second gave 425 passed before round 1 and wasn't repeated; it is simulated, and that patch isn't part of the suite. The guard only applies in the test process. Child processes rely on the `PATH` and credential removal. Every child in the suite uses `--provider mock`, except the guard control, which runs the same guard, and the AC13 real-`query` cases, which replace the CLI command with the fake.
+3. **Closing the stream is unit-tested against a single-layer fake only**, which can't show that the subprocess stops. The acceptance tests add `ac15_default_sdk_call_passes_the_lockdown_to_the_real_query`, which checks the prompt and four options at the guard, and the AC13 real-`query` cases, which cover failures only. [design.md section 4](design.md#4-open-questions) records what closing really does.
+4. **AC7 uses the real clock.** The deadline of 0.1 s and the limit of 5 s are real time. The test that a slower stream succeeds pauses for 0.3 s against a deadline of 4 s, so a very slow machine could only fail it if `main` took over 5 s.
+5. **AC16 can't be automated**, by design.

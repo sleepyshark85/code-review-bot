@@ -1,6 +1,10 @@
+import asyncio
+import io
+import logging
 import runpy
+import sys
 from pathlib import Path
-from typing import override
+from typing import TextIO, override
 
 import pytest
 
@@ -22,6 +26,22 @@ def diff_path(tmp_path: Path) -> Path:
     path = tmp_path / "change.diff"
     path.write_text("+print('hello')\n", encoding="utf-8")
     return path
+
+
+class FailingRawStream(io.RawIOBase):
+    @override
+    def writable(self) -> bool:
+        return True
+
+    @override
+    def write(self, _data: object) -> int:
+        raise OSError("no space left")
+
+
+@pytest.fixture
+def failing_stream() -> TextIO:
+    """Accepts buffered text and fails when it is flushed, like a full disk or closed pipe."""
+    return io.TextIOWrapper(io.BufferedWriter(FailingRawStream()), encoding="utf-8")
 
 
 def test_parse_args_rejects_abbreviated_flags() -> None:
@@ -91,6 +111,61 @@ def test_main_with_unmapped_input_error_returns_internal_error_code(
 
     assert main([str(diff_path)], provider=FailingProvider()) == 14
     assert "unmapped detail" in capsys.readouterr().err
+
+
+def test_main_with_cancellation_from_provider_returns_internal_error_code(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class CancelledProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            raise asyncio.CancelledError
+
+    assert main([str(diff_path)], provider=CancelledProvider()) == 14
+    assert capsys.readouterr().err.startswith("review-bot: error: ")
+
+
+def test_main_keeps_library_log_records_off_stderr(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # pytest's own root handlers would hide ``logging.lastResort``, which is what a real run hits.
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+
+    class LoggingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            logging.getLogger("claude_agent_sdk").error("RAW-CLI-OUTPUT")
+            return await super().review(request)
+
+    assert main([str(diff_path)], provider=LoggingProvider(findings=[])) == 0
+    assert "RAW-CLI-OUTPUT" not in capsys.readouterr().err
+
+
+def test_main_with_stdout_failing_on_flush_returns_14_and_drops_the_stream(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, failing_stream: TextIO
+) -> None:
+    monkeypatch.setattr("sys.stdout", failing_stream)
+
+    assert main([str(diff_path), "--provider", "mock"]) == 14
+    # Left in place, the stream would fail again at shutdown and CPython would exit 120.
+    assert sys.stdout is None
+
+
+def test_main_with_stderr_failing_still_exits_by_findings_and_drops_the_stream(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, failing_stream: TextIO
+) -> None:
+    monkeypatch.setattr("sys.stderr", failing_stream)
+
+    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert sys.stderr is None
+
+
+def test_main_with_stderr_absent_keeps_the_input_error_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.stderr", None)
+
+    assert main([str(tmp_path / "missing.diff"), "--provider", "mock"]) == 3
 
 
 def test_main_with_injected_provider_needs_no_selection(

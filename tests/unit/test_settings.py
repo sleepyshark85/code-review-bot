@@ -109,6 +109,12 @@ def test_load_settings_accepts_max_diff_bytes_at_its_upper_bound() -> None:
     assert load_settings({"max_diff_bytes": "100000000"}).max_diff_bytes == 100_000_000
 
 
+@pytest.mark.parametrize("value", ["inf", "nan"])
+def test_load_settings_with_non_finite_deadline_names_the_flag(value: str) -> None:
+    with pytest.raises(ConfigError, match="--deadline-s"):
+        load_settings({"deadline_s": value})
+
+
 def test_load_settings_error_lists_allowed_values() -> None:
     with pytest.raises(ConfigError, match="critical"):
         load_settings({"threshold": "urgent"})

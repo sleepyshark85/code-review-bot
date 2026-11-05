@@ -20,13 +20,17 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider: Literal["mock"] | None = None
+    provider: Literal["mock", "claude"] | None = None
     # An allowlist, because the name is printed in the stderr summary line. No leading hyphen,
     # because a later provider may pass it to a command line.
     model: str = Field(default="claude-opus-5-5", pattern=r"^[\w.:/@\[\]][\w.:/@\[\]-]*$")
     threshold: Severity = Severity.LOW
     # The upper bound keeps the bounded read's up-front buffer allocatable.
     max_diff_bytes: int = Field(default=400_000, gt=0, le=100_000_000)
+    max_retries: int = Field(default=2, ge=0)
+    api_timeout_ms: int = Field(default=90_000, gt=0)
+    # Finite, because an infinite deadline would remove the only wall-clock bound.
+    deadline_s: float = Field(default=300, gt=0, allow_inf_nan=False)
 
 
 def load_settings(flags: Mapping[str, str | None]) -> Settings:
