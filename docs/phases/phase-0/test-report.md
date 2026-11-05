@@ -246,3 +246,171 @@ None of these blocks the slice. Each test beyond a criterion's literal text pass
 3. **Closing the stream is unit-tested against a single-layer fake only**, which can't show that the subprocess stops. The acceptance tests add `ac15_default_sdk_call_passes_the_lockdown_to_the_real_query`, which checks the prompt and four options at the guard, and the AC13 real-`query` cases, which cover failures only. [design.md section 4](design.md#4-open-questions) records what closing really does.
 4. **AC7 uses the real clock.** The deadline of 0.1 s and the limit of 5 s are real time. The test that a slower stream succeeds pauses for 0.3 s against a deadline of 4 s, so a very slow machine could only fail it if `main` took over 5 s.
 5. **AC16 can't be automated**, by design.
+
+## P0-S3: Get a distinct exit code and a safe error message for every provider failure
+
+Spec: [p0-s3-provider-failures.md](slices/p0-s3-provider-failures.md).
+
+**Status: every criterion passes on Windows on the developer's final code, after fix round 2. Totals: whole suite 653 passed, 10 skipped, 100% coverage; P0-S3 alone 209 passed, 10 skipped. The round-2 additions have no bug-injection check (see "Can the tests fail?"). The 10 `/dev/full` cases skip here, so CI gives their first pytest run (gap 1).**
+
+The tests were written from the spec and the design's public interfaces. `cli.py`, `settings.py` and parts of `findings.py`, `render.py`, `mock.py` and `claude_agent.py` were read only after the tests existed, to place the injected bugs and stand-ins below. No assertion changed as a result. The `--help` case was added after reading the spec's new Notes, written by the developer during this run; they changed no criterion.
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `ruff format --check .` | Pass |
+| `ruff check .` | Pass |
+| `mypy` (strict, `src` and `.claude/hooks`) | Pass |
+| `pytest --cov`, whole suite | 653 passed, 10 skipped, 100% coverage |
+| P0-S3 tests alone | 209 passed, 10 skipped, 95% coverage |
+| Acceptance only (`tests/integration`, `tests/conformance`) | 523 collected, 10 of them skipping; all others passed in the whole-suite run. Its coverage alone wasn't re-measured after round 1 (99% then) |
+| `test_p0_s3_stream_failures.py` on the final tests | Green in both of the runs above |
+| `pre-commit run --all-files`, `pip-audit` | Run by the main session, not by the tester |
+
+### Criteria
+
+Test names are shown without the `test_p0_s3_` prefix. Files are in `tests/integration/`, except AC8 and AC9. The count is collected cases; 10 of the 219 skip on Windows.
+
+| AC | File | Tests | Cases | Result |
+|---|---|---|---|---|
+| AC1 | `test_p0_s3_exit_codes.py` | `ac1_the_table_names_every_category`, `ac1_category_returns_its_code_and_names_itself` | 8 | Pass |
+| AC2 | `test_p0_s3_exit_codes.py` | `ac2_invalid_output_exits_13_with_empty_stdout`, `ac2_other_malformed_output_exits_13`, `ac2_empty_findings_exit_0`, `ac2_control_the_finding_the_cases_derive_from_is_valid` | 22 | Pass; see designer point 2 |
+| AC3 | `test_p0_s3_exit_codes.py` | `ac3_successful_result_that_is_not_findings_returns_13` | 8 | Pass |
+| AC4 | `test_p0_s3_stream_failures.py` (real processes) | `ac4_stdout_nothing_writes_to_does_not_change_the_code`, `ac4_provider_raising_makes_the_process_exit_14`, `ac4_provider_ending_the_process_exits_14_with_the_fixed_line`, `ac4_help_still_exits_0`, `ac4_unavailable_stderr_never_changes_the_exit_code`, `ac4_stdout_and_stderr_both_failing_exits_14`, and the `ac4_control_*` tests | 31, 8 skipped | Pass on Windows; see gap 1 |
+| AC4, AC5 | `test_p0_s3_stream_failures.py` (real processes) | `ac4_ac5_stdout_failure_exits_14_and_leaves_only_the_error_line` | 7, 2 skipped | Pass on Windows; see gap 1 |
+| AC4 | `test_p0_s3_safe_stderr.py` (`main` doesn't raise) | `ac4_unavailable_stderr_review_returns_its_own_code`, `ac4_unavailable_stderr_missing_diff_returns_3`, `ac4_unavailable_stderr_failed_review_keeps_its_code`, `ac4_stdout_failing_with_stderr_unavailable_returns_14`, `ac4_system_exit_from_a_provider_returns_14_in_process`, `ac4_control_the_failing_stream_fails_where_it_says` | 37 | Pass |
+| AC5 | `test_p0_s3_stream_failures.py` (real processes) | `ac5_success_lines_come_after_stdout_is_flushed` | 2 | Pass |
+| AC5 | `test_p0_s3_safe_stderr.py` | `ac5_input_failure_is_one_error_line`, `ac5_provider_failure_is_one_error_line`, `ac5_internal_error_is_one_error_line`, `ac5_usage_error_starts_with_the_error_line`, `ac5_missing_argument_starts_with_the_error_line`, `ac5_invalid_variable_starts_with_the_error_line`, `ac5_stdout_failure_leaves_only_the_error_line_in_process` | 29 | Pass |
+| AC6 | `test_p0_s3_safe_stderr.py` | `ac6_hostile_provider_message_is_one_clean_line`, `ac6_other_controls_in_a_provider_message_are_not_raw`, `ac6_hostile_missing_path_is_one_clean_line`, `ac6_hostile_flag_gives_one_clean_error_line`, `ac6_hostile_variable_gives_one_clean_error_line`, `ac6_bad_usage_counts_as_0_and_the_review_is_delivered` | 32 | Pass; see designer point 2 |
+| AC7 | `test_p0_s3_safe_stderr.py` | `ac7_model_text_never_reaches_stderr`, `ac7_invalid_output_message_embeds_no_model_text` | 28 | Pass |
+| AC8 | `tests/conformance/test_p0_s3_provider_conformance.py` | `ac8_valid_returns_findings_and_non_negative_usage`, `ac8_empty_returns_no_findings`, `ac8_invalid_raises_invalid_output`, `ac8_each_category_raises_that_category`, `ac8_response_holds_only_our_types_or_built_ins`, `ac8_control_a_foreign_type_is_noticed` | 14 | Pass, for `MockProvider` |
+| AC9 | `tests/conformance/test_p0_s3_provider_conformance.py`, plus the guard in `tests/conftest.py` | `ac9_conformance_runs_without_claude_or_a_key`, and the whole suite | 1 | Pass; see gap 2 |
+
+`P0-S4 AC6`'s overridden-signal warning isn't tested here, as its own spec says.
+
+### Failures
+
+None.
+
+### Tests changed in earlier slices
+
+- **Retired:** `test_p0_s2_ac14_result_that_is_not_valid_findings_exits_14`, because P0-S3 AC3 replaces P0-S2 AC14. Its seven inputs now expect 13 in `ac3_successful_result_that_is_not_findings_returns_13`, which adds a whitespace-only result. The clean-stderr checks came across too. The file's docstring is updated.
+- **Added to `tests/integration/conftest.py`:** the `failing_stream` fixture.
+- **No other S1 or S2 test needed changing.** That includes the order of stdout and summary, and `str(path) in run.stderr` on Windows.
+- **Moved:** `tests/integration/fake_sdk.py` to `tests/fake_sdk.py`, so `tests/conformance/conftest.py` can import it. `tests/integration` only joins `sys.path` once its own conftest loads, which is after `tests/conformance` in collection order; `tests/conftest.py` puts `tests/` there first. The existing `from fake_sdk import ...` lines needed no change. A temporary `import fake_sdk` in the conformance conftest failed collection with `ModuleNotFoundError` before the move. After it, the same import passed a whole-suite run (650 passed, 10 skipped) and `tests/conformance` alone (15 passed). The import was then removed, because `MockProvider` doesn't use it, so nothing keeps this proven until P0-S4 imports it for real.
+- **For conformance in P0-S4:** add `ClaudeAgentProvider`'s factory to `PROVIDER_FACTORIES` in `tests/conformance/conftest.py`, importing the fake with `from fake_sdk import ...`. Nothing else in that directory names a provider.
+
+### Rulings recorded
+
+- **Usage never affects the verdict.** A missing, null or invalid count (non-integer, boolean or negative) counts as 0, and a `usage` that isn't a mapping counts as 0 for both. A valid finding with bad usage delivers: exit 1, the finding on stdout, one summary line. The test was flipped from its round-1 form, which required exit 14. It also requires the other, valid count to stay as sent, reading "a count" in the ruling per count, and adds a boolean case from the ruling's text.
+- **Anything raised out of the review exits 14 with the fixed message.** That covers `SystemExit`, Ctrl+C during the review, a custom `BaseException` and a `BaseExceptionGroup`. `--help` keeps its exit 0.
+- **A closed or failing stdout that nothing writes to doesn't change the code:** a missing diff stays 3, and a provider error keeps its own.
+
+### Reductions in fix round 2
+
+No assertion is dropped. The third item does narrow what runs in a real process:
+
+- **Real-process `SystemExit` cases:** `SystemExit(1)` and `SystemExit(text)` now run in process only, and that test gained the exact fixed-line comparison the real-process cases had.
+- **`fixed_line`:** folded into `ac4_provider_raising_makes_the_process_exit_14`, which now shares its one run.
+- **`CLOSED` stderr cases:** six down to two, a delivered review and a missing diff. `no_findings_0` and `unexpected_14` still run with a real closed stderr's sibling, reader gone. `usage_2` and `provider_error_9` no longer run in a real process with stderr unavailable; only the in-process `None`, closed and failing streams cover them, and those can't show a shutdown exit code.
+
+### Overlap with P0-S2 AC17
+
+`ac4_ac5_stdout_failure_exits_14_and_leaves_only_the_error_line[closed]`, `[closed_with_findings]` and `[reader_gone]` run the same commands as `test_p0_s2_ac17_stdout_closed_exits_14` and `test_p0_s2_ac17_stdout_reader_gone_exits_14`, and assert more: exactly one error line. P0-S3 AC4 names these cases and the S2 tests were to stay, so this overlap is deliberate.
+
+The review's duplicate is folded: `ac4_stdout_failure_makes_the_process_exit_14` and `ac5_stdout_failure_leaves_only_the_error_line` differed only by threshold and by assertion. The one test that replaces them asserts both on every case, so the `--help` and many-findings cases now also require one error line. Only `closed` still runs both thresholds, which removes the findings runs on `reader_gone` and `dev_full`; there, findings are exercised by the many-findings cases.
+
+### Can the tests fail?
+
+**Against the code before this slice.** The P0-S3 tests ran against a temporary copy of `src/` from `HEAD`: 111 failed, 84 passed, 9 skipped. That covers AC1, AC2, AC3, AC5, AC6, AC7 and AC8's `invalid`, including both `ac5_success_lines_come_after_stdout_is_flushed` cases, so the merged-pipe check does see the old order. Most AC4 stream cases passed, because P0-S2 already dropped a failed stream, so they needed the bugs below.
+
+**Single bugs.** Each was applied to a temporary copy of the current `src/`, selected through `PYTHONPATH` so child processes got it too. All 13 were caught on Windows:
+
+| Injected bug | Failing cases | Caught by |
+|---|---|---|
+| Stdout not dropped after a failure (exit 120) | 4 | AC4 stream, both failing, AC5 real process. In-process tests rightly can't see this |
+| Stderr not dropped after a failure (exit 120) | 5 | AC4 `never_changes_the_exit_code`, both failing |
+| Stdout not flushed before the success lines | 12 | AC4, AC5 in both forms, `success_lines_come_after_stdout_is_flushed` |
+| A stderr failure not swallowed | 43 | All the AC4 stderr tests |
+| Summary and warning written before stdout | 8 | AC5 real process and in process, `success_lines_come_after_stdout_is_flushed` |
+| A stdout failure swallowed | 20 | AC4, AC5 |
+| `--help` left to argparse | 1 | AC4 `reader_gone_help` |
+| Error message not escaped | 19 | AC6 |
+| Internal error shows the exception's text | 2 | AC4 real process, AC5 |
+| Two exit codes swapped | 2 | AC1 |
+| Pydantic's message embedded | 30 | AC7, AC3 |
+| Code fence stripped before parsing | 2 | AC2, AC3 |
+| `MockProvider` usage holding a foreign type | 2 | AC8 |
+
+In the "not escaped" run, 5 of the 8 `hostile_flag` cases and the `hostile_variable` case still passed, because the code doesn't quote those values. They guard against a message that starts quoting them. The temporary copies are removed.
+
+**Round 1 additions.** The table above predates the fold, so its AC4 and AC5 stream entries now mean the folded test. Each of these was also applied to a temporary copy of the final `src/`, against the tests named:
+
+| Injected bug | Failing cases | Caught by |
+|---|---|---|
+| `SystemExit` and `KeyboardInterrupt` not wrapped | 7 of 7 | `ac4_provider_ending_the_process...`, `ac4_system_exit_from_a_provider...` |
+| `KeyboardInterrupt` alone not wrapped | 1 of 4 | `ac4_provider_ending_the_process...[keyboard_interrupt]` |
+| `main` also catching `--help`'s `SystemExit` | 1 of 1 | `ac4_help_still_exits_0` |
+| Stdout probed first, so a failing one always exits 14 | 4 of 4 run | `ac4_stdout_nothing_writes_to...` (`dev_full` skipped) |
+| Usage not checked | 3 of 4 | `ac6_forged_usage...`. Forged `input_tokens` then fails inside `sum` and still gives 14 with the fixed line, so that case rightly passes |
+| Negative usage accepted | 2 of 4 | `ac6_forged_usage...[negative-*]` |
+| Summary written before stdout | 4 of 5 run | The folded test; `--help` has no summary |
+| Stdout not dropped after a failure | 2 of 5 run | The folded test, `reader_gone` and `reader_gone_help`. The two `closed` cases and `reader_gone_on_write` still exit 14 under this bug, so they don't detect it |
+| **Not caught:** the invalid-usage message quoting the value | 0 of 4 | Not a defect in the test: that error reached `main`'s catch-all, which writes only the fixed line, so the value couldn't reach stderr |
+
+The three usage rows tested the old behaviour, which exited 14. The usage ruling in round 2 replaced it, and the code those bugs were applied to has changed.
+
+**Round 2 additions have no bug-injection check.** The run was stopped by the system for low memory (2.4 GB of 16 GB free afterwards) before any bug was applied, and it wasn't restarted. So these haven't been shown to fail against a bug: `ac6_bad_usage_counts_as_0_and_the_review_is_delivered`, and the `custom_base_exception` and `base_exception_group` cases. Nor has the reduced `CLOSED` stderr list, whose two cases have run only against the correct code. Planned bugs: a boolean counted as an int, a bad count failing the call, one bad count zeroing both, non-mapping usage not tolerated, only `SystemExit` and `KeyboardInterrupt` wrapped, and a stderr failure not swallowed. The reviewer then confirmed these by in-memory mutation in the final re-check; a Ctrl+C at a real console and detection on Linux remain unconfirmed.
+
+**A vacuous test, caught while writing.** The in-process stderr cases first swapped `sys.stderr` in a fixture. pytest reinstates `capsys`'s streams when the call phase starts, so those cases passed without losing stderr at all. A failing in-process stdout test exposed it. The swap now happens in the test body, and each stderr case asserts that nothing reached the capture.
+
+**Controls in the suite:**
+
+- `ac4_control_each_broken_stream_really_is_broken`: a program taking no care sees each stream closed, or exits 120 after a failed write.
+- `ac4_control_many_findings_outgrow_the_stream_buffers`: the "on write" cases really overflow the buffers.
+- `ac4_control_the_failing_stream_fails_where_it_says`: the in-process stream fails on write, or only on flush.
+- `ac8_control_a_foreign_type_is_noticed`: the type walk finds a foreign type in usage and in findings.
+- `ac2_control_the_finding_the_cases_derive_from_is_valid`: each invalid case differs from a valid finding by its own fault.
+
+### Linux check, outside pytest
+
+WSL's Python 3.12 has no dependencies, so a temporary throwaway script drove the real `cli.py`, `mock.py` and the test file's own `run_process`, with `pydantic` and `claude_agent_sdk` stubbed. The stubs do no validation, so this says nothing about AC1, AC2, AC3 or AC7. All these gave the expected code, each with the exact error-line assertion where AC5 applies:
+
+- The six stream controls, including `/dev/full`, for stdout and stderr.
+- Stdout failing on closed, reader gone and `/dev/full`, including `--help` and the many-findings case.
+- All six stderr outcomes on each of the three broken streams, and both streams broken together.
+- The order of stdout and success lines through a merged pipe, by reading the output.
+
+This ran before review round 1 and wasn't repeated, so the round-1 cases haven't run on Linux.
+
+### Coverage
+
+The whole suite covers 100% of statements and branches, including `cli.py`'s wrapping of `SystemExit`, through the in-process `ac4_system_exit_from_a_provider...` cases: real-process runs aren't measured. The P0-S3 tests alone reach 95%:
+
+| Module | Coverage | Missing | Note |
+|---|---|---|---|
+| `__main__.py` | 0% | 3-5 | Only run through subprocesses, which aren't measured |
+| `cli.py` | 95% | 78, 112, 117 | Line 78 is `--help`, run in a subprocess only. The rest belongs to S1 and S2 |
+| `providers/claude_agent.py` | 80% | 60, 92->91, 94, 118-121 | Covered by S2's tests; AC3 only needs the result path |
+
+Everything else is at 100%. The P0-S3 tests take about 60 s alone on this machine, nearly all of it in `test_p0_s3_stream_failures.py`, because each case starts real interpreters. The whole suite takes about 90 s, up from about 20 s before this slice.
+
+### For the designer
+
+None of these blocks the slice.
+
+1. **Settled by the review rulings above**, all now tested. The design now also states `ProviderError.category`, which AC8's tests read.
+2. **Beyond the criteria's lists.** These pass today but aren't literal text:
+   - AC2: empty, whitespace, `null`, `[]`, `{"findings": null}`, an extra top-level key, prose before JSON, `NaN` confidence, nesting past the recursion limit, and an integer past the digit limit, from the design's "not bare JSON, or fails the schema".
+   - AC6: CR, VT, FF, NEL, C1 CSI, NUL, DEL and U+2028 in a provider message, reading "no raw control characters" as P0-S1 AC19 was read; a hostile extra positional and a hostile `REVIEW_BOT_THRESHOLD`.
+   - AC4: `--help` with stdout's reader gone, from the spec's Notes, and stdout and stderr both failing.
+3. **The spec's note on exit 120 applies to stderr too.** `ac4_control_each_broken_stream_really_is_broken` shows that a failed stderr write also ends in 120, on Windows and Linux, so a failed stderr has to be dropped as well. The code does this; the note could say so.
+4. **P0-S2 AC14** now reads `Removed`, per the design's handover rule. No action is left.
+
+### Gaps
+
+1. **`/dev/full` under pytest.** The 10 cases skip on Windows, and the real dependencies aren't in WSL, so their first full run is CI's. The Linux check above lowers the risk for 8 of them, but stubs the dependencies. The 2 `ac4_stdout_nothing_writes_to...` cases on `/dev/full` have not run anywhere yet.
+2. **`ac9_conformance_runs_without_claude_or_a_key` can only fail if the guard in `tests/conftest.py` breaks.** AC9 is really a property of the run, and P0-S1's `ac16_*` tests, including a control that the filter removes a directory holding `claude`, already prove the guard. This test only shows that it reaches `tests/conformance/`. `claude` is on this machine's real `PATH`, so the guard is doing real work here.
+3. **Ctrl+C.** A `KeyboardInterrupt` raised by a provider is tested, standing in for Ctrl+C during the review. A real SIGINT isn't sent, and an interrupt outside the review isn't covered, because the ruling only names the review.
+4. **Eval cases** still aren't in place, as in P0-S1.

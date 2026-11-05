@@ -1,4 +1,7 @@
-"""P0-S2 AC13, AC14 and AC17: every failure exits 14, cleanly, and never as 0 or 1."""
+"""P0-S2 AC13 and AC17: these failures exit 14, cleanly, and never as 0 or 1.
+
+P0-S3 AC3 replaced AC14: see `test_p0_s3_exit_codes.py`.
+"""
 
 import asyncio
 import io
@@ -213,25 +216,6 @@ def test_p0_s2_ac13_error_result_with_no_result_text_exits_14(claude_review):
 )
 def test_p0_s2_ac13_stream_with_no_result_message_exits_14(claude_review, script):
     assert_failed_cleanly(claude_review(FakeSdk(*script)))
-
-
-@pytest.mark.parametrize(
-    "result",
-    [
-        f"{SENTINEL} not json",
-        "",
-        None,
-        f"```json\n{findings_json()}\n```",
-        f"Here you go: {findings_json()}",
-        f'{{"findings": [{{"file": "{SENTINEL}"}}]}}',
-        "[]",
-    ],
-    ids=["prose", "empty", "none", "fenced", "preamble", "fails_the_schema", "wrong_shape"],
-)
-def test_p0_s2_ac14_result_that_is_not_valid_findings_exits_14(claude_review, result):
-    run = claude_review(FakeSdk(result_message(result)))
-
-    assert_failed_cleanly(run)
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Category, Finding, Severity, parse_findings
 
 
@@ -98,5 +99,7 @@ def test_parse_findings_with_empty_list_returns_nothing() -> None:
     ],
 )
 def test_parse_findings_with_invalid_output_rejects_it_whole(raw: str) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderError) as caught:
         parse_findings(raw)
+
+    assert caught.value.category is ErrorCategory.INVALID_OUTPUT

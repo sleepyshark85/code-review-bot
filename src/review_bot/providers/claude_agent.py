@@ -47,7 +47,8 @@ class ClaudeAgentProvider:
         Raises:
             TimeoutError: If the deadline passes first.
             _ClaudeCallError: If Claude reports a failed call, or the stream ends without a result.
-            pydantic.ValidationError: If the model's text isn't valid findings.
+            ProviderError: With category ``invalid_output``, if the model's text isn't valid
+                findings.
         """
         stream = self._sdk_call(request.user_prompt, _build_options(request, self._settings))
         async with asyncio.timeout(self._settings.deadline_s), aclosing(stream):
@@ -93,13 +94,20 @@ async def _read_result(stream: AsyncIterable[object]) -> ResultMessage:
     raise _ClaudeCallError("The Claude stream ended without a result.")
 
 
-def _token_usage(usage: Mapping[str, int | None] | None) -> TokenUsage:
-    if usage is None:
+def _token_usage(usage: object) -> TokenUsage:
+    """Read the CLI's untrusted usage. Bad usage counts as 0: it never costs a valid review."""
+    if not isinstance(usage, Mapping):
         return TokenUsage(0, 0)
     return TokenUsage(
-        input_tokens=sum(usage.get(field) or 0 for field in _INPUT_TOKEN_FIELDS),
-        output_tokens=usage.get("output_tokens") or 0,
+        input_tokens=sum(_token_count(usage, field) for field in _INPUT_TOKEN_FIELDS),
+        output_tokens=_token_count(usage, "output_tokens"),
     )
+
+
+def _token_count(usage: Mapping[str, object], field: str) -> int:
+    count = usage.get(field)
+    # ``type``, not ``isinstance``, because a bool is an int.
+    return count if type(count) is int and count >= 0 else 0
 
 
 async def _call_sdk(prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:

@@ -1,5 +1,4 @@
 import pytest
-from pydantic import ValidationError
 
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Category, Finding, Severity
@@ -55,8 +54,10 @@ async def test_review_with_raw_output_parses_it() -> None:
 
 
 async def test_review_with_invalid_raw_output_rejects_it() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderError) as caught:
         await MockProvider(raw_output="not json").review(REQUEST)
+
+    assert caught.value.category is ErrorCategory.INVALID_OUTPUT
 
 
 async def test_review_with_error_raises_it_and_still_records_the_request() -> None:

@@ -4,14 +4,15 @@ import logging
 import runpy
 import sys
 from pathlib import Path
-from typing import TextIO, override
+from types import SimpleNamespace
+from typing import TextIO, cast, override
 
 import pytest
 
 from review_bot.cli import build_provider, main, parse_args
-from review_bot.errors import ConfigError, InputError
+from review_bot.errors import ConfigError, ErrorCategory, InputError, ProviderError
 from review_bot.findings import Severity
-from review_bot.providers.base import ReviewRequest, ReviewResponse
+from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
 
@@ -113,16 +114,41 @@ def test_main_with_unmapped_input_error_returns_internal_error_code(
     assert "unmapped detail" in capsys.readouterr().err
 
 
-def test_main_with_cancellation_from_provider_returns_internal_error_code(
+def test_main_with_unmapped_provider_category_returns_internal_error_code(
     diff_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    class CancelledProvider(MockProvider):
+    unmapped = cast(ErrorCategory, "unmapped")
+
+    assert main([str(diff_path)], provider=MockProvider(error=ProviderError(unmapped, "x"))) == 14
+    assert capsys.readouterr().err.startswith("review-bot: error: ")
+
+
+class _CustomBaseError(BaseException):
+    pass
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncio.CancelledError(),
+        _CustomBaseError("RAW-TEXT"),
+        BaseExceptionGroup("RAW-TEXT", [_CustomBaseError("RAW-TEXT")]),
+    ],
+    ids=["cancelled", "custom", "group"],
+)
+def test_main_with_base_exception_from_provider_returns_internal_error_code(
+    diff_path: Path, capsys: pytest.CaptureFixture[str], error: BaseException
+) -> None:
+    class RaisingProvider(MockProvider):
         @override
         async def review(self, request: ReviewRequest) -> ReviewResponse:
-            raise asyncio.CancelledError
+            raise error
 
-    assert main([str(diff_path)], provider=CancelledProvider()) == 14
-    assert capsys.readouterr().err.startswith("review-bot: error: ")
+    assert main([str(diff_path)], provider=RaisingProvider()) == 14
+
+    stderr = capsys.readouterr().err
+    assert stderr.startswith("review-bot: error: ")
+    assert "RAW-TEXT" not in stderr
 
 
 def test_main_keeps_library_log_records_off_stderr(
@@ -149,6 +175,69 @@ def test_main_with_stdout_failing_on_flush_returns_14_and_drops_the_stream(
     assert main([str(diff_path), "--provider", "mock"]) == 14
     # Left in place, the stream would fail again at shutdown and CPython would exit 120.
     assert sys.stdout is None
+
+
+def test_main_with_help_and_stdout_failing_on_flush_returns_14_and_drops_the_stream(
+    monkeypatch: pytest.MonkeyPatch, failing_stream: TextIO
+) -> None:
+    monkeypatch.setattr("sys.stdout", failing_stream)
+
+    assert main(["--help"]) == 14
+    assert sys.stdout is None
+
+
+def test_main_with_malformed_usage_writes_only_the_error_line(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class NoUsageProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            return ReviewResponse(findings=(), usage=cast(TokenUsage, None))
+
+    assert main([str(diff_path), "--provider", "mock"], provider=NoUsageProvider()) == 14
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
+
+
+def test_main_with_forged_usage_keeps_the_summary_on_one_escaped_line(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forged = cast(int, "\x1b[31mCLI\nreview-bot: error: forged")
+
+    class ForgedUsageProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            return ReviewResponse(findings=(), usage=TokenUsage(0, forged))
+
+    assert main([str(diff_path)], provider=ForgedUsageProvider()) == 0
+
+    stderr = capsys.readouterr().err
+    assert "\x1b" not in stderr
+    assert len(stderr.splitlines()) == 1
+
+
+def test_main_with_streams_that_have_no_encoding_still_writes_to_them(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", stdout)
+    monkeypatch.setattr("sys.stderr", stderr)
+
+    assert main([str(diff_path), "--provider", "mock"]) == 1
+
+    assert stdout.getvalue() == CANNED_LINE
+    assert "provider=mock" in stderr.getvalue()
+
+
+def test_main_with_stderr_raising_an_unforeseen_error_still_exits_by_findings(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.stderr", SimpleNamespace(encoding="no-such-codec"))
+
+    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert sys.stderr is None
 
 
 def test_main_with_stderr_failing_still_exits_by_findings_and_drops_the_stream(

@@ -1,11 +1,11 @@
-"""The severity threshold filter and the text output for findings."""
+"""The severity threshold filter, the text output for findings, and escaping untrusted text."""
 
 from collections.abc import Iterable, Sequence
 from typing import Final
 
 from review_bot.findings import Finding, Severity
 
-__all__ = ["at_or_above", "render_findings"]
+__all__ = ["at_or_above", "escape_unprintable", "render_findings"]
 
 _SEVERITY_RANK: Final = {severity: rank for rank, severity in enumerate(Severity)}
 
@@ -27,14 +27,14 @@ def render_findings(findings: Sequence[Finding], threshold: Severity) -> str:
 
 def _render_finding(finding: Finding) -> str:
     return (
-        f"{_escape_unprintable(finding.file)}:{finding.line} "
+        f"{escape_unprintable(finding.file)}:{finding.line} "
         f"[{finding.severity}/{finding.category}] "
-        f"{_escape_unprintable(finding.rationale)} (confidence {finding.confidence:.2f})"
+        f"{escape_unprintable(finding.rationale)} (confidence {finding.confidence:.2f})"
     )
 
 
-def _escape_unprintable(text: str) -> str:
-    """Escape control and line-break characters, so model text can't forge lines or drive a TTY.
+def escape_unprintable(text: str) -> str:
+    """Escape control and line-break characters, so untrusted text can't forge lines or drive a TTY.
 
     Escaping rather than replacing keeps an odd file name visibly different from a normal one.
     """
