@@ -2,7 +2,18 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phases 0–1 in progress · **Owner:** _TBD (see [Ownership](#ownership))_ · **Last updated:** 2026-11-03
+> **Status:** Phase 0 in progress · **Owner:** _TBD (see [Ownership](#ownership))_ · **Last updated:** 2026-11-05
+
+## Usage
+
+```
+uv sync
+uv run python -m review_bot <diff> --provider mock    # or: uv run review-bot <diff> --provider mock
+```
+
+- **Only `mock` exists so far.** Its output is canned and is not a real review. Claude arrives in [P0-S2](docs/phases/phase-0/slices/p0-s2-claude-review.md).
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors. See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state
 

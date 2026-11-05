@@ -1,0 +1,8 @@
+diff --git a/fmt.py b/fmt.py
+--- a/fmt.py
++++ b/fmt.py
+@@ -1,1 +1,99 @@ malformed hunk counts on purpose
++print(f"{self.id} {} {0} {{doubled}} {unknown!r:>10}")
++print("%s %d %(name)s 100%")
++print("$HOME ${HOME} $$")
++print(r"\1 \g<1> \n \\")

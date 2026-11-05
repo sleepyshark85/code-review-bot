@@ -1,0 +1,110 @@
+"""Drive the bot through its public interfaces only."""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import pytest
+from repo_paths import REPO_ROOT
+
+from review_bot import cli
+from review_bot.findings import Finding
+from review_bot.providers.mock import MockProvider
+
+FIXTURES = REPO_ROOT / "tests" / "fixtures" / "p0_s1"
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    @property
+    def stdout_body(self) -> str:
+        """Stdout without its final line terminator."""
+        return self.stdout.removesuffix("\n")
+
+
+class Bot:
+    def __init__(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+
+    def parse_args(self, *argv: str) -> tuple[Path, Any]:
+        return cli.parse_args(list(argv))
+
+    def mock(self, **kwargs: Any) -> Any:
+        return MockProvider(**kwargs)
+
+    def finding(self, **overrides: Any) -> Any:
+        fields = {
+            "file": "src/app.py",
+            "line": 7,
+            "severity": "high",
+            "category": "logic",
+            "rationale": "Rationale text.",
+            "confidence": 0.9,
+        }
+        return Finding(**(fields | overrides))
+
+    def run(self, *argv: str, provider: Any = None) -> Run:
+        """Call `main` with exactly these arguments. A `SystemExit` here fails the test."""
+        self._capsys.readouterr()
+        exit_code = cli.main(list(argv), provider=provider)
+        captured = self._capsys.readouterr()
+        return Run(exit_code, captured.out, captured.err)
+
+    def review(self, path: Path, *flags: str, provider: Any = None) -> Run:
+        """Review `path` with `--provider mock` selected, as the spec's runs do by default."""
+        return self.run(str(path), "--provider", "mock", *flags, provider=provider)
+
+    def request_for(self, path: Path, *flags: str) -> Any:
+        """Review `path` and return the one request the provider received."""
+        provider = self.mock()
+        run = self.review(path, *flags, provider=provider)
+        assert run.exit_code == 1, run.stderr
+        assert len(provider.requests) == 1
+        return provider.requests[0]
+
+
+@pytest.fixture
+def bot(capsys: pytest.CaptureFixture[str]) -> Bot:
+    return Bot(capsys)
+
+
+@pytest.fixture
+def write_diff(tmp_path: Path) -> Callable[..., Path]:
+    """Write exact bytes: a `str` is encoded as UTF-8, with no newline translation."""
+
+    def write(content: str | bytes, name: str = "change.diff") -> Path:
+        path = tmp_path / name
+        path.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+        return path
+
+    return write
+
+
+@pytest.fixture
+def sample_diff() -> Path:
+    return REPO_ROOT / "Assignment" / "sample_diff.txt"
+
+
+@pytest.fixture
+def fixture_text() -> Callable[[str], str]:
+    """Read a file from `tests/fixtures/p0_s1/` without newline translation."""
+
+    def read(name: str) -> str:
+        return (FIXTURES / name).read_bytes().decode("utf-8")
+
+    return read
+
+
+@pytest.fixture
+def golden(fixture_text: Callable[[str], str]) -> Callable[[str], str]:
+    """Read a golden file holding one line of expected output, without its terminator."""
+
+    def read(name: str) -> str:
+        return fixture_text(name).removesuffix("\n")
+
+    return read
