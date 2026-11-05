@@ -69,7 +69,8 @@ A green gate doesn't meet this bar on its own. "It works" is never a reason to l
 
 Every finished phase ships a release notes file (`docs/phases/phase-N/release-notes.md`: what changed, not progress), a git tag, and a GitHub release with the wheel and source archive.
 
-- Tag the commit where the phase is complete, and bump the minor version in `pyproject.toml` first: Phase 0 is `v0.1.0`, Phase 1 is `v0.2.0`.
+- Tag the commit where the phase is complete. Its `pyproject.toml` version matches the tag (Phase 0 `0.1.0`, Phase 1 `0.2.0`), so bump it in the phase's last PR.
+- Update the README's install URL to the new tag.
 - Before publishing: `gate` is green on that commit, and the wheel, built from a clean checkout with `uv build`, is installed in a clean environment and run.
 - No PyPI unless the user asks.
 
