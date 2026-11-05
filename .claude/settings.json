@@ -15,9 +15,7 @@
       "Bash(git show *)",
       "Bash(git switch *)",
       "Bash(gh pr view *)",
-      "Bash(gh pr checks *)"
-    ],
-    "ask": [
+      "Bash(gh pr checks *)",
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(gh pr create *)",
