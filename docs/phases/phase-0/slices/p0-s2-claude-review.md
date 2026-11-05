@@ -1,6 +1,6 @@
 # P0-S2: Get a real review from Claude with an explicit flag
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P0-S1
 - **Touches:** `providers/claude_agent`, `cli`, `settings`, `findings`; `pyproject.toml` (pin `claude-agent-sdk==0.2.178`); `uv.lock`
 
@@ -36,7 +36,7 @@ A developer can run `--provider claude` and get validated findings from a locked
 ## Interfaces
 - Offline seam: `ClaudeAgentProvider(settings, sdk_call=fake)` ([design.md](../design.md#interfaces)). The fake is an async generator that records `(prompt, options)` and scripts messages or a raised exception.
 - `claude-agent-sdk` is installed in tests, so fakes use the real classes. The tester may read the installed package for exact field names and constructors.
-- The default `sdk_call` wraps `query`; only AC16 exercises it.
+- The default `sdk_call` wraps `query`; AC16 exercises it live, and the P0-S2 AC13 real-`query` tests run it against a fake child.
 
 ## Out of scope
 - Error categories and specific exit codes (P0-S3, P0-S4).
@@ -44,3 +44,6 @@ A developer can run `--provider claude` and get validated findings from a locked
 - Our own retries or backoff; `output_format`; cost tracking (Phase 2).
 
 ## Notes
+- `main` already drops a failed standard stream and tolerates an unavailable stderr, because AC17 needs a catch-all whose own write can't raise, and the same code gives the process-level exit code of P0-S3 AC4. Subprocess tests for closed stdout and a gone reader already exist; P0-S3 still owes that criterion's `/dev/full` and stderr cases, and the ordering in its AC5.
+- `deadline_s` also rejects `inf` and `nan`: accepted, because it protects the only wall-clock bound.
+- AC16 was run by the main session on the user's login while the user was away, though the criterion says "by the user".

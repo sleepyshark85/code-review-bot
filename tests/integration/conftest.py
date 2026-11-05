@@ -10,6 +10,7 @@ from repo_paths import REPO_ROOT
 
 from review_bot import cli
 from review_bot.findings import Finding
+from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
 
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "p0_s1"
@@ -83,6 +84,42 @@ def write_diff(tmp_path: Path) -> Callable[..., Path]:
         return path
 
     return write
+
+
+@pytest.fixture
+def claude_argv(write_diff: Callable[..., Path]) -> Callable[..., list[str]]:
+    """Arguments reviewing a small diff with `--provider claude` and these flags."""
+    path = write_diff("+x\n")
+
+    def argv(*flags: str) -> list[str]:
+        return [str(path), "--provider", "claude", *flags]
+
+    return argv
+
+
+@pytest.fixture
+def claude_provider(claude_argv: Callable[..., list[str]]) -> Callable[..., ClaudeAgentProvider]:
+    """A provider over a fake `sdk_call`, with the settings `parse_args` gives for these flags."""
+
+    def build(sdk_call: Any, *flags: str) -> ClaudeAgentProvider:
+        _, settings = cli.parse_args(claude_argv(*flags))
+        return ClaudeAgentProvider(settings, sdk_call=sdk_call)
+
+    return build
+
+
+@pytest.fixture
+def claude_review(
+    bot: Bot,
+    claude_argv: Callable[..., list[str]],
+    claude_provider: Callable[..., ClaudeAgentProvider],
+) -> Callable[..., Run]:
+    """Run `main` with `--provider claude` over a fake `sdk_call`."""
+
+    def review(sdk_call: Any, *flags: str) -> Run:
+        return bot.run(*claude_argv(*flags), provider=claude_provider(sdk_call, *flags))
+
+    return review
 
 
 @pytest.fixture

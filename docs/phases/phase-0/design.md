@@ -98,7 +98,7 @@ class MockProvider:
 
 
 # providers/claude_agent: the default sdk_call wraps query(prompt=..., options=...) and must close
-# the inner query (aclosing or finally), so the deadline's aclose reaches it.
+# the inner query (aclosing or finally). That doesn't stop the subprocess: see section 4.
 type SdkCall = Callable[[str, ClaudeAgentOptions], AsyncGenerator[object, None]]
 
 
@@ -201,7 +201,7 @@ Before S1, as process and not a slice: **PR `chore/p0-baseline`** copies `Assign
 
 ## 4. Open questions
 
-None for the user.
+- **For the user, P0-S4:** the callback discards the CLI's stderr, so a failed call has no diagnostics at all; should P0-S4 add a way to see it, such as a debug flag writing it safely?
 
 ### Remaining SDK unknowns
 
@@ -212,3 +212,9 @@ Facts checked against `claude-agent-sdk` 0.2.178 (bundled CLI 2.1.318) are built
 - **`API_TIMEOUT_MS`:** whether it applies per attempt.
 - **Cache token fields:** the sum in P0-S2 is inferred from `usage["input_tokens"]` being 2 on a much larger prompt.
 - **Bundled CLI:** inferred from wheel size and `_find_bundled_cli`.
+- **Termination:** the real CLI's behaviour on EOF with an API call in flight, and whether grandchild processes survive on Windows.
+
+Observed with the real SDK 0.2.178 against a fake child process, with no model call:
+
+- **Closing `query`:** it doesn't reach the generator owning the subprocess, because `query()` is a bare `async for`. On early exit the child is reaped at `asyncio.run` shutdown, not when `review` returns.
+- **`--deadline-s` isn't a hard bound:** termination added about 5 s when the child ignored EOF, and the SDK documents a worst case of about 20 s. P0-S2 AC7's "within 5 seconds" holds for the fake only.
