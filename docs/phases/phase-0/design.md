@@ -179,6 +179,8 @@ Precedence: CLI flag, then environment variable, then default. The bot never rea
 | `--api-timeout-ms` | `REVIEW_BOT_API_TIMEOUT_MS` | `90000` |
 | `--deadline-s` | `REVIEW_BOT_DEADLINE_S` | `300` |
 
+`--max-diff-bytes` and `REVIEW_BOT_MAX_DIFF_BYTES` have an upper bound of 100,000,000 bytes. A value above it is an invalid setting: it exits 2 and names the flag or variable. The bounded read allocates its size up front, so an unbounded limit could raise `MemoryError` even on a tiny file.
+
 `--deadline-s` is the only wall-clock bound: in a real run with `API_TIMEOUT_MS=2000` and one retry, a 12.8 s call still succeeded.
 
 ### Notes for implementers

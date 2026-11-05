@@ -1,0 +1,1 @@
+billing/invoice.py:17 [critical/security] Tax is applied twice. (confidence 0.50)

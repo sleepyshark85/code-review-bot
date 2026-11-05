@@ -1,6 +1,6 @@
 # P0-S1: Review a diff offline, end to end, with clear input errors
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** PR `chore/p0-baseline` ([design.md](../design.md#3-slices))
 - **Touches:** `__main__`, `cli`, `settings`, `errors`, `diff_input`, `prompt`, `findings`, `render`, `review`, `providers/base`, `providers/mock`; `pyproject.toml`; `uv.lock`; `.pre-commit-config.yaml` (user or main session)
 
@@ -14,7 +14,7 @@ Unless a criterion says otherwise, runs select `--provider mock`.
 - **AC2:** Given the same command with `--threshold critical`, then it exits 0 and stdout is exactly `No findings at or above critical.`
 - **AC3:** Given a diff containing `SENTINEL-DIFF-TEXT`, when a review succeeds, then stderr contains `provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0`, and the sentinel appears in neither stdout nor stderr.
 - **AC4:** Parametrised over `--provider`, `--model`, `--threshold` and `--max-diff-bytes` ([settings](../design.md#settings)): given only the variable, `parse_args` uses its value; given also the flag, the flag's; given neither, the table's default (`--provider`: see AC6). Given `--model flag-model`, the recorded request has `model="flag-model"`.
-- **AC5:** Given each of: no path; an unknown flag; `--provider nope`; `--threshold urgent`; `--max-diff-bytes 0`; `REVIEW_BOT_MAX_DIFF_BYTES=abc`, then `main` returns 2 and stderr names the offending flag or variable.
+- **AC5:** Given each of: no path; an unknown flag; `--provider nope`; `--threshold urgent`; `--max-diff-bytes 0` or `100000001`; `REVIEW_BOT_MAX_DIFF_BYTES=abc`; `--model=--dangerous`, then `main` returns 2 and stderr names the offending flag or variable.
 - **AC6:** Given no provider selected, then it exits 2 and stderr names `--provider mock`. It never silently falls back to canned findings. *(Replaced by P0-S4 AC13.)*
 
 **Input errors.** In AC7 to AC10 the provider is never called, and stderr has neither the mock warning nor the AC3 summary, which appear only after a successful review.
@@ -50,3 +50,10 @@ See [design.md](../design.md#interfaces). Tests inject providers through `main(a
 - Parsing the diff, or checking findings against it: a non-diff text file is accepted here (Phase 1).
 
 ## Notes
+- **Settings:** deviation from CONVENTIONS §9: an 11-line loop needs no new dependency (§12) and handles S2's settings; if it survives Phase 0, amend §9.
+- **Precedence:** a flag wins, and an overridden variable isn't read or validated.
+- **Stderr:** direct stderr lines rather than `logging` (§11), because the spec fixes exact CLI lines.
+- **AC14:** the guarantee is the digest's cryptographic one, with no collision loop.
+- **`provider=None`:** test-only until P0-S4.
+- **Interim behaviour:** paths are raw on stderr until P0-S3 AC6; unexpected exceptions escape until P0-S2; `ValidationError` is uncategorised until P0-S3.
+- **PR size:** exceeds §18's 400-line guideline, justified as one vertical slice.
