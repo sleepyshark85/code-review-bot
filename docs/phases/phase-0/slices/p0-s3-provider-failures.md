@@ -1,8 +1,8 @@
 # P0-S3: Get a distinct exit code and a safe error message for every provider failure
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P0-S2
-- **Touches:** `errors`, `cli`, `findings`, `render`, `providers/mock`
+- **Touches:** `errors`, `cli`, `findings`, `render`, `providers/mock`, `providers/claude_agent`
 
 ## Value
 A developer or CI job gets one safe stderr line for every failure. With `--provider claude`, invalid output now exits 13 and other SDK failures still exit 14; the remaining exit codes work for any provider that raises them, shown here by injection, and P0-S4 maps real SDK errors to them.
@@ -32,3 +32,11 @@ See [design.md](../design.md#interfaces) for `ProviderError`, `ErrorCategory`, `
 
 ## Notes
 CPython retries the flush at shutdown and overrides the exit code with 120 even after `sys.exit(14)` (verified on Python 3.12 on Windows), so the failed stream must also be dropped (set to `None` or `dup2` to devnull), and AC4 needs a subprocess test.
+
+- **`except Exception` in the stream writers:** deviation from CONVENTIONS §8's narrowest catch. Nothing may escape `main`, an escaped error would exit 1, and with stderr gone there is nowhere left to report it. A list of stream failures can't be proven complete: it already missed `encoding=None` and an unknown codec.
+- **`--help`:** goes through the same stdout write, because argparse's buffered help otherwise failed at shutdown with exit 120 when stdout's reader had gone (seen in a real run). It now exits 14.
+- **Touches:** `errors` and `providers/mock` needed no code change.
+- **For P0-S4:** the safe stderr write is still in `cli`; its Notes ask for it outside `cli` before the provider writes its warning.
+
+Review rulings: any `BaseException` from the review, including `SystemExit` and Ctrl+C, exits 14 with the fixed message, while `--help` keeps its `SystemExit(0)`. A closed or failing stdout that nothing writes to doesn't change the code: a missing diff stays 3 and a provider error keeps its own.
+Usage never affects the verdict: a missing, null or invalid count (non-integer, boolean or negative) counts as 0.

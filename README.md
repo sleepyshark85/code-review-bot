@@ -13,7 +13,7 @@ uv run python -m review_bot <diff> --provider mock      # offline; canned output
 ```
 
 - **`--provider claude`** uses your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
-- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `14` internal error or any failed model call (specific codes arrive in [P0-S3](docs/phases/phase-0/slices/p0-s3-provider-failures.md) and [P0-S4](docs/phases/phase-0/slices/p0-s4-claude-errors.md)). See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `13` invalid model output, `14` internal error or any other failed model call (specific codes arrive in [P0-S4](docs/phases/phase-0/slices/p0-s4-claude-errors.md)). See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
 - **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state

@@ -1,7 +1,7 @@
 import pytest
 
 from review_bot.findings import Category, Finding, Severity
-from review_bot.render import at_or_above, render_findings
+from review_bot.render import at_or_above, escape_unprintable, render_findings
 
 
 def make_finding(
@@ -73,6 +73,10 @@ def test_render_findings_escapes_unprintable_characters(raw: str, escaped: str) 
     assert f"] {escaped} (confidence" in rendered_rationale
     assert len(rendered_file.splitlines()) == 1
     assert len(rendered_rationale.splitlines()) == 1
+
+
+def test_escape_unprintable_with_undecodable_path_byte_escapes_it() -> None:
+    assert escape_unprintable("bad\udcffname") == r"bad\udcffname"
 
 
 def test_render_findings_keeps_printable_unicode() -> None:

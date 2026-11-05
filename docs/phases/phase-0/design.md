@@ -21,7 +21,7 @@ Under `src/review_bot/`. `findings`, `prompt` and `render` are pure. `cli`, `set
 | `diff_input` | Read and gate the diff file | `load_diff` |
 | `prompt` | Versioned system prompt; wraps the diff as data | `build_request`, `PROMPT_VERSION` |
 | `findings` | `Finding` schema; parse raw model text | `Finding`, `Severity`, `Category`, `parse_findings` |
-| `render` | Threshold filter and text output | `at_or_above`, `render_findings` |
+| `render` | Threshold filter and text output | `at_or_above`, `render_findings`, `escape_unprintable` |
 | `review` | Orchestrates load → prompt → provider | `review_diff` |
 | `providers/base` | The seam ([ADR 0002](../../adr/0002-llm-provider-interface.md)) | `LLMProvider`, `ReviewRequest`, `ReviewResponse`, `TokenUsage` |
 | `providers/mock` | Scripted offline provider | `MockProvider` |
@@ -52,6 +52,8 @@ class ErrorCategory(StrEnum):  # values are the lower-case names
 
 
 class ProviderError(ReviewBotError):
+    category: ErrorCategory
+
     def __init__(self, category: ErrorCategory, message: str) -> None: ...
 
 

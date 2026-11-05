@@ -1,10 +1,19 @@
 """The review finding schema, and parsing of raw model text into findings."""
 
 from enum import StrEnum, auto
+from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from review_bot.errors import ErrorCategory, ProviderError
 
 __all__ = ["Category", "Finding", "Severity", "parse_findings"]
+
+# Fixed, because pydantic's own message quotes the input and model text must never reach stderr.
+_INVALID_OUTPUT_MESSAGE: Final = (
+    'The model\'s output was rejected: it must be bare JSON {"findings": [...]} matching the '
+    "findings schema. Run the review again."
+)
 
 
 class Severity(StrEnum):
@@ -51,6 +60,10 @@ def parse_findings(raw: str) -> tuple[Finding, ...]:
     Validation is strict: model output is rejected whole, never coerced into shape.
 
     Raises:
-        pydantic.ValidationError: If the text isn't JSON or doesn't match the schema.
+        ProviderError: With category ``invalid_output``, if the text isn't JSON or doesn't match
+            the schema.
     """
-    return _FindingsEnvelope.model_validate_json(raw, strict=True).findings
+    try:
+        return _FindingsEnvelope.model_validate_json(raw, strict=True).findings
+    except ValidationError as exc:
+        raise ProviderError(ErrorCategory.INVALID_OUTPUT, _INVALID_OUTPUT_MESSAGE) from exc

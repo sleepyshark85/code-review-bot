@@ -1,6 +1,8 @@
 """Drive the bot through its public interfaces only."""
 
-from collections.abc import Callable
+import errno
+import io
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,6 +122,38 @@ def claude_review(
         return bot.run(*claude_argv(*flags), provider=claude_provider(sdk_call, *flags))
 
     return review
+
+
+class _FailingRaw(io.RawIOBase):
+    broken = True
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Any) -> int:
+        if self.broken:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return len(data)
+
+
+@pytest.fixture
+def failing_stream() -> Iterator[Callable[[str], io.TextIOWrapper]]:
+    """Make a real text stream that fails on `write`, or only on `flush`, as a full disk does."""
+    created: list[tuple[_FailingRaw, io.TextIOWrapper]] = []
+
+    def make(fails_on: str) -> io.TextIOWrapper:
+        raw = _FailingRaw()
+        on_write = fails_on == "write"
+        buffer = io.BufferedWriter(raw, buffer_size=1 if on_write else 8192)
+        stream = io.TextIOWrapper(buffer, encoding="utf-8", write_through=on_write)
+        created.append((raw, stream))
+        return stream
+
+    yield make
+    # A stream still failing would report it from its finaliser, during some later test.
+    for raw, stream in created:
+        raw.broken = False
+        stream.close()
 
 
 @pytest.fixture
