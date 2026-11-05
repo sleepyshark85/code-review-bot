@@ -145,8 +145,10 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
 def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
     diff_path, settings = parse_args(argv)
     selected_provider = build_provider(settings) if provider is None else provider
+    is_own_claude = provider is None and settings.provider == "claude"
+    review = _review_then_discard_unraisable if is_own_claude else review_diff
     try:
-        response = asyncio.run(review_diff(diff_path, settings, selected_provider))
+        response = asyncio.run(review(diff_path, settings, selected_provider))
     except Exception:
         raise
     except BaseException as exc:
@@ -166,6 +168,27 @@ def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
         write_diagnostic(_CANNED_WARNING)
     write_diagnostic(summary)
     return 1 if findings else 0
+
+
+async def _review_then_discard_unraisable(
+    diff_path: Path, settings: Settings, provider: LLMProvider
+) -> ReviewResponse:
+    """Run ``review_diff``, then discard ``sys.unraisablehook`` reports until the process exits.
+
+    The SDK's ``close()`` waits for the Claude CLI to exit, not for its pipes to close, so a
+    helper that holds them open leaves a transport that raises from ``__del__`` once
+    ``asyncio.run`` has closed the loop. CPython would print that as ``Exception ignored in``,
+    which breaks the stderr contract. The hook goes in only once the review has ended, so reports
+    during the review still show, and it is never restored because the process is about to exit.
+    """
+    try:
+        return await review_diff(diff_path, settings, provider)
+    finally:
+        sys.unraisablehook = _discard_unraisable
+
+
+def _discard_unraisable(_report: "sys.UnraisableHookArgs") -> None:
+    """Drop the report, since stderr may hold only the bot's own lines."""
 
 
 def _summarise(response: ReviewResponse, settings: Settings) -> str:

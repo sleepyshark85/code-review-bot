@@ -8,6 +8,7 @@ running the tests. `tests/integration/test_p0_s1_offline.py` proves that it hold
 import os
 import shutil
 import socket
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,17 @@ def fail_on_real_query() -> Iterator[None]:
     if _real_query_calls:
         _real_query_calls.clear()
         pytest.fail("this test reached the real claude_agent_sdk.query")
+
+
+@pytest.fixture(autouse=True)
+def own_unraisable_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start and end every test with pytest's `sys.unraisablehook`.
+
+    An in-process `main` that builds Claude discards unraisable reports until the process exits
+    (P1-S18), and pytest installs its hook once per session, so without this every later test
+    would lose its `__del__` errors.
+    """
+    monkeypatch.setattr(sys, "unraisablehook", sys.unraisablehook)
 
 
 @pytest.fixture(autouse=True)

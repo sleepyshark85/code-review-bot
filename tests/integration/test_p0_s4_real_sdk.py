@@ -94,7 +94,9 @@ def run_real_query(tmp_path, monkeypatch):
             timeout=90,
             check=False,
         )
-        if mode != "cli_missing":
+        # P1-S18 AC7: by a 1 s deadline, a CLI still starting and a hung one look the same to the
+        # bot, so `never_ends` has no marker check. `success_then_never_ends` proves one runs.
+        if mode not in {"cli_missing", "never_ends"}:
             assert marker.exists(), completed.stderr
         return completed
 
@@ -187,7 +189,11 @@ def test_p0_s4_ac6_success_from_a_cli_that_never_exits_is_delivered_before_the_d
 
 
 def test_p0_s4_ac8_cli_that_never_exits_hits_the_deadline_with_one_line(run_real_query):
-    assert_failed_cleanly(run_real_query("never_ends", "--deadline-s", "1"), 11)
+    completed = run_real_query("never_ends", "--deadline-s", "1")
+
+    assert_failed_cleanly(completed, 11)
+    assert "didn't finish in time" in completed.stderr
+    assert "Couldn't start or talk to the Claude Code CLI" not in completed.stderr
 
 
 # --- AC6's note: stderr closed or failing, in a real process -------------------------------------

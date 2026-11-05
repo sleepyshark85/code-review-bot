@@ -162,6 +162,27 @@ def test_main_with_base_exception_from_provider_returns_internal_error_code(
     assert "RAW-TEXT" not in stderr
 
 
+class _RaisesWhenFreed:
+    def __del__(self) -> None:
+        raise RuntimeError("SENTINEL")
+
+
+def test_main_with_built_claude_provider_that_fails_discards_later_unraisable_reports(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reports: list[object] = []
+    sys.unraisablehook = reports.append
+    failing = MockProvider(error=ProviderError(ErrorCategory.TRANSIENT, "timed out"))
+    monkeypatch.setattr("review_bot.cli.build_provider", lambda _settings: failing)
+
+    exit_code = main([str(diff_path), "--provider", "claude"])
+    _RaisesWhenFreed()
+
+    assert exit_code == 11
+    assert reports == []
+    assert capsys.readouterr().err == "review-bot: error: transient: timed out\n"
+
+
 def test_main_keeps_library_log_records_off_stderr(
     diff_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
