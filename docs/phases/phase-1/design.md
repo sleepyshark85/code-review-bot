@@ -165,26 +165,28 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 | Ctrl+C during a review exits 14 | Unchanged; during triage it exits 1, because the review already exists (S12) |
 | SDK import costs 1 to 2 s per run; the README leaves start-up to Phase 2 | S1 defers the import; measuring CLI start-up stays in Phase 2 |
 | Bundled CLI, cache token sum and `API_TIMEOUT_MS` inferred or unknown; termination mid-call and Windows grandchild processes untested; `/dev/full` cases run only in CI | Unchanged, not in scope |
+| The SDK's shutdown can put an asyncio traceback on stderr, breaking the one-line rule | [P1-S18](slices/p1-s18-clean-sdk-shutdown.md) addresses it |
 
 ## 3. Slices
 
-1. [P1-S1: Run mock reviews without loading the Claude SDK](slices/p1-s1-mock-without-sdk.md)
-2. [P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff](slices/p1-s2-parse-and-skip.md)
-3. [P1-S3: Stop a diff with a detected secret from reaching the model](slices/p1-s3-secret-block.md)
-4. [P1-S4: Trace every run in a JSONL audit log](slices/p1-s4-audit-log.md)
-5. [P1-S5: See provider warnings and failure diagnostics in the audit log](slices/p1-s5-provider-notices.md)
-6. [P1-S6: Drop model findings whose file or line isn't in the diff](slices/p1-s6-verify-anchors.md)
-7. [P1-S7: Catch swallowed exceptions with no model, with stable fingerprints](slices/p1-s7-swallowed-exception-rule.md)
-8. [P1-S8: Catch `open()` without an encoding with no model](slices/p1-s8-open-encoding-rule.md)
-9. [P1-S9: See one finding when a rule and the model report the same problem](slices/p1-s9-dedupe.md)
-10. [P1-S10: Get the review as JSON](slices/p1-s10-json-output.md)
-11. [P1-S11: Get the review as Markdown](slices/p1-s11-markdown-output.md)
-12. [P1-S12: Accept or reject findings interactively, with labels logged](slices/p1-s12-triage.md)
-13. [P1-S13: Edit a finding during triage](slices/p1-s13-triage-edit.md)
-14. [P1-S14: Score the sample diff per planted bug and per source, offline](slices/p1-s14-eval-sample.md)
-15. [P1-S15: Score the clean and injection diffs, offline](slices/p1-s15-eval-clean-injection.md)
-16. [P1-S16: Record a live eval run with one explicit command](slices/p1-s16-eval-live-command.md)
-17. [P1-S17: Measure the real model and hold CI to the result](slices/p1-s17-measure-real-model.md)
+- [P1-S1: Run mock reviews without loading the Claude SDK](slices/p1-s1-mock-without-sdk.md)
+- [P1-S18: Get clean stderr when the Claude SDK shuts down](slices/p1-s18-clean-sdk-shutdown.md)
+- [P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff](slices/p1-s2-parse-and-skip.md)
+- [P1-S3: Stop a diff with a detected secret from reaching the model](slices/p1-s3-secret-block.md)
+- [P1-S4: Trace every run in a JSONL audit log](slices/p1-s4-audit-log.md)
+- [P1-S5: See provider warnings and failure diagnostics in the audit log](slices/p1-s5-provider-notices.md)
+- [P1-S6: Drop model findings whose file or line isn't in the diff](slices/p1-s6-verify-anchors.md)
+- [P1-S7: Catch swallowed exceptions with no model, with stable fingerprints](slices/p1-s7-swallowed-exception-rule.md)
+- [P1-S8: Catch `open()` without an encoding with no model](slices/p1-s8-open-encoding-rule.md)
+- [P1-S9: See one finding when a rule and the model report the same problem](slices/p1-s9-dedupe.md)
+- [P1-S10: Get the review as JSON](slices/p1-s10-json-output.md)
+- [P1-S11: Get the review as Markdown](slices/p1-s11-markdown-output.md)
+- [P1-S12: Accept or reject findings interactively, with labels logged](slices/p1-s12-triage.md)
+- [P1-S13: Edit a finding during triage](slices/p1-s13-triage-edit.md)
+- [P1-S14: Score the sample diff per planted bug and per source, offline](slices/p1-s14-eval-sample.md)
+- [P1-S15: Score the clean and injection diffs, offline](slices/p1-s15-eval-clean-injection.md)
+- [P1-S16: Record a live eval run with one explicit command](slices/p1-s16-eval-live-command.md)
+- [P1-S17: Measure the real model and hold CI to the result](slices/p1-s17-measure-real-model.md)
 
 **Closing designer task, after the slices merge:** mark replaced Phase 0 criteria `Removed`, and correct Phase 0's "the bot never reads `ANTHROPIC_API_KEY`", which S5 makes untrue. README changes go through the main session, as each spec's Notes list.
 

@@ -6,11 +6,15 @@ An automated PR reviewer for RightShip, and the first agent on a shared agent pl
 
 ## Usage
 
+Install the [latest release](https://github.com/sleepyshark85/code-review-bot/releases/latest), which requires Python 3.12 or later:
+
 ```
-uv sync
-uv run python -m review_bot <diff>                    # a real review with Claude
-uv run python -m review_bot <diff> --provider mock    # offline; canned output, not a real review
+uv tool install https://github.com/sleepyshark85/code-review-bot/releases/download/v0.1.0/review_bot-0.1.0-py3-none-any.whl
+review-bot <diff>                    # a real review with Claude
+review-bot <diff> --provider mock    # offline; canned output, not a real review
 ```
+
+From a clone, run `uv sync`, then `uv run python -m review_bot <diff>`. The usage below describes `main` and may be ahead of the latest release.
 
 - **Authentication:** your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
 - **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error. See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
