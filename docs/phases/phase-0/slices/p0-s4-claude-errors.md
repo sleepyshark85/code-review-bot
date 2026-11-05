@@ -1,8 +1,8 @@
 # P0-S4: Get clear, specific errors from Claude, with Claude as the default
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P0-S3
-- **Touches:** `providers/claude_agent`, `cli`, `settings`
+- **Touches:** `providers/claude_agent`, `console`, `cli`, `settings`
 
 ## Value
 A developer can run `python -m review_bot <diff>` with no flags and, when Claude fails, see what went wrong and what to do, with the matching exit code.
@@ -13,9 +13,9 @@ A developer can run `python -m review_bot <diff>` with no flags and, when Claude
 - **AC2 (status rules):** Given a `ResultMessage` with `is_error=True` or a raised `ResultError`, with `api_error_status` 401 or 403 → `auth`; 429 → `rate_limit`; 408, 500, 503 or 529 (408 and any 5xx) → `transient`; 400, 404 or 413 (any other status) → `permanent`. With no status: `terminal_reason="api_error"` → `transient`; otherwise → `permanent`.
 - **AC3:** Given a `ResultMessage` with `stop_reason="refusal"` and `is_error` true or false → `refusal`. *(Fakes only: never observed live.)*
 - **AC4:** Given `AssistantMessage.error`, and then no successful result (defined in AC6): `authentication_failed` → `auth`; `rate_limit` → `rate_limit`; `server_error` → `transient`; `billing_error` → `permanent`, with a message naming billing; `invalid_request` or `unknown` → `permanent`; an unrecognised value → `permanent`, with a message naming the value.
-- **AC5 (priority):** Given `AssistantMessage.error="authentication_failed"`, then `ResultMessage(subtype="success", is_error=True, stop_reason="stop_sequence", terminal_reason="api_error", api_error_status=401)`, then a raised `ResultError` with status 401, then `auth`. Given the same sequence with `AssistantMessage.error="rate_limit"` and status 500, then `rate_limit`. Given only that `ResultMessage` (status 401), then a raised `ProcessError`, then `auth`. The order is `AssistantMessage.error`, `ResultMessage`, exception.
+- **AC5 (earliest signal):** Given `AssistantMessage.error="authentication_failed"`, then `ResultMessage(subtype="success", is_error=True, stop_reason="stop_sequence", terminal_reason="api_error", api_error_status=401)`, then a raised `ResultError` with status 401, then `auth`. Given the same sequence with `AssistantMessage.error="rate_limit"` and status 500, then `rate_limit`. Given only that `ResultMessage` (status 401), then a raised `ProcessError`, then `auth`. The earliest signal wins: that order, `AssistantMessage.error`, `ResultMessage`, exception, is the order the CLI sends them, so a `ResultMessage` with status 429 then `authentication_failed` gives `rate_limit`.
 - **AC6 (a successful result is the verdict):** A successful result is `is_error=False`, `stop_reason` not `refusal`, and `parse_findings` succeeding. Once one arrives, the provider stops reading, closes the stream and returns the findings. Parametrised over non-empty and empty findings: given `AssistantMessage.error` then a successful result, then `main` returns 1 or 0 for those findings, and stderr has a warning naming the overridden signal, without its text. This is a warning on a successful run, not an error line, so P0-S3 AC5 doesn't apply. Given a successful result then a stream that never ends and `--deadline-s 30`, then `review` returns the findings within 5 seconds and the stream has been closed. Otherwise the earlier signal wins: `authentication_failed` then `is_error=False` with prose returns 8; with no earlier signal, that prose returns 13.
-- **AC7:** Given a stream ending with no `ResultMessage` and no earlier error signal → `permanent`. Given a raised non-SDK class such as `ValueError` and no earlier successful result or error signal, it stays uncategorised and `main` returns 14. The SDK's bare `Exception("Control request timeout...")` is accepted as exit 14 on the same path.
+- **AC7:** Given a stream ending with no `ResultMessage` and no earlier error signal → `permanent`. Given a raised non-SDK class such as `ValueError`, except `TimeoutError` (see Notes), and no earlier successful result or error signal, it stays uncategorised and `main` returns 14. The SDK's bare `Exception("Control request timeout...")` is accepted as exit 14 on the same path.
 - **AC8:** Given a fake stream that never ends with no successful result and `--deadline-s 0.1`: with no earlier signal, `review` raises `transient` and `main` returns 11; with an earlier `AssistantMessage.error="authentication_failed"`, it reports that signal's category, `auth`, and `main` returns 8. Either way the stream has been closed within 5 seconds. *(Replaces P0-S2 AC7.)*
 
 **Messages**
@@ -25,7 +25,7 @@ A developer can run `python -m review_bot <diff>` with no flags and, when Claude
 - **AC12:** Given `str(ResultError)`, `ResultMessage.result`, or a raised `CLIJSONDecodeError` or `MessageParseError` containing `MODEL-SENTINEL` and `\x1b`, then neither reaches stderr. Those two embed raw CLI output, so the "any other `ClaudeSDKError`" message in AC1 doesn't use their text.
 
 **Default and conformance**
-- **AC13:** Given neither `--provider` nor `REVIEW_BOT_PROVIDER`, then `parse_args` selects `claude`, and `build_provider` returns a `ClaudeAgentProvider` and starts no subprocess. *(Replaces P0-S1 AC6 and the "neither" case of P0-S1 AC4 for `--provider`.)*
+- **AC13:** Given neither `--provider` nor `REVIEW_BOT_PROVIDER`, then `parse_args` selects `claude`, and `build_provider` returns a `ClaudeAgentProvider` and starts no subprocess. Given an empty or whitespace `REVIEW_BOT_PROVIDER` or `--provider ""`, then it exits 2, names the source and calls no provider, so an empty variable never reaches a real model. *(Replaces P0-S1 AC6 and the "neither" case of P0-S1 AC4 for `--provider`.)*
 - **AC14:** Given `tests/conformance/`, then `ClaudeAgentProvider` over a fake `sdk_call` passes the same `provider_factory(scenario)` suite as `MockProvider`, and no SDK type appears in a response.
 - **AC15 (manual, by the user, recorded in the PR; never in CI):** Given `ANTHROPIC_API_KEY=invalid`, when `python -m review_bot Assignment/sample_diff.txt` runs, then it exits 8 with exactly one stderr line.
 
@@ -38,7 +38,14 @@ Same seam as [P0-S2](p0-s2-claude-review.md#interfaces); exit codes in [design.m
 ## Out of scope
 - Any retry, backoff or fallback in our code (fallback is Phase 4).
 - Prompt-injection evals (Phase 1).
+- A way to see the CLI's stderr, such as a debug flag: deferred to Phase 1's audit log, pending the user's decision.
 
 ## Notes
 - S3 AC4 applies to AC6's warning: with stderr closed or failing, the warning is dropped, the review still returns its findings, and `main` exits by them. Add a test for this. Keep the safe stderr write outside `cli` so the provider doesn't import it.
 - Usage never affects the verdict: a missing, null or invalid count (non-integer, boolean or negative) counts as 0. Test that a successful result with bad usage still returns its findings.
+- **AC1 guidance:** `CLIConnectionError` is the only SDK text shown. Every raise site in SDK 0.2.178 holds the SDK's own guidance plus OS errors or paths, never the CLI's output, and `write_diagnostic` escapes it; an SDK upgrade must recheck this. `CLINotFoundError` uses fixed text, because the SDK's names options that apply only to its own API.
+- **Safe stderr write:** moved with the stdout write to a new module, `console`.
+- **Reading after a failed result:** only a successful result stops the read (AC6), so a failed result followed by a successful one returns the findings and warns, naming the failed result's category. The reverse case, a stream that hangs after a failed result, waits for the deadline and then reports the failed result.
+- **`TimeoutError`:** any one reaching `review` counts as the deadline passing, even if the stream raised it itself. The SDK turns its own timeouts into other exceptions.
+- **AC15:** run by the main session while the user was away, not by the user: exited 8 with exactly one stderr line.
+- **SDK upgrades:** a test pins the version and tells the upgrader to re-audit the `CLIConnectionError` raise sites and the mapping.

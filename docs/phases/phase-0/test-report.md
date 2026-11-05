@@ -414,3 +414,211 @@ None of these blocks the slice.
 2. **`ac9_conformance_runs_without_claude_or_a_key` can only fail if the guard in `tests/conftest.py` breaks.** AC9 is really a property of the run, and P0-S1's `ac16_*` tests, including a control that the filter removes a directory holding `claude`, already prove the guard. This test only shows that it reaches `tests/conformance/`. `claude` is on this machine's real `PATH`, so the guard is doing real work here.
 3. **Ctrl+C.** A `KeyboardInterrupt` raised by a provider is tested, standing in for Ctrl+C during the review. A real SIGINT isn't sent, and an interrupt outside the review isn't covered, because the ruling only names the review.
 4. **Eval cases** still aren't in place, as in P0-S1.
+
+## P0-S4: Get clear, specific errors from Claude, with Claude as the default
+
+Spec: [p0-s4-claude-errors.md](slices/p0-s4-claude-errors.md).
+
+**Status: every criterion passes on Windows on the uncommitted working tree, after review round 1 of the tests. AC15 is manual, and was run by the main session. The whole suite gave 945 passed, 12 skipped, 100% coverage. The 12 skips are `/dev/full` cases, 2 of them new, pending their first pytest run in CI (gap 1).**
+
+The first tests were written from the spec, the design's interfaces and the installed SDK. `src/` was read only after they existed, to place the injected bugs below. One assertion changed afterwards, and it got stricter: see "Can the tests fail?". The round-1 changes came from the reviewer's findings and the spec's updated AC5, AC7 and AC13, and `src/` had been read by then.
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `ruff format --check .` | Pass |
+| `ruff check .` | Pass |
+| `mypy` (strict, `src` and `.claude/hooks`) | Pass |
+| `pytest --cov`, whole suite | 945 passed, 12 skipped, 100% coverage, 146 s, on the final tests |
+| P0-S4 tests with `tests/conformance` | 298 passed, 2 skipped, 96% coverage, 59 s, before round 1. Not re-measured as a group, to save memory: after round 1, `map` gave 212 passed, `msg` 50 and `tests/conformance` 29, and the `real` tests passed in the whole-suite run |
+| `pre-commit run --all-files`, `pip-audit` | By the main session, not the tester |
+
+The whole-suite run also confirms the handover from P0-S3: `tests/conformance/conftest.py` imports `fake_sdk`, and collection works.
+
+### Criteria
+
+Test names are shown without the `test_p0_s4_` prefix. Files are in `tests/integration/`: `map` is `test_p0_s4_error_mapping.py`, `msg` is `test_p0_s4_messages.py`, `real` is `test_p0_s4_real_sdk.py`, and `real` tests run the real `query` and transport against a fake CLI in a child process, with no provider flag. The count is collected cases.
+
+| AC | File | Tests | Cases | Result |
+|---|---|---|---|---|
+| AC1 | `map`, `real` | `ac1_raised_sdk_error_maps_to_its_category`, `ac1_connection_error_keeps_the_sdks_guidance`, `ac1_kept_guidance_is_still_one_clean_line`, `ac1_subclass_maps_before_its_parent`, `ac1_cli_crash_exits_12_with_one_line`, `ac1_sdk_version_is_the_audited_one` | 15 | Pass; see designer point 1 |
+| AC2 | `map` | `ac2_status_decides_the_category` (16 statuses, both routes), `ac2_no_status_falls_back_to_the_terminal_reason`, `ac2_a_status_beats_the_terminal_reason`, `ac2_status_that_is_not_an_integer_counts_as_no_status`, `ac2_error_result_is_never_parsed_as_findings` | 54 | Pass |
+| AC3 | `map` | `ac3_refusal_stop_reason_is_a_refusal`, `ac3_refusal_with_a_status_is_still_a_refusal` (fakes only, as the spec says) | 12 | Pass |
+| AC4 | `map` | `ac4_assistant_error_then_no_successful_result_maps` (7 values, 5 endings), `ac4_billing_error_message_names_billing`, `ac4_unrecognised_error_message_names_the_value`, `ac4_named_value_is_still_one_clean_line` | 38 | Pass |
+| AC5 | `map`, `real` | `ac5_auth_signal_wins_over_result_and_exception`, `ac5_rate_limit_signal_wins_over_a_500_result_and_exception`, `ac5_result_status_wins_over_a_later_process_error`, `ac5_result_message_wins_over_any_later_exception`, `ac5_assistant_error_wins_when_the_others_disagree`, `ac5_earliest_signal_wins_in_arrival_order`, `ac5_result_401_then_the_clis_exit_exits_8_with_one_line`, `ac13_ac5_live_401_sequence_exits_8_with_one_line` | 14 | Pass |
+| AC6 | `map`, `real` | `ac6_successful_result_overrides_the_signal_and_warns` (7 values, non-empty and empty), `ac6_no_signal_gives_no_warning`, `ac6_named_signal_is_still_a_clean_warning`, `ac6_nothing_after_a_successful_result_is_read`, `ac6_review_returns_within_5s_when_the_stream_never_ends`, `ac6_main_exits_by_findings_when_the_stream_never_ends`, `ac6_deadline_during_close_still_returns_the_findings`, `ac6_earlier_signal_wins_over_prose`, `ac6_prose_alone_returns_13`, `ac6_success_then_the_clis_exit_still_delivers`, `ac6_signal_then_success_warns_and_delivers`, `ac6_prose_alone_exits_13_with_one_line`, `ac6_success_from_a_cli_that_never_exits_is_delivered_before_the_deadline`; `msg`: `ac6_warning_may_precede_the_error_line_when_stdout_fails` | 43 | Pass |
+| AC6 Notes | `map`, `msg`, `real` | `ac6_note_warning_with_stderr_lost_exits_by_findings_in_a_real_process` (closed, reader gone, `/dev/full`), `ac6_note_control_the_child_warns_when_stderr_works`, `ac6_note_warning_with_stderr_lost_still_delivers` (in process), `ac6_note_provider_does_not_import_cli`, `ac6_note_bad_usage_still_returns_the_findings`, `ac6_note_one_bad_count_leaves_the_other_alone`, `ac6_note_failed_result_then_a_successful_one_delivers_and_warns` | 37, 2 skipped | Pass on Windows; see gap 1 |
+| AC7 | `map` | `ac7_stream_with_no_result_message_is_permanent`, `ac7_non_sdk_class_stays_uncategorised_and_exits_14` (including the bare control-request timeout), `ac7_non_sdk_class_after_other_messages_exits_14`, `ac7_non_sdk_class_after_an_error_signal_keeps_the_signal`, `ac7_timeout_error_raised_by_the_stream_exits_11` | 10 | Pass |
+| AC8 | `map`, `real` | `ac8_deadline_with_no_signal_is_transient`, `ac8_deadline_with_no_signal_exits_11`, `ac8_deadline_after_an_auth_signal_reports_auth`, `ac8_deadline_after_an_auth_signal_exits_8`, `ac8_deadline_after_an_error_result_reports_that_result`, `ac8_deadline_variable_bounds_the_stream`, `ac8_stream_slower_than_a_short_deadline_would_allow_still_succeeds`, `ac8_cli_that_never_exits_hits_the_deadline_with_one_line` | 12 | Pass; the 5 seconds hold for the fake only |
+| AC9 | `msg`, `real` | `ac9_cli_not_found_says_what_to_do`, `ac9_missing_cli_exits_7_with_one_line` | 2 | Pass |
+| AC10 | `msg` | `ac10_auth_names_the_login_and_the_key` (assistant error, 401, 403, raised `ResultError`) | 4 | Pass; see designer point 2 |
+| AC11 | `msg`, `real` | `ac11_key_in_a_process_error_reaches_neither_stream`, `ac11_control_the_fake_error_really_holds_the_key`, `ac11_key_written_by_the_cli_reaches_neither_stream` | 5 | Pass; see designer point 1 |
+| AC12 | `msg`, `real` | `ac12_model_text_reaches_no_stream` (13 routes, including `str(ResultError)`, `ResultMessage.result`, `CLIJSONDecodeError` and `MessageParseError`), `ac12_message_does_not_use_the_text_of_either_class`, `ac12_other_sdk_text_reaches_no_stream` (`ClaudeSDKError`, `CLINotFoundError`), `ac12_connection_error_text_is_escaped`, `ac12_warning_on_a_successful_run_has_no_model_text`, `ac12_malformed_output_exits_12_without_its_text` | 21 | Pass |
+| AC13 | `msg`, `real` | `ac13_parse_args_selects_claude`, `ac13_build_provider_returns_claude_and_starts_no_subprocess`, `ac13_a_run_with_no_flags_reaches_claude_not_canned_findings`, `ac13_summary_of_a_default_run_names_claude`, `ac13_missing_diff_with_no_flags_stays_3`, `ac13_empty_diff_with_no_flags_stays_5`, `ac13_provider_variable_still_beats_the_default`, `ac13_provider_flag_still_beats_the_default`, `ac13_blank_variable_exits_2_and_names_it`, `ac13_blank_flag_exits_2_and_names_it` (each empty and whitespace), and every `real` failure test, which select no provider | 12, plus the `real` cases | Pass |
+| AC14 | `tests/conformance/` | The unchanged `test_p0_s3_ac8_*` suite with `[claude]` (12 cases); `ac14_mock_and_claude_are_both_in_the_suite`, `ac14_claude_factory_builds_the_claude_provider` | 14 | Pass |
+| AC15 | | Manual and never in CI. Run by the main session, not by the user as the criterion says, as the user was away: `ANTHROPIC_API_KEY=invalid python -m review_bot Assignment/sample_diff.txt` exited 8 with one line: `review-bot: error: auth: Claude rejected the credentials. Check the Claude Code login or ANTHROPIC_API_KEY, then try again.` The tester didn't run it and reports the main session's result | | Pass, manual |
+| AC16 | `map` | `ac16_sdk_call_is_made_exactly_once` (429 and 503, with and without a following `ResultError`, `--max-retries 5`) | 4 | Pass |
+
+### Failures
+
+None on the final code.
+
+**One failure during the run, fixed by the developer.** `ac1_connection_error_keeps_the_sdks_guidance` failed while the provider replaced `CLIConnectionError`'s text with fixed guidance, and a spec note added during this run said that was intended. That note contradicted AC1's "keeping the SDK's guidance", so the test stayed red. The developer then changed the code and the note, and the test passed without being edited. Designer point 1 covers what remains.
+
+### Tests changed in earlier slices
+
+**Retired, per the spec:**
+
+| Test | Why | Replaced by |
+|---|---|---|
+| `test_p0_s1_ac6_no_provider_selected_exits_2_and_names_the_flag` | P0-S4 AC13 | `ac13_parse_args_selects_claude`, `ac13_a_run_with_no_flags_reaches_claude_not_canned_findings` |
+| `test_p0_s1_ac6_no_provider_selected_never_falls_back_to_canned_findings` | P0-S4 AC13 | The same; both assert no canned output |
+| `test_p0_s1_ac6_empty_provider_variable_is_not_a_selection` | P0-S4 AC13 | `ac13_blank_variable_exits_2_and_names_it` |
+| `test_p0_s2_ac7_never_ending_stream_exits_14_within_5s` (2 cases) | P0-S4 AC8 | `ac8_deadline_with_no_signal_exits_11`, same two streams |
+| `test_p0_s2_ac7_deadline_variable_bounds_the_stream` | P0-S4 AC8 | `ac8_deadline_variable_bounds_the_stream`, expecting 11 |
+| `test_p0_s2_ac7_stream_slower_than_a_short_deadline_would_allow_still_succeeds` | P0-S4 AC8 | `ac8_stream_slower_than_a_short_deadline_would_allow_still_succeeds`, unchanged |
+| `test_p0_s2_ac13_raised_exception_exits_14_without_the_text[process_error]` | Now 12 | `ac11_key_in_a_process_error_reaches_neither_stream`, `ac12_model_text_reaches_no_stream[process_error]` |
+| `test_p0_s2_ac13_raised_exception_exits_14_without_the_text[connection_error]` | Now 11, and AC1 keeps the text | `ac1_raised_sdk_error_maps_to_its_category[connection_error]` |
+| `test_p0_s2_ac13_real_query_failure_leaves_only_our_one_line` (2 cases) | Now 12 | `ac1_cli_crash_exits_12_with_one_line`, `ac12_malformed_output_exits_12_without_its_text`, each early and late |
+| `test_p0_s2_ac13_error_result_exits_14_without_the_text` (4 cases) | Now 12 | `ac2_error_result_is_never_parsed_as_findings` |
+| `test_p0_s2_ac13_error_result_with_empty_findings_is_not_a_clean_review` | Now 12 | The same, `success_empty_findings` |
+| `test_p0_s2_ac13_error_result_with_no_result_text_exits_14` | Now 12 | The same, `success_no_result_text` |
+| `test_p0_s2_ac13_stream_with_no_result_message_exits_14` (2 cases) | Now 12 | `ac7_stream_with_no_result_message_is_permanent` |
+
+**The "neither" case of P0-S1 AC4 had no test to retire:** `SETTINGS_WITH_A_DEFAULT` already left out `--provider`. Only its comment changed.
+
+**Changed, not retired:** `test_p0_s2_ac6_a_failing_call_is_made_exactly_once` still asserts one call, the criterion it names. Its exit codes now follow P0-S4 AC1: 14 unexpected, 12 `ProcessError`, 11 `CLIConnectionError`. This wasn't on the retire list by name. It's the AC13 exit-14 expectation carried in another test.
+
+**Kept in `test_p0_s2_failures.py`, still exit 14:** `ac13_raised_exception...` (`exception`, `value_error`, `group`), `ac13_sdk_log_line_stays_off_stderr_in_a_real_process`, `ac13_exception_after_other_messages_exits_14`, and all of AC17. Docstrings in the three files say what moved. The real-`query` child and fake CLI moved to `test_p0_s4_real_sdk.py`, and the fake CLI now answers `initialize`, so messages reach the stream.
+
+**Added:** `result_message` takes any other `ResultMessage` field, and `error_result`, `raised_result_error` and `assistant_error` are new, all in `tests/fake_sdk.py`. Existing callers are unaffected. `tests/integration/p0_s4_support.py` holds the shared helpers, and `main_within_5s` moved there from the lockdown file.
+
+**Moved in round 1:** `run_process`, its launcher and the stream constants went from `test_p0_s3_stream_failures.py` to the new `tests/integration/stream_support.py`, so no test module imports from another. The P0-S3 assertions are unchanged. `tests/conformance/conftest.py` gained a `provider_factories` fixture, which replaces re-executing that file to read its dict.
+
+**S1 to S3 tests with no `--provider`, considered one by one. None needed changing:**
+
+| Test | Why it's unaffected |
+|---|---|
+| `test_p0_s1_ac4_variable_alone_sets_the_value[--provider]` | Sets the variable |
+| `test_p0_s1_ac4_provider_variable_selects_the_provider_for_a_real_run` | Sets the variable to `mock` |
+| `test_p0_s1_ac5_bad_provider_variable_returns_2_and_names_it` | Sets it to `nope`, exits 2 before any provider |
+| The `test_p0_s2_ac4_*` tests calling `parse_args("change.diff")` | Read other fields only |
+| `test_p0_s2_ac9_provider_variable_also_selects_claude` | Sets the variable |
+| `test_p0_s3_ac5_missing_argument_starts_with_the_error_line` (`bot.run()`) | No path, exits 2 |
+
+All child processes in S1 to S3 pass `--provider mock` or inject a provider, so none could reach a real CLI by the new default. The `real` tests here select no provider on purpose, and replace the CLI command first.
+
+### Real SDK path
+
+The `real` tests cover what fakes can't, and all ask for exactly one stderr line where a failure occurs:
+
+- **The 401 sequence:** assistant error, result with status 401, exit 1, so the SDK itself raises `ResultError`. Exits 8.
+- **A CLI crash:** before `initialize` is answered and after the prompt. Exits 12, without the SDK's `Fatal error in message reader` log line.
+- **Malformed JSON at both points, a missing CLI, a success followed by a crash or by a CLI that never exits, a signal followed by success, prose, and a CLI that never answers under `--deadline-s 1`.** The last exits 11.
+
+Real timing on this machine: a success from a CLI that never exits took about 7 s with `--deadline-s 30`, and `--deadline-s 1` took about 8 s, each including interpreter start-up. This fits [design.md section 4](design.md#4-open-questions). The test asserts under 30 s, not 5 s, because AC6's 5 seconds hold for the fake only.
+
+### Can the tests fail?
+
+Each bug was applied in memory at import, with `src/` untouched, against `map`, `msg` and `tests/conformance` (279 cases, about 8 s a run). 35 of 36 were caught by a test of the intended criterion, one of them only after the tightening below. Temporary files were in `tests/` and removed by name.
+
+| Injected bug | Failing cases | Caught by AC |
+|---|---|---|
+| Reading continues after a successful result | 41 | 6, 8, 13, and S3 AC8 |
+| Stream not closed on return | 4 | 6 |
+| No deadline | 10 | 8 |
+| Latest signal wins, not earliest | 18 | 4, 5, 6, 12 |
+| Exception beats signal | 12 | 4, 5, 16 |
+| Deadline beats signal | 5 | 8 |
+| No warning | 16 | 6 |
+| Warning written as an error line | 16 | 6 |
+| Only 500, 503, 529 count as 5xx | 4 | 2 |
+| 408 not transient | 2 | 2 |
+| 403 not auth | 3 | 2, 10 |
+| A boolean status counted as a status | 1 | 2, after tightening; see below |
+| `terminal_reason="api_error"` ignored | 4 | 2 |
+| Terminal reason beats status | 10 | 2, 5, and S3 AC8 |
+| Refusal only when `is_error` is false | 4 | 3 |
+| Refusal ignored | 11 | 3, 5, 12, and S3 AC8 |
+| `is_error` ignored | 51 | 2, 5, 6, 8, 10, 12, 16, and S3 AC8 |
+| Billing message replaced by the generic one | 1 | 4 |
+| Unrecognised value not named | 1 | 4 |
+| `CLINotFoundError` treated as a connection error | 5 | 1, 9, and S3 AC8 |
+| `ResultError` treated as a plain `ProcessError` | 15 | 1, 2, 10, 12 |
+| Connection guidance dropped | 1 | 1 |
+| SDK text in the permanent message | 8 | 11, 12 |
+| `ResultMessage.result` in the message | 8 | 2, 10, 12 |
+| Unexpected exception categorised | 6 | 7, 13 |
+| Stream with no result treated as no findings | 3 | 7 |
+| `sdk_call` called twice | 4 | 16 |
+| A bad usage count raising | 19 | 6 notes, and S3 AC8 |
+| Non-mapping usage raising | 48 | 6 notes, 8, 12, 13 |
+| The SDK's usage dict in the response | 59 | 6, 8, 12, 13, and S3 AC8 (AC14's "no SDK type") |
+| `PATH`, the key, or the login missing from a message (3 bugs) | 1, 4, 4 | 9, 10, 10 |
+| A stderr failure raising | 8 | 6 notes |
+| Default provider `mock` | 4 | 13 |
+| **Not caught:** `billing_error` falling through to the unrecognised branch | 0 | Its message still names `billing_error` and it is still `permanent`, so it meets the criterion. The row above covers a message that really loses the word |
+
+**One test tightened as a result.** The first version of `ac2_status_that_is_not_an_integer_counts_as_no_status` couldn't see a boolean counted as a status, because both outcomes gave `permanent`. It now sends `terminal_reason="api_error"`, where the two differ.
+
+**In child processes,** three more were applied through a temporary `sitecustomize.py`:
+
+| Injected bug | Failing cases | Caught by |
+|---|---|---|
+| The `NullHandler` on the SDK's logger ignored | 4 of 9 | `ac1_cli_crash...`, `ac12_malformed_output...`, which see the SDK's log line |
+| A failed stderr not dropped (exit 120) | 2 of 9 | `ac6_note_warning_with_stderr_lost..._in_a_real_process`, `reader_gone` only (`found` and `none`). The two `closed` cases still exit by findings under this bug, so they don't detect it |
+| Default provider `mock` | 5 of 9 | `ac13_ac5_live_401...`, `ac1_cli_crash...`, `ac12_malformed_output...` |
+
+The `real` run used a subset of its tests. The full `real` file passes on the correct code, but the success, deadline and prose cases had no bug applied.
+
+**Round 1 additions.** Each bug was applied in memory the same way, against only the new test it targets. All were caught. These runs didn't cover `tests/conformance`, so the `provider_factories` tests had no bug applied, and neither did the `run_process` move:
+
+| Injected bug | Failing cases | Caught by |
+|---|---|---|
+| A blank variable treated as unset | 2 of 2 | `ac13_blank_variable_exits_2_and_names_it` |
+| A blank flag treated as absent | 2 of 2 | `ac13_blank_flag_exits_2_and_names_it` |
+| `claude_agent_sdk.__version__` moved to `0.2.179` | 1 of 1 | `ac1_sdk_version_is_the_audited_one` |
+| Latest signal wins, not earliest | 1 of 1 | `ac5_earliest_signal_wins_in_arrival_order` |
+| A `TimeoutError` not treated as the deadline | 1 of 1 | `ac7_timeout_error_raised_by_the_stream_exits_11` |
+| A raised exception beats a delivered result | 2 of 2 | `ac6_deadline_during_close_still_returns_the_findings` |
+| Closing the stream outside the deadline | 2 of 2 | The same, by its 5-second bound |
+| A status beats a refusal | 4 of 4 | `ac3_refusal_with_a_status_is_still_a_refusal` |
+| `CLINotFoundError`'s text shown | 1 of 2 | `ac12_other_sdk_text_reaches_no_stream[not_found]`; the other case is the other class |
+| `ClaudeSDKError`'s text shown | 1 of 2 | `ac12_other_sdk_text_reaches_no_stream[other_sdk_error]`; the same |
+| Stderr text not escaped | 1 of 1 | `ac12_connection_error_text_is_escaped` |
+
+### Coverage
+
+The whole suite covers 100% of statements and branches. The P0-S4 tests with `tests/conformance` alone reached 96% before round 1, which only added tests:
+
+| Module | Coverage | Missing | Note |
+|---|---|---|---|
+| `__main__.py` | 0% | 3-5 | Only run through subprocesses, which aren't measured |
+| `cli.py` | 91% | 71, 79, 110, 148-152, 162 | Mostly S1 and S3 |
+| `diff_input.py` | 75% | 34-35, 40, 47-48 | S1 |
+| `providers/claude_agent.py` | 99% | 265 | `_call_sdk`'s yield, run only by child processes |
+
+`console.py`, `settings.py` and the rest are at 100%. The whole suite now takes about 145 s, up from about 90 s, because the `real` tests start interpreters and two wait on the SDK's close.
+
+### For the designer
+
+None of these blocks the slice unless the designer says so. Review round 1 settled the earlier points on AC5's order, the `TimeoutError` carve-out in AC7, an empty provider variable and a refusal with a status: each is now pinned by a test.
+
+1. **A key in a `CLIConnectionError`.** That text reaches stderr, escaped, because AC1 keeps it. AC11 names `ProcessError` only, so a key there isn't tested and would be shown. The spec's note says every raise site in SDK 0.2.178 holds only the SDK's guidance plus OS errors or paths. `ac1_sdk_version_is_the_audited_one` now fails on any SDK move and tells the upgrader to re-audit, but it pins the version only and doesn't check the text. Two assistant errors in a row are also unpinned: the code keeps the first.
+2. **AC10, "given `auth`".** Tested through `ClaudeAgentProvider`. `MockProvider(error=ProviderError(AUTH, "detail"))` prints `detail`, as P0-S3 AC1 requires, so the message belongs to the provider, not `main`. "Claude Code login" is checked as `Claude Code` plus `login` or `log in`.
+3. **Beyond the criteria's text**, all passing:
+   - AC2: a string or boolean status counts as no status.
+   - AC2: 402, 418, 499, 502, 599 and 600, from "any other" and "any 5xx".
+   - AC4 and AC6: a hostile signal value still gives clean output.
+   - AC8: a failed result followed by a hang reports that result, as the note says.
+   - AC6: a failed result followed by a success delivers and warns, as the note says.
+
+### Gaps
+
+1. **`/dev/full`:** the 2 new real-process cases skip on Windows, pending their first run in CI, like the 10 from P0-S3. A closed stderr doesn't detect an undropped stream, as the table above shows, so `reader_gone` is the only case detecting it here.
+2. **The real path uses a fake CLI.** Its messages follow the SDK's parser and were written from reading it, not from a capture. AC15's manual run saw the real exit 8 and one line. The tests replace two private transport methods, `_build_command` and `_find_cli`; a renamed `_build_command` fails loudly.
+3. **`ac13_a_run_with_no_flags_reaches_claude_not_canned_findings` expects 14,** because the guard's own exception reaches `main`. Its real assertion is the guard's call count.
+4. **AC15 can't be automated**, by design.
+5. **Real grandchild processes** on close remain an open question in [design.md section 4](design.md#4-open-questions). The fake CLI has none.
+6. **Eval cases** still aren't in place, and prompt-injection evals are Phase 1.

@@ -10,12 +10,13 @@ Make the tool people rely on actually work and fail safely, with the model behin
 
 ### Module map
 
-Under `src/review_bot/`. `findings`, `prompt` and `render` are pure. `cli`, `settings`, `diff_input` and `providers` touch the outside world; `review` orchestrates the I/O through injected collaborators.
+Under `src/review_bot/`. `findings`, `prompt` and `render` are pure. `cli`, `console`, `settings`, `diff_input` and `providers` touch the outside world; `review` orchestrates the I/O through injected collaborators.
 
 | Module | Responsibility | Key types |
 |---|---|---|
 | `__main__` | `python -m review_bot`, delegates to `cli.main` | |
 | `cli` | Arguments, one `asyncio.run`, printing, error → exit code | `main`, `parse_args`, `build_provider` |
+| `console` | Safe stdout and stderr writes: escaped, one line, and a failed stream is dropped | `write_output`, `write_diagnostic` |
 | `settings` | Environment → typed settings; read once | `Settings` |
 | `errors` | Base exception, input errors, provider errors | `ReviewBotError`, `ProviderError`, `ErrorCategory` |
 | `diff_input` | Read and gate the diff file | `load_diff` |
@@ -162,7 +163,7 @@ A public contract: codes are never renumbered or reused, and new ones are append
 | 8 | Authentication failed (`auth`) | |
 | 9 | Rate limited (`rate_limit`) | After the CLI's retries |
 | 10 | Model refused (`refusal`) | |
-| 11 | Temporary API or connection failure (`transient`) | After the CLI's retries, or deadline passed |
+| 11 | Temporary API or connection failure (`transient`) | After the CLI's retries, a connection failure, or deadline passed |
 | 12 | Permanent API failure (`permanent`) | Non-retryable API error, billing, CLI crash |
 | 13 | Invalid model output (`invalid_output`) | Not bare JSON, or fails the `Finding` schema |
 | 14 | Internal error | Any unexpected exception |
@@ -173,7 +174,7 @@ Precedence: CLI flag, then environment variable, then default. The bot never rea
 
 | Flag | Environment variable | Default |
 |---|---|---|
-| `--provider` | `REVIEW_BOT_PROVIDER` | none until P0-S4, then `claude` |
+| `--provider` | `REVIEW_BOT_PROVIDER` | `claude` |
 | `--model` | `REVIEW_BOT_MODEL` | `claude-opus-5-5` |
 | `--threshold` | `REVIEW_BOT_THRESHOLD` | `low` |
 | `--max-diff-bytes` | `REVIEW_BOT_MAX_DIFF_BYTES` | `400000` |
@@ -203,7 +204,7 @@ Before S1, as process and not a slice: **PR `chore/p0-baseline`** copies `Assign
 
 ## 4. Open questions
 
-- **For the user, P0-S4:** the callback discards the CLI's stderr, so a failed call has no diagnostics at all; should P0-S4 add a way to see it, such as a debug flag writing it safely?
+- **For the user, deferred to Phase 1's audit log:** the callback discards the CLI's stderr, so a failed call has no CLI diagnostics. Phase 0 ships without a way to see it; the user can overrule this.
 
 ### Remaining SDK unknowns
 
@@ -219,4 +220,4 @@ Facts checked against `claude-agent-sdk` 0.2.178 (bundled CLI 2.1.318) are built
 Observed with the real SDK 0.2.178 against a fake child process, with no model call:
 
 - **Closing `query`:** it doesn't reach the generator owning the subprocess, because `query()` is a bare `async for`. On early exit the child is reaped at `asyncio.run` shutdown, not when `review` returns.
-- **`--deadline-s` isn't a hard bound:** termination added about 5 s when the child ignored EOF, and the SDK documents a worst case of about 20 s. P0-S2 AC7's "within 5 seconds" holds for the fake only.
+- **`--deadline-s` isn't a hard bound:** termination added about 5 s when the child ignored EOF, and the SDK documents a worst case of about 20 s. P0-S4 AC8's "within 5 seconds" holds for the fake only.

@@ -7,7 +7,7 @@ from review_bot.settings import Settings, load_settings
 
 def test_load_settings_with_nothing_set_uses_defaults() -> None:
     assert load_settings({}) == Settings(
-        provider=None, model="claude-opus-5-5", threshold=Severity.LOW, max_diff_bytes=400_000
+        provider="claude", model="claude-opus-5-5", threshold=Severity.LOW, max_diff_bytes=400_000
     )
 
 

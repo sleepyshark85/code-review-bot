@@ -1,11 +1,11 @@
-"""P0-S2 AC1 to AC8: the options Claude is called with, and the limits on the call."""
+"""P0-S2 AC1 to AC8: the options Claude is called with, and the limits on the call.
 
-import threading
-import time
+P0-S4 AC8 replaced AC7: see `test_p0_s4_error_mapping.py`.
+"""
 
 import pytest
-from claude_agent_sdk import CLIConnectionError, ProcessError, SystemMessage
-from fake_sdk import FakeSdk, findings_json, hang, pause, result_message, succeeds
+from claude_agent_sdk import CLIConnectionError, ProcessError
+from fake_sdk import FakeSdk, findings_json, result_message, succeeds
 
 from review_bot import cli
 from review_bot.providers.base import ReviewRequest
@@ -24,22 +24,6 @@ SETTING_IDS = [row[0] for row in SETTINGS]
 
 async def noise(options):
     options.stderr(NOISE)
-
-
-def main_within_5s(claude_review, fake, *flags):
-    """Run `main` on a thread, so one that never returns fails the test instead of hanging it."""
-    outcome = []
-    thread = threading.Thread(
-        target=lambda: outcome.append(claude_review(fake, *flags)), daemon=True
-    )
-    started = time.monotonic()
-    thread.start()
-    thread.join(5)
-    elapsed = time.monotonic() - started
-
-    assert not thread.is_alive(), "main was still running after 5 seconds"
-    assert outcome, "main raised instead of returning"
-    return outcome[0], elapsed
 
 
 @pytest.mark.parametrize(
@@ -208,53 +192,22 @@ def test_p0_s2_ac5_bad_variable_returns_2_and_names_it(
 
 
 @pytest.mark.parametrize(
-    "error",
-    [RuntimeError("boom"), ProcessError("boom", exit_code=1), CLIConnectionError("boom")],
+    ("error", "code"),
+    [
+        (RuntimeError("boom"), 14),
+        (ProcessError("boom", exit_code=1), 12),
+        (CLIConnectionError("boom"), 11),
+    ],
     ids=["unexpected", "process_error", "connection_error"],
 )
-def test_p0_s2_ac6_a_failing_call_is_made_exactly_once(claude_review, error):
+def test_p0_s2_ac6_a_failing_call_is_made_exactly_once(claude_review, error, code):
+    # The codes for the two SDK errors are P0-S4 AC1's.
     fake = FakeSdk(error)
 
     run = claude_review(fake, "--max-retries", "5")
 
-    assert run.exit_code == 14, run.stderr
+    assert run.exit_code == code, run.stderr
     assert len(fake.calls) == 1
-
-
-@pytest.mark.parametrize(
-    "fake",
-    [
-        FakeSdk(hang),
-        FakeSdk(pause(0.01), SystemMessage(subtype="status", data={}), forever=True),
-    ],
-    ids=["silent", "never_stops_sending"],
-)
-def test_p0_s2_ac7_never_ending_stream_exits_14_within_5s(claude_review, fake):
-    run, elapsed = main_within_5s(claude_review, fake, "--deadline-s", "0.1")
-
-    assert run.exit_code == 14, run.stderr
-    assert fake.started
-    assert fake.closed
-    assert elapsed >= 0.09, "main returned before the deadline could have passed"
-    assert run.stdout == ""
-
-
-def test_p0_s2_ac7_deadline_variable_bounds_the_stream(claude_review, monkeypatch):
-    monkeypatch.setenv("REVIEW_BOT_DEADLINE_S", "0.1")
-    fake = FakeSdk(hang)
-
-    run, _ = main_within_5s(claude_review, fake)
-
-    assert run.exit_code == 14, run.stderr
-    assert fake.closed
-
-
-def test_p0_s2_ac7_stream_slower_than_a_short_deadline_would_allow_still_succeeds(claude_review):
-    fake = FakeSdk(pause(0.3), result_message(findings_json()))
-
-    run, _ = main_within_5s(claude_review, fake, "--deadline-s", "4")
-
-    assert run.exit_code == 0, run.stderr
 
 
 def test_p0_s2_ac8_stderr_callback_is_set_for_any_review(claude_review):

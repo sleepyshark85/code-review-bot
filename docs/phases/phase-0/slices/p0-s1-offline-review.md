@@ -13,9 +13,9 @@ Unless a criterion says otherwise, runs select `--provider mock`.
 - **AC1:** Given `Assignment/sample_diff.txt`, when `python -m review_bot Assignment/sample_diff.txt --provider mock` runs, then it exits 1, stdout is exactly the canned finding line below, and stderr warns that `MockProvider` output is canned and not a real review.
 - **AC2:** Given the same command with `--threshold critical`, then it exits 0 and stdout is exactly `No findings at or above critical.`
 - **AC3:** Given a diff containing `SENTINEL-DIFF-TEXT`, when a review succeeds, then stderr contains `provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0`, and the sentinel appears in neither stdout nor stderr.
-- **AC4:** Parametrised over `--provider`, `--model`, `--threshold` and `--max-diff-bytes` ([settings](../design.md#settings)): given only the variable, `parse_args` uses its value; given also the flag, the flag's; given neither, the table's default (`--provider`: see AC6). Given `--model flag-model`, the recorded request has `model="flag-model"`.
+- **AC4:** Parametrised over `--provider`, `--model`, `--threshold` and `--max-diff-bytes` ([settings](../design.md#settings)): given only the variable, `parse_args` uses its value; given also the flag, the flag's; given neither, the table's default (`--provider`: see P0-S4 AC13). Given `--model flag-model`, the recorded request has `model="flag-model"`.
 - **AC5:** Given each of: no path; an unknown flag; `--provider nope`; `--threshold urgent`; `--max-diff-bytes 0` or `100000001`; `REVIEW_BOT_MAX_DIFF_BYTES=abc`; `--model=--dangerous`, then `main` returns 2 and stderr names the offending flag or variable.
-- **AC6:** Given no provider selected, then it exits 2 and stderr names `--provider mock`. It never silently falls back to canned findings. *(Replaced by P0-S4 AC13.)*
+- **AC6:** Removed: replaced by P0-S4 AC13.
 
 **Input errors.** In AC7 to AC10 the provider is never called, and stderr has neither the mock warning nor the AC3 summary, which appear only after a successful review.
 - **AC7:** Given a path that doesn't exist, then it exits 3 and stderr contains that path.

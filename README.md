@@ -2,18 +2,18 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 0 in progress · **Owner:** _TBD (see [Ownership](#ownership))_ · **Last updated:** 2026-11-05
+> **Status:** Phase 0 complete · Phase 1 next · **Owner:** _TBD (see [Ownership](#ownership))_ · **Last updated:** 2026-11-05
 
 ## Usage
 
 ```
 uv sync
-uv run python -m review_bot <diff> --provider claude    # a real review
-uv run python -m review_bot <diff> --provider mock      # offline; canned output, not a real review
+uv run python -m review_bot <diff>                    # a real review with Claude
+uv run python -m review_bot <diff> --provider mock    # offline; canned output, not a real review
 ```
 
-- **`--provider claude`** uses your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
-- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `13` invalid model output, `14` internal error or any other failed model call (specific codes arrive in [P0-S4](docs/phases/phase-0/slices/p0-s4-claude-errors.md)). See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Authentication:** your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error. See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
 - **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state
@@ -88,7 +88,7 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 - **Trade-off:** the SDK drives the Claude Code CLI as a subprocess, so runs start more slowly, and its wheels are about 150 MB because they appear to bundle the CLI. The mock provider keeps tests and evals from ever launching it.
 - **Exit codes:** `0` no findings at or above threshold, `1` findings found, `≥ 2` a distinct code per tool error.
 - **Diff as data:** wrapped in delimiters and declared untrusted in the system prompt.
-- **Seam:** an `LLMProvider` interface that isn't tied to Claude. A review request in → validated `Finding`s and token usage out, or an error with a category (`auth`, `rate_limit`, `refusal`, `transient`, `permanent`, `unavailable`, `invalid_output`); no SDK types leave the provider. `ClaudeAgentProvider` and `MockProvider` both implement it, and a shared conformance suite every provider must pass runs offline against the mock.
+- **Seam:** an `LLMProvider` interface that isn't tied to Claude. A review request in → validated `Finding`s and token usage out, or an error with a category (`auth`, `rate_limit`, `refusal`, `transient`, `permanent`, `unavailable`, `invalid_output`); no SDK types leave the provider. `ClaudeAgentProvider` and `MockProvider` both implement it, and a shared conformance suite every provider must pass runs offline against the mock and against Claude over a fake.
 
 **Gate:** no OpenAI dependency; no secrets in source; every failure has a clear message and its own exit code; tests pass offline. **Autonomy:** suggest.
 

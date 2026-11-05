@@ -1,6 +1,8 @@
 """P0-S2 AC13 and AC17: these failures exit 14, cleanly, and never as 0 or 1.
 
-P0-S3 AC3 replaced AC14: see `test_p0_s3_exit_codes.py`.
+P0-S3 AC3 replaced AC14: see `test_p0_s3_exit_codes.py`. P0-S4 AC1 to AC7 replaced AC13 for every
+failure it now classifies: see `test_p0_s4_error_mapping.py` and `test_p0_s4_real_sdk.py`. What
+stays here is what still exits 14.
 """
 
 import asyncio
@@ -10,8 +12,8 @@ import subprocess
 import sys
 
 import pytest
-from claude_agent_sdk import AssistantMessage, CLIConnectionError, ProcessError, TextBlock
-from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
+from claude_agent_sdk import AssistantMessage, TextBlock
+from fake_sdk import FakeSdk
 from repo_paths import REPO_ROOT
 
 from review_bot import cli
@@ -20,7 +22,6 @@ from review_bot.providers.base import ReviewResponse, TokenUsage
 pytestmark = pytest.mark.integration
 
 SENTINEL = "SENTINEL"
-PARSEABLE_WITH_SENTINEL = findings_json(HIGH_FINDING | {"rationale": SENTINEL})
 
 # Python and the CRT treat fd 1 closed by a parent like `>&-`, and `os.close` also clears the
 # Windows standard handle. `cmd` has no such redirection, and this works on both platforms.
@@ -41,36 +42,6 @@ class Provider:
         raise RuntimeError("boom")
 
 sys.exit(cli.main(sys.argv[1:], provider=Provider()))
-"""
-
-# The real default `sdk_call`, `query` and transport, against a real child process. The command is
-# replaced rather than set through `cli_path` because the SDK refuses a batch file on Windows, so
-# a script couldn't be used there. `getattr` first: a plain assignment to a renamed method would
-# silently leave the real CLI in place.
-REAL_QUERY_CHILD = """
-import sys
-from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport as Transport
-from review_bot import cli
-
-fake_cli, marker, mode, diff = sys.argv[1:]
-getattr(Transport, "_build_command")
-Transport._build_command = lambda self: [sys.executable, fake_cli, marker, mode]
-Transport._find_cli = lambda self: sys.executable
-sys.exit(cli.main([diff, "--provider", "claude"]))
-"""
-
-# Reads the SDK's first request before acting, so its write can't race the exit.
-FAKE_CLI = """
-import pathlib, sys
-
-marker, mode = sys.argv[1:]
-sys.stdin.readline()
-pathlib.Path(marker).write_text("ran", encoding="utf-8")
-sys.stderr.write("SENTINEL from the CLI\\n")
-if mode == "malformed_json":
-    print('{"type": SENTINEL is not JSON', flush=True)
-    sys.exit(0)
-sys.exit(3)
 """
 
 
@@ -116,11 +87,9 @@ class ReturningProvider:
     [
         Exception(SENTINEL),
         ValueError(SENTINEL),
-        ProcessError(SENTINEL, exit_code=1, stderr=SENTINEL),
-        CLIConnectionError(SENTINEL),
         ExceptionGroup(SENTINEL, [ValueError(SENTINEL)]),
     ],
-    ids=["exception", "value_error", "process_error", "connection_error", "group"],
+    ids=["exception", "value_error", "group"],
 )
 def test_p0_s2_ac13_raised_exception_exits_14_without_the_text(claude_review, error):
     run = claude_review(FakeSdk(error))
@@ -146,76 +115,12 @@ def test_p0_s2_ac13_sdk_log_line_stays_off_stderr_in_a_real_process(tmp_path):
     assert len(completed.stderr.splitlines()) == 1, completed.stderr
 
 
-@pytest.mark.parametrize("mode", ["malformed_json", "non_zero_exit"])
-def test_p0_s2_ac13_real_query_failure_leaves_only_our_one_line(tmp_path, monkeypatch, mode):
-    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
-    fake_cli = tmp_path / "fake_cli.py"
-    fake_cli.write_text(FAKE_CLI, encoding="utf-8")
-    marker = tmp_path / "fake_cli_ran"
-    diff = tmp_path / "change.diff"
-    diff.write_text("+x\n", encoding="utf-8")
-
-    completed = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
-        [sys.executable, "-c", REAL_QUERY_CHILD, str(fake_cli), str(marker), mode, str(diff)],
-        capture_output=True,
-        encoding="utf-8",
-        timeout=60,
-        check=False,
-    )
-
-    assert marker.exists(), completed.stderr
-    assert completed.returncode == 14, completed.stderr
-    assert completed.stdout == ""
-    assert SENTINEL not in completed.stderr
-    assert len(completed.stderr.splitlines()) == 1, completed.stderr
-
-
 def test_p0_s2_ac13_exception_after_other_messages_exits_14(claude_review):
     fake = FakeSdk(
         AssistantMessage(content=[TextBlock(text=SENTINEL)], model="m"), RuntimeError(SENTINEL)
     )
 
     assert_failed_cleanly(claude_review(fake))
-
-
-@pytest.mark.parametrize(
-    ("subtype", "result"),
-    [
-        ("success", PARSEABLE_WITH_SENTINEL),
-        ("success", f"{SENTINEL} API error"),
-        ("error_during_execution", PARSEABLE_WITH_SENTINEL),
-        ("error_max_turns", f"{SENTINEL} API error"),
-    ],
-    ids=["success_parseable", "success_prose", "error_parseable", "error_prose"],
-)
-def test_p0_s2_ac13_error_result_exits_14_without_the_text(claude_review, subtype, result):
-    fake = FakeSdk(result_message(result, is_error=True, subtype=subtype))
-
-    assert_failed_cleanly(claude_review(fake))
-
-
-def test_p0_s2_ac13_error_result_with_empty_findings_is_not_a_clean_review(claude_review):
-    fake = FakeSdk(result_message(findings_json(), is_error=True))
-
-    assert_failed_cleanly(claude_review(fake))
-
-
-def test_p0_s2_ac13_error_result_with_no_result_text_exits_14(claude_review):
-    fake = FakeSdk(result_message(None, is_error=True, errors=[SENTINEL]))
-
-    assert_failed_cleanly(claude_review(fake))
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        (),
-        (AssistantMessage(content=[TextBlock(text=PARSEABLE_WITH_SENTINEL)], model="m"),),
-    ],
-    ids=["empty_stream", "valid_json_only_in_an_assistant_message"],
-)
-def test_p0_s2_ac13_stream_with_no_result_message_exits_14(claude_review, script):
-    assert_failed_cleanly(claude_review(FakeSdk(*script)))
 
 
 @pytest.mark.parametrize(

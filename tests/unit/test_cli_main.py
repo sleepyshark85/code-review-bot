@@ -257,7 +257,7 @@ def test_main_with_stderr_absent_keeps_the_input_error_code(
     assert main([str(tmp_path / "missing.diff"), "--provider", "mock"]) == 3
 
 
-def test_main_with_injected_provider_needs_no_selection(
+def test_main_with_injected_provider_uses_it_instead_of_building_one(
     diff_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     provider = MockProvider(findings=[])

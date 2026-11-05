@@ -1,13 +1,23 @@
 import asyncio
 import json
+import sys
 from collections.abc import AsyncGenerator
-from typing import cast
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ProcessError,
+    ResultMessage,
+)
 
+from review_bot.cli import main
+from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.providers.base import ReviewRequest, TokenUsage
-from review_bot.providers.claude_agent import ClaudeAgentProvider
+from review_bot.providers.claude_agent import ClaudeAgentProvider, SdkCall
 from review_bot.settings import Settings
 
 REQUEST = ReviewRequest(system_prompt="S", user_prompt="U", model="M")
@@ -98,10 +108,127 @@ async def test_default_sdk_call_past_the_deadline_closes_query(
     fake_query = FakeQuery()
     monkeypatch.setattr("review_bot.providers.claude_agent.query", fake_query)
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(ProviderError) as caught:
         await ClaudeAgentProvider(Settings(deadline_s=0.01)).review(REQUEST)
 
+    assert caught.value.category is ErrorCategory.TRANSIENT
     assert fake_query.is_closed
+
+
+def scripted(*script: object) -> SdkCall:
+    """An ``sdk_call`` playing ``script``: a step is raised if it is an exception, else yielded."""
+
+    async def sdk_call(_prompt: str, _options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+        for step in script:
+            if isinstance(step, Exception):
+                raise step
+            yield step
+
+    return sdk_call
+
+
+def assistant_error(error: Any) -> AssistantMessage:
+    return AssistantMessage(content=[], model="M", error=error)
+
+
+def failed_result(*, status: object = None, terminal_reason: str | None = None) -> ResultMessage:
+    message = result_message()
+    message.is_error = True
+    message.api_error_status = cast(int | None, status)
+    message.terminal_reason = terminal_reason
+    return message
+
+
+async def review_category(*script: object) -> ErrorCategory:
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=scripted(*script)).review(REQUEST)
+    return caught.value.category
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [
+        (499, ErrorCategory.PERMANENT),
+        (500, ErrorCategory.TRANSIENT),
+        (599, ErrorCategory.TRANSIENT),
+        (600, ErrorCategory.PERMANENT),
+        (200, ErrorCategory.PERMANENT),
+    ],
+)
+async def test_review_with_status_at_a_range_edge_maps_it(
+    status: int, category: ErrorCategory
+) -> None:
+    assert await review_category(failed_result(status=status)) is category
+
+
+@pytest.mark.parametrize("status", ["401", True, 401.0, [401]])
+async def test_review_with_status_that_is_not_an_integer_treats_it_as_absent(
+    status: object,
+) -> None:
+    assert await review_category(failed_result(status=status)) is ErrorCategory.PERMANENT
+    assert (
+        await review_category(failed_result(status=status, terminal_reason="api_error"))
+        is ErrorCategory.TRANSIENT
+    )
+
+
+async def test_review_with_assistant_error_that_is_not_hashable_names_it_as_permanent() -> None:
+    provider = ClaudeAgentProvider(Settings(), sdk_call=scripted(assistant_error(["odd-value"])))
+
+    with pytest.raises(ProviderError, match="odd-value") as caught:
+        await provider.review(REQUEST)
+
+    assert caught.value.category is ErrorCategory.PERMANENT
+
+
+async def test_review_with_two_assistant_errors_reports_the_first() -> None:
+    category = await review_category(assistant_error("rate_limit"), assistant_error("server_error"))
+
+    assert category is ErrorCategory.RATE_LIMIT
+
+
+async def test_review_with_failed_result_then_unexpected_exception_keeps_the_signal() -> None:
+    category = await review_category(failed_result(status=429), ValueError("bug"))
+
+    assert category is ErrorCategory.RATE_LIMIT
+
+
+async def test_review_with_failed_result_then_success_returns_findings_and_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sdk_call = scripted(failed_result(status=503), result_message(result=VALID_RESULT))
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert len(response.findings) == 1
+    assert "warning: Claude signalled transient" in capsys.readouterr().err
+
+
+async def test_review_with_success_then_failure_closing_the_stream_keeps_the_findings() -> None:
+    async def sdk_call(_prompt: str, _options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+        try:
+            yield result_message(result=VALID_RESULT)
+        finally:
+            raise ProcessError("close failed")
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert len(response.findings) == 1
+
+
+@pytest.mark.parametrize(
+    "stderr", [None, SimpleNamespace(encoding="no-such-codec")], ids=["closed", "failing"]
+)
+def test_main_with_overridden_signal_and_unavailable_stderr_exits_by_the_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: object
+) -> None:
+    diff_path = tmp_path / "change.diff"
+    diff_path.write_text("+print('hello')\n", encoding="utf-8")
+    monkeypatch.setattr("sys.stderr", stderr)
+    sdk_call = scripted(assistant_error("rate_limit"), result_message(result=VALID_RESULT))
+
+    assert main([str(diff_path)], provider=ClaudeAgentProvider(Settings(), sdk_call=sdk_call)) == 1
+    assert sys.stderr is None
 
 
 async def test_review_with_null_usage_fields_counts_them_as_zero() -> None:
