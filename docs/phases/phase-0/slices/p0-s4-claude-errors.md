@@ -40,3 +40,4 @@ Same seam as [P0-S2](p0-s2-claude-review.md#interfaces); exit codes in [design.m
 - Prompt-injection evals (Phase 1).
 
 ## Notes
+- S3 AC4 applies to AC6's warning: with stderr closed or failing, the warning is dropped, the review still returns its findings, and `main` exits by them. Add a test for this. Keep the safe stderr write outside `cli` so the provider doesn't import it.
