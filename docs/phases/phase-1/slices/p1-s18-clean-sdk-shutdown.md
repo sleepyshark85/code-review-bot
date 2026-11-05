@@ -1,6 +1,6 @@
 # P1-S18: Get clean stderr when the Claude SDK shuts down
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S1
 - **Touches:** `cli`, `tests/integration/test_p0_s4_real_sdk.py`
 
