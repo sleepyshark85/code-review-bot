@@ -27,6 +27,7 @@ A developer can run `--provider claude` and get validated findings from a locked
 **What a failure does in this slice**
 - **AC13:** Given a fake that raises an exception whose text contains `SENTINEL`, a `ResultMessage` with `is_error=True` (including `subtype="success"`) whose `result` contains `SENTINEL`, or a stream ending with no `ResultMessage`, then `main` returns 14, stdout is empty, `result` isn't parsed as findings, and stderr has no traceback and no `SENTINEL`. *(Replaced by P0-S4 AC1 to AC7.)*
 - **AC14:** Given `is_error=False` and `result` that is not JSON, then `main` returns 14. *(Replaced by P0-S3 AC3.)*
+- **AC17:** Given an unexpected exception anywhere in `main`, including an injected provider raising `RuntimeError("SENTINEL")` and writing output with stdout closed (`--threshold critical >&-`), then `main` returns 14, not 1, and stderr has no traceback and no `SENTINEL`. *(Extended by P0-S3 AC4.)*
 
 **Offline and live**
 - **AC15:** Given a session-wide guard failing any test that reaches the real `query`, then the full suite passes, whether or not a CLI is present.
