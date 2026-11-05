@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from diff_support import MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 
 from review_bot.errors import ErrorCategory, ProviderError
@@ -58,7 +59,7 @@ def test_p0_s3_ac1_the_table_names_every_category():
 def test_p0_s3_ac1_category_returns_its_code_and_names_itself(bot, write_diff, category, code):
     provider = bot.mock(error=ProviderError(category, "detail"))
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert run.exit_code == code, run.stderr
     assert run.stdout == ""
@@ -68,7 +69,7 @@ def test_p0_s3_ac1_category_returns_its_code_and_names_itself(bot, write_diff, c
 
 @pytest.mark.parametrize("raw", AC2_INVALID_OUTPUT.values(), ids=AC2_INVALID_OUTPUT.keys())
 def test_p0_s3_ac2_invalid_output_exits_13_with_empty_stdout(bot, write_diff, raw):
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(raw_output=raw))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(raw_output=raw))
 
     assert run.exit_code == 13, run.stderr
     assert run.stdout == ""
@@ -76,14 +77,14 @@ def test_p0_s3_ac2_invalid_output_exits_13_with_empty_stdout(bot, write_diff, ra
 
 @pytest.mark.parametrize("raw", OTHER_INVALID_OUTPUT.values(), ids=OTHER_INVALID_OUTPUT.keys())
 def test_p0_s3_ac2_other_malformed_output_exits_13(bot, write_diff, raw):
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(raw_output=raw))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(raw_output=raw))
 
     assert run.exit_code == 13, run.stderr
     assert run.stdout == ""
 
 
 def test_p0_s3_ac2_empty_findings_exit_0(bot, write_diff):
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(raw_output='{"findings": []}'))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(raw_output='{"findings": []}'))
 
     assert run.exit_code == 0, run.stderr
 
@@ -91,7 +92,7 @@ def test_p0_s3_ac2_empty_findings_exit_0(bot, write_diff):
 def test_p0_s3_ac2_control_the_finding_the_cases_derive_from_is_valid(bot, write_diff):
     provider = bot.mock(raw_output=findings_json(HIGH_FINDING))
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout_body.startswith("src/app.py:7 ")

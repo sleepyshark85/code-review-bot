@@ -7,6 +7,7 @@ import sys
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, query
+from diff_support import MINIMAL_DIFF
 from repo_paths import REPO_ROOT
 
 from review_bot import cli
@@ -16,13 +17,13 @@ pytestmark = pytest.mark.integration
 
 # `real_query_guard` is what is on trial here, so this runs under a copy of the real conftest. The
 # first test's own assertion holds because `main` swallows the guard, so only the guard can fail it.
-VICTIMS = """
+VICTIMS = f"""
 from review_bot import cli
 
 
 def test_reaches_the_real_query(tmp_path):
     diff = tmp_path / "change.diff"
-    diff.write_text("+x")
+    diff.write_text({MINIMAL_DIFF!r})
     assert cli.main([str(diff), "--provider", "claude"]) == 14
 
 
@@ -44,7 +45,7 @@ def test_p0_s2_ac15_control_default_provider_route_fires_the_guard(
     bot, write_diff, real_query_calls
 ):
     # No injected provider or fake: the route a real run takes through `build_provider`.
-    run = bot.run(str(write_diff("+x\n")), "--provider", "claude")
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), "--provider", "claude")
 
     assert run.exit_code == 14
     assert len(real_query_calls) == 1

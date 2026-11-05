@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from diff_support import MINIMAL_DIFF, section
 from repo_paths import REPO_ROOT
 
 pytestmark = pytest.mark.integration
@@ -19,6 +20,7 @@ pytestmark = pytest.mark.integration
 SEVERITIES_ASCENDING = ("low", "medium", "high", "critical")
 SUMMARY = "provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0"
 SENTINEL = "SENTINEL-DIFF-TEXT"
+SENTINEL_DIFF = section("app.py", f"+{SENTINEL}\n")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +80,7 @@ def test_p0_s1_ac2_finding_is_kept_only_at_or_above_threshold(bot, write_diff, s
     provider = bot.mock(findings=[bot.finding(severity=severity)])
     is_kept = SEVERITIES_ASCENDING.index(severity) >= SEVERITIES_ASCENDING.index(threshold)
 
-    run = bot.review(write_diff("+x\n"), "--threshold", threshold, provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), "--threshold", threshold, provider=provider)
 
     assert run.exit_code == (1 if is_kept else 0)
     if is_kept:
@@ -95,7 +97,7 @@ def test_p0_s1_ac2_only_findings_at_or_above_threshold_are_printed(bot, write_di
         ]
     )
 
-    run = bot.review(write_diff("+x\n"), "--threshold", "high", provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), "--threshold", "high", provider=provider)
 
     assert run.exit_code == 1
     assert len(run.stdout_body.split("\n")) == 1
@@ -103,7 +105,7 @@ def test_p0_s1_ac2_only_findings_at_or_above_threshold_are_printed(bot, write_di
 
 
 def test_p0_s1_ac2_empty_findings_are_not_replaced_by_the_canned_one(bot, write_diff):
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(findings=[]))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(findings=[]))
 
     assert run.exit_code == 0
     assert run.stdout_body == "No findings at or above low."
@@ -119,7 +121,7 @@ def test_p0_s1_interface_finding_line_format(bot, write_diff, golden):
         confidence=0.5,
     )
 
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(findings=[finding]))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(findings=[finding]))
 
     assert run.stdout_body == golden("rendered_finding.golden.txt")
 
@@ -128,7 +130,7 @@ def test_p0_s1_interface_finding_line_format(bot, write_diff, golden):
     "flags", [(), ("--threshold", "critical")], ids=["findings_printed", "no_findings_printed"]
 )
 def test_p0_s1_ac3_successful_review_prints_the_summary_on_stderr(bot, write_diff, flags):
-    run = bot.review(write_diff(f"+{SENTINEL}\n"), *flags, provider=bot.mock())
+    run = bot.review(write_diff(SENTINEL_DIFF), *flags, provider=bot.mock())
 
     assert SUMMARY in run.stderr
 
@@ -139,7 +141,7 @@ def test_p0_s1_ac3_successful_review_prints_the_summary_on_stderr(bot, write_dif
 def test_p0_s1_ac3_diff_text_appears_in_neither_stream(bot, write_diff, flags):
     provider = bot.mock()
 
-    run = bot.review(write_diff(f"+{SENTINEL}\n"), *flags, provider=provider)
+    run = bot.review(write_diff(SENTINEL_DIFF), *flags, provider=provider)
 
     assert SENTINEL in provider.requests[0].user_prompt  # the review did see it
     assert SENTINEL not in run.stdout
@@ -235,7 +237,7 @@ def test_p0_s1_ac4_flag_beats_variable(bot, monkeypatch, setting):
 def test_p0_s1_ac4_flag_beats_invalid_provider_variable(bot, write_diff, monkeypatch, golden):
     monkeypatch.setenv("REVIEW_BOT_PROVIDER", "nope")
 
-    run = bot.run(str(write_diff("+x\n")), "--provider", "mock")
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), "--provider", "mock")
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout_body == golden("canned_finding.golden.txt")
@@ -256,7 +258,7 @@ def test_p0_s1_ac4_overridden_variable_is_not_validated(
     for variable, value in environment.items():
         monkeypatch.setenv(variable, value)
 
-    run = bot.review(write_diff("+x\n"), *flags, provider=bot.mock())
+    run = bot.review(write_diff(MINIMAL_DIFF), *flags, provider=bot.mock())
 
     assert run.exit_code == 1, run.stderr
 
@@ -275,7 +277,7 @@ def test_p0_s1_ac4_parse_args_returns_the_path_given(bot):
 
 
 def test_p0_s1_ac4_model_flag_reaches_the_request(bot, write_diff):
-    request = bot.request_for(write_diff("+x\n"), "--model", "flag-model")
+    request = bot.request_for(write_diff(MINIMAL_DIFF), "--model", "flag-model")
 
     assert request.model == "flag-model"
 
@@ -283,7 +285,7 @@ def test_p0_s1_ac4_model_flag_reaches_the_request(bot, write_diff):
 def test_p0_s1_ac4_model_variable_reaches_the_request(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_MODEL", "env-model")
 
-    request = bot.request_for(write_diff("+x\n"))
+    request = bot.request_for(write_diff(MINIMAL_DIFF))
 
     assert request.model == "env-model"
 
@@ -291,13 +293,13 @@ def test_p0_s1_ac4_model_variable_reaches_the_request(bot, write_diff, monkeypat
 def test_p0_s1_ac4_model_flag_beats_variable_in_the_request(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_MODEL", "env-model")
 
-    request = bot.request_for(write_diff("+x\n"), "--model", "flag-model")
+    request = bot.request_for(write_diff(MINIMAL_DIFF), "--model", "flag-model")
 
     assert request.model == "flag-model"
 
 
 def test_p0_s1_ac4_default_model_reaches_the_request(bot, write_diff):
-    request = bot.request_for(write_diff("+x\n"))
+    request = bot.request_for(write_diff(MINIMAL_DIFF))
 
     assert request.model == "claude-opus-5-5"
 
@@ -305,7 +307,7 @@ def test_p0_s1_ac4_default_model_reaches_the_request(bot, write_diff):
 def test_p0_s1_ac4_threshold_variable_changes_the_outcome(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_THRESHOLD", "critical")
 
-    run = bot.review(write_diff("+x\n"))
+    run = bot.review(write_diff(MINIMAL_DIFF))
 
     assert run.exit_code == 0
 
@@ -313,7 +315,7 @@ def test_p0_s1_ac4_threshold_variable_changes_the_outcome(bot, write_diff, monke
 def test_p0_s1_ac4_threshold_flag_beats_variable_in_the_outcome(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_THRESHOLD", "critical")
 
-    run = bot.review(write_diff("+x\n"), "--threshold", "low")
+    run = bot.review(write_diff(MINIMAL_DIFF), "--threshold", "low")
 
     assert run.exit_code == 1
 
@@ -327,9 +329,11 @@ def test_p0_s1_ac4_max_diff_bytes_variable_is_enforced(bot, write_diff, monkeypa
 
 
 def test_p0_s1_ac4_max_diff_bytes_flag_beats_variable_when_enforced(bot, write_diff, monkeypatch):
-    monkeypatch.setenv("REVIEW_BOT_MAX_DIFF_BYTES", "10")
+    # Since P1-S2 a review needs a real diff, so the limits are set around the minimal one's size.
+    size = len(MINIMAL_DIFF.encode("utf-8"))
+    monkeypatch.setenv("REVIEW_BOT_MAX_DIFF_BYTES", str(size - 1))
 
-    run = bot.review(write_diff(b"x" * 11), "--max-diff-bytes", "11")
+    run = bot.review(write_diff(MINIMAL_DIFF), "--max-diff-bytes", str(size))
 
     assert run.exit_code == 1
 
@@ -339,7 +343,7 @@ def test_p0_s1_ac4_provider_variable_selects_the_provider_for_a_real_run(
 ):
     monkeypatch.setenv("REVIEW_BOT_PROVIDER", "mock")
 
-    run = bot.run(str(write_diff("+x\n")))
+    run = bot.run(str(write_diff(MINIMAL_DIFF)))
 
     assert run.exit_code == 1
     assert run.stdout_body == golden("canned_finding.golden.txt")
@@ -377,7 +381,7 @@ def test_p0_s1_ac4_provider_variable_selects_the_provider_for_a_real_run(
 def test_p0_s1_ac5_bad_flag_returns_2_and_names_it(bot, write_diff, flags, named):
     provider = bot.mock()
 
-    run = bot.run(str(write_diff("+x\n")), *flags, provider=provider)
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), *flags, provider=provider)
 
     assert run.exit_code == 2
     assert named in run.stderr
@@ -402,7 +406,7 @@ def test_p0_s1_ac5_bad_variable_returns_2_and_names_it(
     monkeypatch.setenv(variable, value)
     provider = bot.mock()
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert run.exit_code == 2
     assert variable in run.stderr
@@ -413,7 +417,7 @@ def test_p0_s1_ac5_bad_variable_returns_2_and_names_it(
 def test_p0_s1_ac5_bad_provider_variable_returns_2_and_names_it(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_PROVIDER", "nope")
 
-    run = bot.run(str(write_diff("+x\n")))
+    run = bot.run(str(write_diff(MINIMAL_DIFF)))
 
     assert run.exit_code == 2
     assert "REVIEW_BOT_PROVIDER" in run.stderr
@@ -424,7 +428,7 @@ def test_p0_s1_ac5_upper_bound_flag_is_accepted(bot, write_diff):
     # A tiny diff, but the read allocates the limit up front: about 100 MB, so this runs only once.
     provider = bot.mock()
 
-    run = bot.review(write_diff("+x\n"), "--max-diff-bytes", "100000000", provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), "--max-diff-bytes", "100000000", provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert "+x\n" in provider.requests[0].user_prompt

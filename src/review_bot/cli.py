@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import Final, NoReturn, override
 
 from review_bot.console import write_diagnostic, write_output
+from review_bot.diff_parser import FileDiff
 from review_bot.errors import (
     ConfigError,
     DiffEmptyError,
     DiffNotFoundError,
+    DiffNotParsableError,
     DiffTooLargeError,
     DiffUnreadableError,
     ErrorCategory,
@@ -22,10 +24,10 @@ from review_bot.errors import (
 )
 from review_bot.findings import Severity
 from review_bot.prompt import PROMPT_VERSION
-from review_bot.providers.base import LLMProvider, ReviewResponse
+from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import at_or_above, render_findings
-from review_bot.review import review_diff
+from review_bot.review import ReviewResult, review_diff
 from review_bot.settings import Settings, load_settings
 
 __all__ = ["build_provider", "main", "parse_args"]
@@ -36,6 +38,7 @@ _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     DiffUnreadableError: 4,
     DiffEmptyError: 5,
     DiffTooLargeError: 6,
+    DiffNotParsableError: 15,
 }
 
 _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
@@ -57,6 +60,11 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 )
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
+
+_NOTHING_REVIEWED_WARNING: Final = (
+    "review-bot: warning: nothing was reviewed: every changed file was skipped: "
+)
+_MAX_NAMED_SKIPPED_FILES: Final = 10
 
 
 class _ReviewAbortedError(ReviewBotError):
@@ -122,7 +130,8 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         provider: The provider to use; None means ``build_provider`` picks it from the settings.
 
     Returns:
-        The exit code from the table in ``docs/phases/phase-0/design.md``.
+        The exit code from the table in ``docs/phases/phase-0/design.md``, with the codes
+        ``docs/phases/phase-1/design.md`` appends.
     """
     # With no handler, ``logging.lastResort`` prints the SDK's and asyncio's error records to
     # stderr, and those can hold raw CLI output.
@@ -148,7 +157,7 @@ def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
     is_own_claude = provider is None and settings.provider == "claude"
     review = _review_then_discard_unraisable if is_own_claude else review_diff
     try:
-        response = asyncio.run(review(diff_path, settings, selected_provider))
+        result = asyncio.run(review(diff_path, settings, selected_provider))
     except Exception:
         raise
     except BaseException as exc:
@@ -159,12 +168,14 @@ def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
 
     # A malformed response fails here, before anything is written. Stdout then goes first, so a
     # failure writing it leaves only the error line on stderr.
-    findings = at_or_above(response.findings, settings.threshold)
+    findings = at_or_above(result.findings, settings.threshold)
     output = render_findings(findings, settings.threshold)
-    summary = _summarise(response, settings)
+    summary = _summarise(result, settings)
 
     write_output(output)
-    if settings.provider == "mock":
+    if not result.model_called:
+        write_diagnostic(_nothing_reviewed_warning(result.skipped_files))
+    elif settings.provider == "mock":
         write_diagnostic(_CANNED_WARNING)
     write_diagnostic(summary)
     return 1 if findings else 0
@@ -172,7 +183,7 @@ def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
 
 async def _review_then_discard_unraisable(
     diff_path: Path, settings: Settings, provider: LLMProvider
-) -> ReviewResponse:
+) -> ReviewResult:
     """Run ``review_diff``, then discard ``sys.unraisablehook`` reports until the process exits.
 
     The SDK's ``close()`` waits for the Claude CLI to exit, not for its pipes to close, so a
@@ -191,10 +202,20 @@ def _discard_unraisable(_report: "sys.UnraisableHookArgs") -> None:
     """Drop the report, since stderr may hold only the bot's own lines."""
 
 
-def _summarise(response: ReviewResponse, settings: Settings) -> str:
+def _nothing_reviewed_warning(skipped_files: Sequence[FileDiff]) -> str:
+    # A deleted file has no new path.
+    paths = [file.path or "(deleted file)" for file in skipped_files]
+    named = ", ".join(paths[:_MAX_NAMED_SKIPPED_FILES])
+    return f"{_NOTHING_REVIEWED_WARNING}{named} ({len(paths)} in total)"
+
+
+def _summarise(result: ReviewResult, settings: Settings) -> str:
+    # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility).
     return (
         f"provider={settings.provider} model={settings.model} prompt={PROMPT_VERSION} "
-        f"input_tokens={response.usage.input_tokens} output_tokens={response.usage.output_tokens}"
+        f"input_tokens={result.usage.input_tokens} output_tokens={result.usage.output_tokens} "
+        f"skipped_files={len(result.skipped_files)} "
+        f"model_called={str(result.model_called).lower()}"
     )
 
 

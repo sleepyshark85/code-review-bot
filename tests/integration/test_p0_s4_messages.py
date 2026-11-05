@@ -14,6 +14,7 @@ from claude_agent_sdk import (
     ProcessError,
 )
 from claude_agent_sdk._errors import MessageParseError
+from diff_support import MINIMAL_DIFF
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -202,7 +203,7 @@ def test_p0_s4_ac13_build_provider_returns_claude_and_starts_no_subprocess(bot, 
 def test_p0_s4_ac13_a_run_with_no_flags_reaches_claude_not_canned_findings(
     bot, write_diff, real_query_calls
 ):
-    run = bot.run(str(write_diff("+x\n")))
+    run = bot.run(str(write_diff(MINIMAL_DIFF)))
 
     assert len(real_query_calls) == 1
     real_query_calls.clear()
@@ -212,7 +213,7 @@ def test_p0_s4_ac13_a_run_with_no_flags_reaches_claude_not_canned_findings(
 
 
 def test_p0_s4_ac13_summary_of_a_default_run_names_claude(bot, write_diff):
-    diff = write_diff("+x\n")
+    diff = write_diff(MINIMAL_DIFF)
     _, settings = bot.parse_args(str(diff))
     fake = FakeSdk(result_message(findings_json(HIGH_FINDING)))
 
@@ -256,7 +257,7 @@ def test_p0_s4_ac13_blank_variable_exits_2_and_names_it(bot, write_diff, monkeyp
     monkeypatch.setenv("REVIEW_BOT_PROVIDER", value)
     provider = bot.mock()
 
-    run = bot.run(str(write_diff("+x\n")), provider=provider)
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), provider=provider)
 
     assert run.exit_code == 2, run.stderr
     assert "REVIEW_BOT_PROVIDER" in run.stderr
@@ -268,7 +269,7 @@ def test_p0_s4_ac13_blank_variable_exits_2_and_names_it(bot, write_diff, monkeyp
 def test_p0_s4_ac13_blank_flag_exits_2_and_names_it(bot, write_diff, value):
     provider = bot.mock()
 
-    run = bot.run(str(write_diff("+x\n")), "--provider", value, provider=provider)
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), "--provider", value, provider=provider)
 
     assert run.exit_code == 2, run.stderr
     assert "--provider" in run.stderr

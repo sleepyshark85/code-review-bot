@@ -22,7 +22,7 @@ Unless a criterion says otherwise, runs select `--provider mock`.
 - **AC8:** Given a directory, a file containing the bytes `FF FE 41 00` (UTF-16 from PowerShell redirection), or a read that raises `PermissionError` (monkeypatched), then it exits 4 and stderr contains the path.
 - **AC9:** Given a 0-byte file, or one containing only `" \n\t\n"`, then it exits 5 and stderr contains the path.
 - **AC10:** Given `--max-diff-bytes 10` and an 11-byte file, then it exits 6 and stderr contains both `11` and `10`. Given the default limit and a 400,001-byte file, it exits 6.
-- **AC11:** Given `--max-diff-bytes 10` and a 10-byte file, then the provider receives all 10 bytes and the run exits 1.
+- **AC11:** Given a diff exactly `--max-diff-bytes` bytes long, then the provider receives all of it and the run exits 1. *(Changed by P1-S2: a 10-byte file can't be a diff.)*
 
 **Prompt**
 - **AC12:** Given `Assignment/sample_diff.txt` (malformed hunk counts, `{self.id}` braces), then the request's `user_prompt` contains the file's text unchanged and the run isn't rejected.

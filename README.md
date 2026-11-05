@@ -17,7 +17,8 @@ review-bot <diff> --provider mock    # offline; canned output, not a real review
 From a clone, run `uv sync`, then `uv run python -m review_bot <diff>`. The usage below describes `main` and may be ahead of the latest release.
 
 - **Authentication:** your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
-- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error. See the [exit codes](docs/phases/phase-0/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error, `15` input that isn't a diff. See the exit codes for [Phase 0](docs/phases/phase-0/design.md#exit-codes) and [Phase 1](docs/phases/phase-1/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Only real diffs are reviewed.** Text that isn't a unified diff exits `15`. In a git diff, docs, lock, generated and binary files are skipped and not sent to the model; a plain unified diff is reviewed whole.
 - **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state
