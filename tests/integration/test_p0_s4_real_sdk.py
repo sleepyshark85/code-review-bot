@@ -1,0 +1,320 @@
+"""P0-S4 through the real `query` and transport, against a fake CLI that is a real child process.
+
+Fakes at the `sdk_call` seam can't show what the SDK itself does: it logs at error level, turns a
+non-zero exit into a `ResultError`, and keeps the subprocess until `asyncio.run` shuts down. No
+model or network is involved, because the command is replaced. No test here selects a provider:
+the default from AC13 is what reaches Claude.
+
+Also here: AC6's note on losing stderr, in a real process, the only place exit 120 shows.
+"""
+
+import subprocess
+import sys
+import time
+
+import pytest
+from fake_sdk import HIGH_FINDING, findings_json
+from p0_s4_support import PREFIX, assert_one_error_line
+from stream_support import (
+    CLOSED,
+    DEV_FULL,
+    PIPE,
+    READER_GONE,
+    needs_dev_full,
+    run_process,
+)
+
+pytestmark = pytest.mark.integration
+
+API_KEY = "test-key-sentinel"
+FINDING_LINE_START = "src/app.py:7"
+
+# `getattr` first: assigning to a renamed method would silently leave the real CLI in place.
+REAL_QUERY_CHILD = """
+import sys
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport as Transport
+from review_bot import cli
+
+fake_cli, marker, mode, diff, *flags = sys.argv[1:]
+getattr(Transport, "_build_command")
+if mode == "cli_missing":
+    Transport._build_command = lambda self: [fake_cli]
+else:
+    Transport._build_command = lambda self: [sys.executable, fake_cli, marker, mode]
+Transport._find_cli = lambda self: sys.executable
+sys.exit(cli.main([diff, *flags]))
+"""
+
+FAKE_CLI = """
+import json, pathlib, sys, time
+
+marker, mode = sys.argv[1:]
+
+def send(message):
+    print(json.dumps(message), flush=True)
+
+def assistant(error, text):
+    message = {"model": "m", "content": [{"type": "text", "text": text}]}
+    send({"type": "assistant", "error": error, "message": message, "session_id": "s"})
+
+def result(**fields):
+    send({
+        "type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1,
+        "num_turns": 1, "session_id": "s", "usage": {"input_tokens": 2, "output_tokens": 7},
+        **fields,
+    })
+
+def answer_initialize_then_read_the_prompt():
+    request = json.loads(sys.stdin.readline())
+    send({"type": "control_response", "response": {
+        "subtype": "success", "request_id": request["request_id"], "response": {},
+    }})
+    sys.stdin.readline()
+
+pathlib.Path(marker).write_text("ran", encoding="utf-8")
+sys.stderr.write("SENTINEL from the CLI test-key-sentinel\\n")
+sys.stderr.flush()
+
+GOOD = GOOD_LITERAL
+FAILED_401 = dict(
+    is_error=True, stop_reason="stop_sequence", terminal_reason="api_error",
+    api_error_status=401, result="SENTINEL Invalid API key",
+)
+
+if mode == "crash_on_the_first_request":
+    sys.stdin.readline()
+    sys.exit(3)
+if mode == "malformed_json":
+    sys.stdin.readline()
+    print('{"type": SENTINEL is not JSON', flush=True)
+    sys.exit(0)
+
+answer_initialize_then_read_the_prompt()
+
+if mode == "live_401":
+    assistant("authentication_failed", "SENTINEL Invalid API key")
+    result(**FAILED_401)
+    sys.exit(1)
+if mode == "result_401_then_crash":
+    result(**FAILED_401)
+    sys.exit(1)
+if mode == "crash_after_the_prompt":
+    sys.exit(3)
+if mode == "malformed_after_the_prompt":
+    print('{"type": SENTINEL is not JSON', flush=True)
+    sys.exit(0)
+if mode == "success_then_crash":
+    result(is_error=False, result=GOOD)
+    sys.exit(3)
+if mode == "signal_then_success":
+    assistant("rate_limit", "SENTINEL slow down")
+    result(is_error=False, result=GOOD)
+    sys.exit(0)
+if mode == "prose":
+    result(is_error=False, result="SENTINEL prose")
+    sys.exit(0)
+if mode == "success_then_never_ends":
+    result(is_error=False, result=GOOD)
+    time.sleep(45)
+if mode == "never_ends":
+    time.sleep(45)
+sys.exit(0)
+""".replace("GOOD_LITERAL", repr(findings_json(HIGH_FINDING)))
+
+# A fake `sdk_call` in a real process: the review, its warning and the exit code, with stderr lost.
+OVERRIDDEN_SIGNAL_CHILD = """
+import sys
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from review_bot import cli
+from review_bot.providers.claude_agent import ClaudeAgentProvider
+
+raw, argv = sys.argv[1], sys.argv[2:]
+
+async def sdk_call(prompt, options):
+    yield AssistantMessage(content=[TextBlock(text="SENTINEL")], model="m", error="rate_limit")
+    yield ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+        session_id="s", result=raw,
+    )
+
+_, settings = cli.parse_args(argv)
+sys.exit(cli.main(argv, provider=ClaudeAgentProvider(settings, sdk_call=sdk_call)))
+"""
+
+
+@pytest.fixture
+def run_real_query(tmp_path, monkeypatch):
+    def run(mode, *flags, api_key=None):
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+        if api_key is not None:
+            monkeypatch.setenv("ANTHROPIC_API_KEY", api_key)
+        fake_cli = tmp_path / "fake_cli.py"
+        fake_cli.write_text(FAKE_CLI, encoding="utf-8")
+        marker = tmp_path / "fake_cli_ran"
+        diff = tmp_path / "change.diff"
+        diff.write_text("+x\n", encoding="utf-8")
+        target = tmp_path / "no_such_claude.exe" if mode == "cli_missing" else fake_cli
+        completed = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
+            [
+                sys.executable,
+                "-c",
+                REAL_QUERY_CHILD,
+                str(target),
+                str(marker),
+                mode,
+                str(diff),
+                *flags,
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=90,
+            check=False,
+        )
+        if mode != "cli_missing":
+            assert marker.exists(), completed.stderr
+        return completed
+
+    return run
+
+
+def assert_failed_cleanly(completed, code):
+    assert completed.returncode == code, completed.stderr
+    assert completed.stdout == ""
+    assert "SENTINEL" not in completed.stderr
+    assert "Fatal error" not in completed.stderr
+    assert_one_error_line(completed.stderr)
+
+
+def test_p0_s4_ac13_ac5_live_401_sequence_exits_8_with_one_line(run_real_query):
+    completed = run_real_query("live_401")
+
+    assert_failed_cleanly(completed, 8)
+    assert "ANTHROPIC_API_KEY" in completed.stderr
+
+
+def test_p0_s4_ac5_result_401_then_the_clis_exit_exits_8_with_one_line(run_real_query):
+    assert_failed_cleanly(run_real_query("result_401_then_crash"), 8)
+
+
+@pytest.mark.parametrize(
+    "mode", ["crash_on_the_first_request", "crash_after_the_prompt"], ids=["early", "late"]
+)
+def test_p0_s4_ac1_cli_crash_exits_12_with_one_line(run_real_query, mode):
+    # Replaces P0-S2 AC13's expectation of 14 for a non-zero exit. The SDK logs this one at error
+    # level, which a fake at the `sdk_call` seam never shows.
+    assert_failed_cleanly(run_real_query(mode), 12)
+
+
+@pytest.mark.parametrize(
+    "mode", ["malformed_json", "malformed_after_the_prompt"], ids=["early", "late"]
+)
+def test_p0_s4_ac12_malformed_output_exits_12_without_its_text(run_real_query, mode):
+    # Replaces P0-S2 AC13's expectation of 14. The text is in `CLIJSONDecodeError` and in the SDK's
+    # own log line.
+    assert_failed_cleanly(run_real_query(mode), 12)
+
+
+def test_p0_s4_ac9_missing_cli_exits_7_with_one_line(run_real_query):
+    completed = run_real_query("cli_missing")
+
+    assert_failed_cleanly(completed, 7)
+    assert "install" in completed.stderr
+    assert "PATH" in completed.stderr
+
+
+def test_p0_s4_ac11_key_written_by_the_cli_reaches_neither_stream(run_real_query):
+    completed = run_real_query("crash_after_the_prompt", api_key=API_KEY)
+
+    assert completed.returncode == 12, completed.stderr
+    assert API_KEY not in completed.stdout
+    assert API_KEY not in completed.stderr
+
+
+def test_p0_s4_ac6_success_then_the_clis_exit_still_delivers(run_real_query):
+    completed = run_real_query("success_then_crash")
+
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout.startswith(FINDING_LINE_START)
+    assert PREFIX not in completed.stderr
+    assert "Fatal error" not in completed.stderr
+    assert len(completed.stderr.splitlines()) == 1, completed.stderr
+    assert "provider=claude" in completed.stderr
+
+
+def test_p0_s4_ac6_signal_then_success_warns_and_delivers(run_real_query):
+    completed = run_real_query("signal_then_success")
+
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout.startswith(FINDING_LINE_START)
+    assert "rate_limit" in completed.stderr
+    assert "SENTINEL" not in completed.stderr
+    assert PREFIX not in completed.stderr
+
+
+def test_p0_s4_ac6_prose_alone_exits_13_with_one_line(run_real_query):
+    assert_failed_cleanly(run_real_query("prose"), 13)
+
+
+def test_p0_s4_ac6_success_from_a_cli_that_never_exits_is_delivered_before_the_deadline(
+    run_real_query,
+):
+    # The 5 seconds in AC6 hold for the fake only: the SDK's own close of a child ignoring EOF adds
+    # about 5 s (design.md section 4). What must hold here is that the deadline isn't waited out.
+    started = time.monotonic()
+
+    completed = run_real_query("success_then_never_ends", "--deadline-s", "30")
+
+    elapsed = time.monotonic() - started
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout.startswith(FINDING_LINE_START)
+    assert elapsed < 30, f"took {elapsed:.1f} s, so the review waited for the deadline"
+
+
+def test_p0_s4_ac8_cli_that_never_exits_hits_the_deadline_with_one_line(run_real_query):
+    assert_failed_cleanly(run_real_query("never_ends", "--deadline-s", "1"), 11)
+
+
+# --- AC6's note: stderr closed or failing, in a real process -------------------------------------
+
+
+def overridden_signal_command(result, *flags):
+    return [
+        sys.executable,
+        "-c",
+        OVERRIDDEN_SIGNAL_CHILD,
+        result,
+        "Assignment/sample_diff.txt",
+        "--provider",
+        "claude",
+        *flags,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [(findings_json(HIGH_FINDING), 1), (findings_json(), 0)],
+    ids=["found", "none"],
+)
+def test_p0_s4_ac6_note_control_the_child_warns_when_stderr_works(result, code):
+    completed = run_process(overridden_signal_command(result), stderr=PIPE)
+
+    assert completed.returncode == code, completed.stderr
+    assert "rate_limit" in completed.stderr
+    assert "SENTINEL" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "kind", [CLOSED, READER_GONE, pytest.param(DEV_FULL, marks=needs_dev_full)]
+)
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [(findings_json(HIGH_FINDING), 1), (findings_json(), 0)],
+    ids=["found", "none"],
+)
+def test_p0_s4_ac6_note_warning_with_stderr_lost_exits_by_findings_in_a_real_process(
+    kind, result, code
+):
+    completed = run_process(overridden_signal_command(result), stderr=kind)
+
+    assert completed.returncode == code, "not 14 or 120: losing the warning changes nothing"
+    assert ("src/app.py" in completed.stdout) == (code == 1)

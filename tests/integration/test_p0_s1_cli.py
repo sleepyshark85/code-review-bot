@@ -1,4 +1,8 @@
-"""P0-S1 AC1 to AC6: the command, its output, settings and usage errors."""
+"""P0-S1 AC1 to AC5: the command, its output, settings and usage errors.
+
+P0-S4 AC13 replaced AC6 and the "neither" case of AC4 for `--provider`: see
+`test_p0_s4_messages.py`.
+"""
 
 import itertools
 import re
@@ -184,8 +188,8 @@ MAX_DIFF_BYTES = Setting(
     5678,
     400000,
 )
-# The default is AC6's. `mock` is the only valid value, so precedence over the variable is shown by
-# test_p0_s1_ac4_flag_beats_invalid_provider_variable instead.
+# The default is P0-S4 AC13's. `mock` stands in for a selection here, and precedence over the
+# variable is shown by test_p0_s1_ac4_flag_beats_invalid_provider_variable instead.
 PROVIDER = Setting("provider", "--provider", "REVIEW_BOT_PROVIDER", "mock", "mock", "mock", "mock")
 ALL_SETTINGS = [PROVIDER, MODEL, THRESHOLD, MAX_DIFF_BYTES]
 SETTINGS_WITH_A_DEFAULT = [MODEL, THRESHOLD, MAX_DIFF_BYTES]
@@ -444,28 +448,3 @@ def test_p0_s1_ac5_no_path_returns_2_and_names_the_missing_argument(bot):
     assert re.search(r"diff|path", run.stderr, re.IGNORECASE)
     assert run.stdout == ""
     assert provider.requests == []
-
-
-def test_p0_s1_ac6_no_provider_selected_exits_2_and_names_the_flag(bot, write_diff):
-    run = bot.run(str(write_diff("+x\n")))
-
-    assert run.exit_code == 2
-    assert "--provider mock" in run.stderr
-
-
-def test_p0_s1_ac6_no_provider_selected_never_falls_back_to_canned_findings(bot, write_diff):
-    run = bot.run(str(write_diff("+x\n")))
-
-    assert run.exit_code == 2
-    assert run.stdout == ""
-    assert "canned" not in run.stderr.lower()
-    assert "input_tokens=" not in run.stderr
-
-
-def test_p0_s1_ac6_empty_provider_variable_is_not_a_selection(bot, write_diff, monkeypatch):
-    monkeypatch.setenv("REVIEW_BOT_PROVIDER", "")
-
-    run = bot.run(str(write_diff("+x\n")))
-
-    assert run.exit_code == 2
-    assert run.stdout == ""

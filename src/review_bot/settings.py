@@ -13,14 +13,11 @@ __all__ = ["Settings", "load_settings"]
 
 
 class Settings(BaseModel):
-    """Validated settings for one run. A field ``max_diff_bytes`` is the flag ``--max-diff-bytes``.
-
-    ``provider`` is None until the user selects one.
-    """
+    """Validated settings for one run. A field ``max_diff_bytes`` is flag ``--max-diff-bytes``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider: Literal["mock", "claude"] | None = None
+    provider: Literal["mock", "claude"] = "claude"
     # An allowlist, because the name is printed in the stderr summary line. No leading hyphen,
     # because a later provider may pass it to a command line.
     model: str = Field(default="claude-opus-5-5", pattern=r"^[\w.:/@\[\]][\w.:/@\[\]-]*$")

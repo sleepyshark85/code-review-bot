@@ -15,7 +15,7 @@ A developer can run `--provider claude` and get validated findings from a locked
 - **AC4:** Parametrised over `--max-retries`, `--api-timeout-ms` and `--deadline-s` ([settings](../design.md#settings)): given only the variable, `parse_args` uses its value; given also the flag, the flag's; given neither, the defaults `2`, `90000` and `300`.
 - **AC5:** Given each of `--max-retries -1`, `--api-timeout-ms 0`, `--api-timeout-ms -1`, `--deadline-s 0`, `--deadline-s -1`, `REVIEW_BOT_MAX_RETRIES=-1`, `REVIEW_BOT_DEADLINE_S=0`, then `main` returns 2 and stderr names the flag or variable.
 - **AC6:** Given a fake that raises an exception, then `sdk_call` was called exactly once: the CLI is the only retry layer.
-- **AC7:** Given a fake stream that never ends and `--deadline-s 0.1`, then within 5 seconds the stream has been closed and `main` returns 14. *(Replaced by P0-S4 AC8.)*
+- **AC7:** Removed: replaced by P0-S4 AC8.
 - **AC8:** Given any review, then `options.stderr` is set; given a fake that calls it with `CLI-NOISE-SENTINEL`, then that text doesn't reach our stdout or stderr.
 
 **Success**
@@ -25,7 +25,7 @@ A developer can run `--provider claude` and get validated findings from a locked
 - **AC12:** Given no `ANTHROPIC_API_KEY`, then the provider still calls `sdk_call`, leaving authentication to the CLI.
 
 **What a failure does in this slice**
-- **AC13:** Given a fake that raises an exception whose text contains `SENTINEL`, a `ResultMessage` with `is_error=True` (including `subtype="success"`) whose `result` contains `SENTINEL`, or a stream ending with no `ResultMessage`, then `main` returns 14, stdout is empty, `result` isn't parsed as findings, and stderr has no traceback and no `SENTINEL`. *(Replaced by P0-S4 AC1 to AC7.)*
+- **AC13:** Removed: replaced by P0-S4 AC1 to AC7.
 - **AC14:** Removed: replaced by P0-S3 AC3.
 - **AC17:** Given an unexpected exception anywhere in `main`, including an injected provider raising `RuntimeError("SENTINEL")` and writing output with stdout closed (`--threshold critical >&-`), then `main` returns 14, not 1, and stderr has no traceback and no `SENTINEL`. *(Extended by P0-S3 AC4.)*
 
@@ -36,7 +36,7 @@ A developer can run `--provider claude` and get validated findings from a locked
 ## Interfaces
 - Offline seam: `ClaudeAgentProvider(settings, sdk_call=fake)` ([design.md](../design.md#interfaces)). The fake is an async generator that records `(prompt, options)` and scripts messages or a raised exception.
 - `claude-agent-sdk` is installed in tests, so fakes use the real classes. The tester may read the installed package for exact field names and constructors.
-- The default `sdk_call` wraps `query`; AC16 exercises it live, and the P0-S2 AC13 real-`query` tests run it against a fake child.
+- The default `sdk_call` wraps `query`; AC16 exercises it live, and `test_p0_s4_real_sdk.py` runs it against a fake child.
 
 ## Out of scope
 - Error categories and specific exit codes (P0-S3, P0-S4).

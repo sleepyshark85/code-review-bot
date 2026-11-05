@@ -5,7 +5,13 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultError,
+    ResultMessage,
+    TextBlock,
+)
 
 HIGH_FINDING = {
     "file": "src/app.py",
@@ -22,13 +28,9 @@ def findings_json(*findings: dict[str, Any]) -> str:
 
 
 def result_message(
-    result: str | None,
-    *,
-    is_error: bool = False,
-    subtype: str = "success",
-    usage: dict[str, Any] | None = None,
-    errors: list[str] | None = None,
+    result: str | None, *, is_error: bool = False, subtype: str = "success", **fields: Any
 ) -> ResultMessage:
+    """`fields` are any other `ResultMessage` fields, such as `usage` or `stop_reason`."""
     return ResultMessage(
         subtype=subtype,
         duration_ms=1,
@@ -36,10 +38,42 @@ def result_message(
         is_error=is_error,
         num_turns=1,
         session_id="session",
-        usage=usage,
         result=result,
-        errors=errors,
+        **fields,
     )
+
+
+def error_result(
+    status: Any = None, terminal_reason: str | None = None, result: str | None = "API Error prose."
+) -> ResultMessage:
+    """The shape the CLI really sends for a failed API call: `success`, but `is_error=True`."""
+    return result_message(
+        result,
+        is_error=True,
+        stop_reason="stop_sequence",
+        api_error_status=status,
+        terminal_reason=terminal_reason,
+    )
+
+
+def raised_result_error(
+    status: Any = None,
+    terminal_reason: str | None = None,
+    text: str = "Claude Code returned an error result: API Error prose.",
+    result: str | None = "API Error prose.",
+) -> ResultError:
+    data = {
+        "subtype": "success",
+        "is_error": True,
+        "api_error_status": status,
+        "terminal_reason": terminal_reason,
+        "result": result,
+    }
+    return ResultError(text, data=data, exit_code=1)
+
+
+def assistant_error(error: Any, text: str = "Assistant text.") -> AssistantMessage:
+    return AssistantMessage(content=[TextBlock(text=text)], model="m", error=error)
 
 
 async def hang(_options: ClaudeAgentOptions) -> None:
