@@ -165,10 +165,12 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 | Ctrl+C during a review exits 14 | Unchanged; during triage it exits 1, because the review already exists (S12) |
 | SDK import costs 1 to 2 s per run; the README leaves start-up to Phase 2 | S1 defers the import; measuring CLI start-up stays in Phase 2 |
 | Bundled CLI, cache token sum and `API_TIMEOUT_MS` inferred or unknown; termination mid-call and Windows grandchild processes untested; `/dev/full` cases run only in CI | Unchanged, not in scope |
+| The SDK's shutdown can put an asyncio traceback on stderr, breaking the one-line rule | [P1-S18](slices/p1-s18-clean-sdk-shutdown.md) addresses it |
 
 ## 3. Slices
 
 1. [P1-S1: Run mock reviews without loading the Claude SDK](slices/p1-s1-mock-without-sdk.md)
+2. [P1-S18: Get clean stderr when the Claude SDK shuts down](slices/p1-s18-clean-sdk-shutdown.md)
 2. [P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff](slices/p1-s2-parse-and-skip.md)
 3. [P1-S3: Stop a diff with a detected secret from reaching the model](slices/p1-s3-secret-block.md)
 4. [P1-S4: Trace every run in a JSONL audit log](slices/p1-s4-audit-log.md)

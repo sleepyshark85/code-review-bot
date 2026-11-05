@@ -65,6 +65,14 @@ A green gate doesn't meet this bar on its own. "It works" is never a reason to l
 - [ ] No secrets, no live model calls in tests (use `MockProvider`).
 - [ ] The README is updated if behaviour or usage changed.
 
+## Releases (per phase)
+
+Every finished phase ships a release notes file (`docs/phases/phase-N/release-notes.md`: what changed, not progress), a git tag, and a GitHub release with the wheel and source archive.
+
+- Tag the commit where the phase is complete, and bump the minor version in `pyproject.toml` first: Phase 0 is `v0.1.0`, Phase 1 is `v0.2.0`.
+- Before publishing: `gate` is green on that commit, and the wheel, built from a clean checkout with `uv build`, is installed in a clean environment and run.
+- No PyPI unless the user asks.
+
 ## Commands
 
 ```
