@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Final
 
 from review_bot.errors import AuditError
+from review_bot.report import has_lone_surrogate, path_fields
 from review_bot.secret_scan import redact
 
 __all__ = [
@@ -33,20 +34,6 @@ DEFAULT_AUDIT_LOG_PATH: Final = Path(".review-bot") / "audit.jsonl"
 _SCHEMA: Final = "audit/v1"
 # Ignores everything in the default directory, itself included, in any repository.
 _IGNORE_EVERYTHING: Final = "*\n"
-# Git's C-quoting: these bytes get a short escape, other control and non-ASCII bytes an octal one.
-_SHORT_ESCAPES: Final = {
-    ord("\a"): r"\a",
-    ord("\b"): r"\b",
-    ord("\t"): r"\t",
-    ord("\n"): r"\n",
-    ord("\v"): r"\v",
-    ord("\f"): r"\f",
-    ord("\r"): r"\r",
-    ord('"'): r"\"",
-    ord("\\"): r"\\",
-}
-_PRINTABLE_ASCII: Final = range(0x20, 0x7F)
-
 # What ``scrub_diagnostics`` keeps: the tail of the text, after scrubbing (Phase 1 design, Q5).
 _MAX_DIAGNOSTIC_LINES: Final = 20
 _MAX_DIAGNOSTIC_CHARS: Final = 2000
@@ -158,47 +145,20 @@ class AuditLog:
 
 
 def file_fields(path: str) -> dict[str, JsonValue]:
-    """Return a record's ``file`` for a diff path, plus ``path_quoted`` if it had to be quoted.
+    """Return a record's ``file`` for a diff path, as ``report.path_fields`` writes it.
 
-    A valid UTF-8 path is written as it is. A path holding lone surrogates, which stand for bytes
-    that aren't valid UTF-8 (``surrogateescape``), is written in git's C-quoted form (Phase 1
-    design, Paths in audit/v1). The path passes ``redact`` before quoting, so a secret is matched
-    in its plain form.
+    The path passes ``redact`` before quoting, so a secret is matched in its plain form.
 
     Raises:
         UnicodeEncodeError: If ``path`` holds a surrogate that ``surrogateescape`` can't produce.
     """
-    path = redact(path)
-    if _has_lone_surrogate(path):
-        return {"file": _c_quoted(path.encode("utf-8", "surrogateescape")), "path_quoted": True}
-    return {"file": path}
-
-
-def _c_quoted(raw: bytes) -> str:
-    return '"' + "".join(_c_escaped(byte) for byte in raw) + '"'
-
-
-def _c_escaped(byte: int) -> str:
-    if byte in _SHORT_ESCAPES:
-        return _SHORT_ESCAPES[byte]
-    if byte in _PRINTABLE_ASCII:
-        return chr(byte)
-    return f"\\{byte:03o}"
-
-
-def _has_lone_surrogate(text: str) -> bool:
-    """Whether ``text`` holds a lone surrogate, the only thing that stops it encoding as UTF-8."""
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        return True
-    return False
+    return {**path_fields(redact(path))}  # copied to widen the type to dict[str, JsonValue]
 
 
 def _redacted(value: JsonValue) -> JsonValue:
     if isinstance(value, str):
         text = redact(value)
-        if _has_lone_surrogate(text):
+        if has_lone_surrogate(text):
             raise ValueError(
                 "An audit record can't hold a lone surrogate. Pass diff paths through file_fields."
             )

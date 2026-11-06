@@ -30,8 +30,9 @@ from review_bot.findings import Severity, Source
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
-from review_bot.render import render_findings
-from review_bot.review import PipelineResult, run_pipeline
+from review_bot.render import render_findings, render_json
+from review_bot.report import PipelineResult
+from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings
 
@@ -123,6 +124,7 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
         "--audit-log",
         help="the JSONL file each run appends its records to (default: .review-bot/audit.jsonl)",
     )
+    parser.add_argument("--format", help="the report's format on stdout: text (default), json")
     args = vars(parser.parse_args(argv))
     return Path(args.pop("diff_path")), load_settings(args)
 
@@ -219,7 +221,7 @@ def _review(
 
     # Stdout goes first, so a failure writing it leaves only the error line on stderr.
     reported = result.decision.reported
-    output = render_findings([reviewed.finding for reviewed in reported], settings.threshold)
+    output = _render_report(result, settings, audit.run_id)
     dropped_count = len(result.verification.dropped)
     summary = _summarise(result, settings, audit.run_id)
     exit_code = 1 if reported else 0
@@ -236,6 +238,13 @@ def _review(
     # After stdout, so a failure here exits 17 with the report already delivered.
     audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": None})
     return exit_code
+
+
+def _render_report(result: PipelineResult, settings: Settings, run_id: str) -> str:
+    if settings.format == "json":
+        return render_json(result, settings, run_id)
+    findings = [reviewed.finding for reviewed in result.decision.reported]
+    return render_findings(findings, settings.threshold)
 
 
 def _utc_now() -> datetime:

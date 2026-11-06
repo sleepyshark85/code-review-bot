@@ -20,7 +20,8 @@ from review_bot.findings import Category, Finding, Severity, Source
 from review_bot.fingerprint import fingerprint_for
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.mock import MockProvider
-from review_bot.review import PipelineResult, run_pipeline
+from review_bot.report import PipelineResult
+from review_bot.review import run_pipeline
 from review_bot.settings import Settings
 
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
@@ -105,6 +106,7 @@ def test_run_pipeline_records_the_start_with_the_diffs_hash_and_size(tmp_path: P
     assert start["model"] == Settings().model
     assert start["prompt_version"] == PROMPT_VERSION
     assert start["threshold"] == "low"
+    assert start["format"] == "text"
     assert start["diff_sha256"] == hashlib.sha256(diff_bytes).hexdigest()
     assert start["diff_bytes"] == len(diff_bytes)
 

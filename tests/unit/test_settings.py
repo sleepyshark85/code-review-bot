@@ -135,3 +135,29 @@ def test_load_settings_with_non_finite_deadline_names_the_flag(value: str) -> No
 def test_load_settings_error_lists_allowed_values() -> None:
     with pytest.raises(ConfigError, match="critical"):
         load_settings({"threshold": "urgent"})
+
+
+def test_load_settings_with_no_format_set_uses_text() -> None:
+    assert load_settings({"format": None}).format == "text"
+
+
+def test_load_settings_reads_the_format_from_the_environment_unless_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_FORMAT", "json")
+
+    assert load_settings({"format": None}).format == "json"
+    assert load_settings({"format": "text"}).format == "text"
+
+
+@pytest.mark.parametrize(
+    ("flags", "source"),
+    [({"format": "yaml"}, "--format"), ({"format": None}, "REVIEW_BOT_FORMAT")],
+)
+def test_load_settings_with_an_unknown_format_names_its_source(
+    flags: dict[str, str | None], source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_FORMAT", "yaml")
+
+    with pytest.raises(ConfigError, match=f"{source}: .*'json'"):
+        load_settings(flags)

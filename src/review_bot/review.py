@@ -8,7 +8,6 @@ import hashlib
 import os
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
@@ -17,23 +16,22 @@ from typing import Final
 from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diagnostics
 from review_bot.console import write_diagnostic
 from review_bot.diff_input import load_diff
-from review_bot.diff_parser import DecodedPath, FileDiff, ParsedDiff, parse_diff
+from review_bot.diff_parser import DecodedPath, ParsedDiff, parse_diff
 from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetectedError
 from review_bot.policy import Decision, decide
 from review_bot.prompt import PROMPT_VERSION, build_request
 from review_bot.providers.base import LLMProvider, ReviewResponse, TokenUsage
+from review_bot.report import PipelineResult, section_path
 from review_bot.rules import RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
-__all__ = ["PipelineResult", "run_pipeline"]
+__all__ = ["run_pipeline"]
 
 _MAX_NAMED_SECRETS: Final = 5
 # Caps each list in the parse record, so its size doesn't grow with the diff.
 _MAX_LISTED_IN_AUDIT: Final = 50
-# What a section's headers name when they say /dev/null for both the old and the new file.
-_NO_PATH: Final = "/dev/null"
 
 
 class _AgentSkipReason(StrEnum):
@@ -52,23 +50,6 @@ class _VerifyOutcome(StrEnum):
 class _PolicyOutcome(StrEnum):
     REPORTED = "reported"
     BELOW_THRESHOLD = "below_threshold"
-
-
-@dataclass(frozen=True, slots=True)
-class PipelineResult:
-    """A review's verified and decided findings, and what it skipped.
-
-    ``model_called`` is False when every file was skipped; ``verification`` and ``decision`` are
-    then empty, as are ``warnings``. ``warnings`` are the provider's, already written to stderr
-    and the audit log.
-    """
-
-    verification: VerifyResult
-    decision: Decision
-    usage: TokenUsage
-    skipped_files: tuple[FileDiff, ...]
-    model_called: bool
-    warnings: tuple[str, ...] = ()
 
 
 async def run_pipeline(
@@ -173,6 +154,7 @@ def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
         "model": settings.model,
         "prompt_version": PROMPT_VERSION,
         "threshold": settings.threshold,
+        "format": settings.format,
         "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
         "diff_bytes": len(diff_bytes),
     }
@@ -227,23 +209,16 @@ def _parsed_data(parsed: ParsedDiff) -> dict[str, JsonValue]:
         "files": len(parsed.files),
         "hunks": sum(len(file.hunks) for file in parsed.files),
         "skipped_files": [
-            {**_logged_path_fields(file), "reason": file.skip_reason}
+            {**file_fields(section_path(file)), "reason": file.skip_reason}
             for file in skipped[:_MAX_LISTED_IN_AUDIT]
         ],
         "skipped_files_total": len(skipped),
         "flagged_hunks": [
-            {**_logged_path_fields(file), "index": index, "new_start": hunk.new_start}
+            {**file_fields(section_path(file)), "index": index, "new_start": hunk.new_start}
             for file, index, hunk in flagged[:_MAX_LISTED_IN_AUDIT]
         ],
         "flagged_hunks_total": len(flagged),
     }
-
-
-def _logged_path_fields(file: FileDiff) -> dict[str, JsonValue]:
-    """Name a deleted file by its old path, so no entry's ``file`` is null."""
-    if file.path is not None:
-        return file_fields(file.path)
-    return file_fields(_NO_PATH if file.old_path is None else file.old_path)
 
 
 def _rules_data(result: RuleResult) -> dict[str, JsonValue]:

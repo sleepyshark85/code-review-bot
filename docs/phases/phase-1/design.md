@@ -10,7 +10,7 @@ Make findings trustworthy, triageable and measurable, with every stage decision 
 
 ### Module map
 
-New or changed modules under `src/review_bot/`; the rest of [Phase 0's map](../phase-0/design.md#module-map) stands. `diff_parser`, `secret_scan`, `rules`, `verify`, `fingerprint`, `policy` and `render` are pure. `audit`, `triage`, `cli`, `evals` and `providers` touch the outside world. `review` orchestrates through injected collaborators.
+New or changed modules under `src/review_bot/`; the rest of [Phase 0's map](../phase-0/design.md#module-map) stands. `diff_parser`, `secret_scan`, `rules`, `verify`, `fingerprint`, `policy`, `report` and `render` are pure; `render` imports neither `review` nor `audit` (changed in build, main session, 2026-11-06). `audit`, `triage`, `cli`, `evals` and `providers` touch the outside world. `review` orchestrates through injected collaborators.
 
 | Module | Responsibility | Key types |
 |---|---|---|
@@ -24,6 +24,7 @@ New or changed modules under `src/review_bot/`; the rest of [Phase 0's map](../p
 | `policy` | Applies the threshold; `cli` exits 1 if anything stays reported | `decide`, `Decision` |
 | `render` | Text (unchanged), JSON, Markdown | `render_findings`, `render_json`, `render_markdown` |
 | `audit` | Append JSONL; scrub diagnostics ([ADR 0005](../../adr/0005-audit-log.md)) | `AuditLog`, `scrub_diagnostics` |
+| `report` | A review's result, and git C-quoting of [paths](#audit-log), with no redaction; used by `render`, `review`, `audit` and `cli` (changed in build, main session, 2026-11-06) | `PipelineResult` |
 | `triage` | Interactive accept / reject / edit | `run_triage`, `TriageResult`, `Label` |
 | `prompt` | `rule` and anchor guidance; `PROMPT_VERSION` becomes `p1-v1` | `build_request` |
 | `findings` | The model's `rule` field, and the pipeline's wrapper type | `Finding`, `RuleId`, `ReviewedFinding` |
@@ -115,7 +116,7 @@ Decision: [ADR 0003](../../adr/0003-finding-fingerprints.md).
 
 Seven kinds, scanned on raw text and detected by vendor format plus one assignment pattern, with no entropy check. Unlisted formats do reach the model. Forms, boundaries and near misses are in [P1-S3](slices/p1-s3-secret-block.md).
 If the raw text has no hit, the decoded header paths are scanned too: every path and old path the parser yields, quoted or not, each scanned on its own, and every other quoted string in a file's header lines, so a secret spelt in octal escapes is caught ([P1-S19](slices/p1-s19-decoded-path-secret.md)). `diff_parser` decodes them; `review` runs the scan.
-A hit exits 16 with no provider call and one stderr line of kinds and diff lines. It isn't a `Finding`, so no path or value is reported, and every path written to the log or stderr passes `redact`.
+A hit exits 16 with no provider call and one stderr line of kinds and diff lines. It isn't a `Finding`, so no path or value is reported, and every path written to the log or stderr passes `redact`. Stdout isn't redacted: the text and JSON reports show the real diff path (changed in build, main session, 2026-11-06).
 
 ### Audit log
 
