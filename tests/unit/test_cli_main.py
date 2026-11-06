@@ -370,3 +370,17 @@ def test_main_with_text_that_is_not_a_diff_returns_15_naming_the_path(
     assert captured.out == ""
     assert captured.err.startswith(f"review-bot: error: Diff {diff} can't be parsed. ")
     assert provider.requests == []
+
+
+def test_main_with_a_secret_in_the_diff_returns_16_with_one_error_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "secret.diff"
+    diff.write_bytes(section("app.py", "+" + "AK" + "IA" + "ABCDEFGH23456789\n").encode("utf-8"))
+
+    assert main([str(diff), "--threshold", "critical"], provider=MockProvider()) == 16
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("review-bot: error: secret: 1 possible secret in the diff (")
+    assert captured.err.count("\n") == 1

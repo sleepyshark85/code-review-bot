@@ -17,8 +17,9 @@ review-bot <diff> --provider mock    # offline; canned output, not a real review
 From a clone, run `uv sync`, then `uv run python -m review_bot <diff>`. The usage below describes `main` and may be ahead of the latest release.
 
 - **Authentication:** your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
-- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error, `15` input that isn't a diff. See the exit codes for [Phase 0](docs/phases/phase-0/design.md#exit-codes) and [Phase 1](docs/phases/phase-1/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error, `15` input that isn't a diff, `16` a possible secret in the diff. See the exit codes for [Phase 0](docs/phases/phase-0/design.md#exit-codes) and [Phase 1](docs/phases/phase-1/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
 - **Only real diffs are reviewed.** Text that isn't a unified diff exits `15`. In a git diff, docs, lock, generated and binary files are skipped and not sent to the model; a plain unified diff is reviewed whole.
+- **A diff with a detected secret is never sent.** Before anything is parsed, the whole diff text is scanned for known key and token formats, private keys and quoted credentials. A hit exits `16` with the kind and diff line of each, never the value. Secrets in other formats aren't detected.
 - **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state
@@ -101,9 +102,10 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 
 **Goal:** findings that can be trusted, triaged, and measured.
 
-- **Pipeline:** `parse → static → agent → verify → policy → output`, with a JSONL audit log of every stage decision.
+- **Pipeline:** `secret scan → parse → static → agent → verify → policy → output`, with a JSONL audit log of every stage decision.
 - **Parsing:** a tolerant diff parser that survives malformed hunk headers, with docs-only and generated/lock files skipped.
-- **Rule checks** that need no LLM: swallowed exceptions, `open()` without encoding, secrets. A diff containing a detected secret is **not sent** to the model.
+- **Secret scan** on the raw diff text, before parsing: a diff containing a detected secret is **not sent** to the model.
+- **Rule checks** that need no LLM: swallowed exceptions, `open()` without encoding.
 - **Structured findings** (pydantic `Finding`: file, line, severity, category, rationale, confidence). Invalid model output is rejected, and hallucinated line references are dropped.
 - **Interactive triage** (accept / reject / edit). Decisions are logged as labels.
 - **Output:** JSON and Markdown.

@@ -401,3 +401,132 @@ The whole suite covers 100% of statements and branches, `diff_parser.py`, `revie
 8. **Run on Windows only** by the tester. CI hasn't been checked.
 9. **Plain unified diffs skip nothing** (the main session's decision). A plain diff of docs or lock files now costs tokens. Whether the faked header still splits the file in the plain form isn't pinned.
 10. **Parse time is checked for two crafted lines only,** at one size. Other long-line shapes, such as hunk headers and quoted `---` paths, aren't timed.
+
+## P1-S3: Stop a diff with a detected secret from reaching the model
+
+Spec: [p1-s3-secret-block.md](slices/p1-s3-secret-block.md). Tests: [`tests/integration/test_p1_s3_secret_block.py`](../../../tests/integration/test_p1_s3_secret_block.py), 144 cases after review round 1 (124 before it), all in-process: `main` with an injected `MockProvider`, and `scan_secrets` and `redact` called directly.
+
+**Status: every criterion passes.** The run was against the uncommitted working tree on base `c1afc69`, so a later `src/` change needs a re-run. The tests were written from the spec and design before the developer's code existed. When it first ran, `secret_scan.py` existed but wasn't wired in: the 74 direct and near-miss cases passed and the 47 cases that need exit 16 failed. After the developer wired `review.py` (last `src/` change 07:17:40), all passed. Only `review.py`'s import of `scan_secrets` was read afterwards, to know where to patch it for the wrong-code checks.
+
+**No secret is committed.** Every value is assembled at run time: prefixes are split (`"AK" + "IA"`, `"sk" + "-ant-"`, `"-----BEGIN " + "RSA " + "PRIVATE" + " KEY-----"`), and bodies come from a stride over an alphabet, so no two neighbours repeat and no placeholder word appears. gitleaks 8 (the pre-commit copy, with `--ignore-gitleaks-allow`, as CI runs it) finds nothing in the file, and it found a positive control. P0-S1 AC17's `sk-` pattern finds nothing in it either.
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `ruff format --check .` | Pass |
+| `ruff check .` | Pass, at 07:21. At 07:19 it failed on the developer's `tests/unit/test_secret_scan.py` (two `RUF001`, a literal U+2028), since fixed |
+| `mypy` (strict) | Pass |
+| `uv run pytest --cov -q`, whole suite, after review round 1 (07:40, after the developer's last `src/` change at 07:37:13) | 1389 passed, 12 skipped (`/dev/full`, Windows), 100% coverage (710 statements, 132 branches); 110.37 s, with all 144 P1-S3 cases |
+| `git add -A && pre-commit run gitleaks --all-files`, after review round 1 | Pass |
+| The whole suite, before review round 1, at 07:24 | 1350 passed, 12 skipped (`/dev/full`, Windows), 100% coverage (707 statements, 130 branches); 109.42 s. That was at 122 P1-S3 cases; the 2 cases of the removed line that starts with `V` were added after it and pass in the file's own run (124 passed) |
+| gitleaks over `tests/` | Pass at 07:26. At 07:20 it failed on the developer's unit tests, since fixed: see For the developer below |
+| `pre-commit`, `pip-audit` | Not run by the tester |
+
+### Criteria
+
+Test names drop the `test_p1_s3_` prefix.
+
+| AC | Test | Cases | Result |
+|---|---|---|---|
+| AC1 | `ac1_vendor_kind_on_an_added_line_exits_16_naming_kind_and_line` | 5 (AWS, GitHub `ghp_`, Anthropic, OpenAI, Slack `xoxb-`) | Pass |
+| AC1 | `ac1_private_key_on_added_lines_exits_16_naming_kind_and_line` | 1 | Pass |
+| AC1 | `ac1_assigned_credential_on_an_added_line_exits_16_naming_kind_and_line` | 1 | Pass |
+| AC1 | `ac1_assignment_form_with_a_digit_is_an_assigned_credential` | 4 (JSON, typed, YAML, YAML with trailing comma) | Pass |
+| AC1, from Interfaces | `ac1_interfaces_form_is_detected_as_its_kind` | 9 (`gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`) | Pass |
+| AC1, from Interfaces | `ac1_credential_name_forms_are_assigned_credentials` | 5 (`DB_PASSWORD`, `self.api_key`, YAML `client-secret`, `APIKEY`, `passwd`) | Pass |
+| AC1 | `ac1_crlf_diff_names_the_same_diff_line` | 1 | Pass |
+| AC1, Interfaces | `ac1_interfaces_example_line_is_exact`: AWS at diff line 12, PEM at 40, the Interfaces line byte for byte | 1 | Pass |
+| AC1 | `ac1_scan_secrets_returns_kind_and_line_but_never_the_value`, `ac1_scan_secrets_finds_nothing_in_a_clean_diff` | 2 | Pass |
+| AC2 | `ac2_value_anywhere_in_the_file_exits_16_without_the_value` | 26 (13 places × AWS, GitHub; the 4 places from review round 1 are below): added, removed, removed with `V` right after the `-` marker, context, commit preamble, `+++ b/` path, `README.md`, `uv.lock`, `@@ garbage @@` | Pass |
+| AC3 | `ac3_seven_hits_name_the_first_five_and_the_total` | 1 | Pass |
+| AC4 | `ac4_non_diff_text_with_a_secret_exits_16_not_15` | 1 | Pass |
+| AC4 | `ac4_secret_in_an_oversized_diff_exits_6` | 2 (`V` inside the first 64 bytes; `V` past them), `--max-diff-bytes 64` | Pass |
+| AC5 | `ac5_threshold_critical_still_exits_16` | 1 | Pass |
+| AC6 | `ac6_near_miss_is_reviewed_normally` | 16, every near miss in the criterion | Pass |
+| AC6 | `ac6_near_miss_gives_no_hit` (`scan_secrets` returns no hit) | 16 | Pass |
+| AC6 | `ac6_bare_task_queue_name_is_reviewed_normally` | 1 | Pass |
+| AC6, from Interfaces | `ac6_interfaces_boundary_is_reviewed_normally` | 19 (see below) | Pass |
+| Notes | `notes_type_like_string_with_a_digit_in_a_multiline_list_exits_16` | 1 | Pass |
+| AC7 | `ac7_redact_replaces_each_vendor_value` | 7 (the five vendor kinds, `github_pat_`, `xoxp-`), each value twice | Pass |
+| AC7 | `ac7_redact_replaces_an_assigned_credential_value_only` | 4 (AC1's four forms) | Pass |
+| AC7 | `ac7_redact_replaces_a_whole_pem_block_with_one_marker`, `..._in_added_lines_...` | 2 | Pass |
+| AC7 | `ac7_redact_pem_block_without_end_runs_to_the_end_of_the_text`, `ac7_redact_pem_end_without_begin_runs_from_the_start_of_the_text` | 2 | Pass |
+| AC7 | `ac7_redact_returns_text_without_a_secret_unchanged` | 4 (empty, plain diff, all near misses, CRLF) | Pass |
+
+No failures to reproduce.
+
+### Review round 1: the amended spec
+
+The spec's criteria and Interfaces changed in review (marked "changed in review, main session, 2026-11-06"). The tests below were written from the amendments while the developer fixed the code. **Against the code before the fix, 17 of the 20 new cases failed**, every one except the three that check an existing rule from a new angle (the `diff --cc` YAML place under both kinds, and the private key with no boundary). **After the fix (07:37), all 144 pass.**
+
+| Amendment | Test | Cases | Before the fix | After |
+|---|---|---|---|---|
+| AC1: the other quote inside a literal | `ac1_literal_holding_the_other_quote_is_an_assigned_credential` | 2 (a double-quoted literal holding `'`, a single-quoted one holding `"`) | Fail | Pass |
+| AC2: `diff --cc` removed line (`--V`) | `ac2_value_anywhere_...[combined_removed_line-*]` | 2 | Fail | Pass |
+| AC2: `diff --cc` added YAML line (`++password: "V"`) | `ac2_value_anywhere_...[combined_added_yaml_line-*]` | 2 | Pass (the vendor value is found anyway) | Pass |
+| AC2: the same, with a credential-only value, so only the "first on its line" rule can find it | `ac2_combined_added_yaml_credential_counts_as_first_on_its_line` | 1 | Fail | Pass |
+| AC2: `+-V` | `ac2_value_anywhere_...[added_line_starting_with_a_hyphen-*]` | 2 | Fail | Pass |
+| AC2, from the coordinator: ` -V` (a context line) | `ac2_value_anywhere_...[context_line_starting_with_a_hyphen-*]` | 2 | Fail | Pass |
+| Interfaces: the single-hit line, byte for byte | `ac1_interfaces_single_hit_line_is_exact` | 1 | Fail | Pass |
+| Interfaces: placeholder words in lowercase only | `ac1_placeholder_word_not_in_lowercase_is_still_detected` (`XXX`, `Example`, `YOUR` inside a token) | 3 | Fail | Pass |
+| Interfaces: PGP private key | `ac1_pgp_private_key_block_is_a_private_key` | 1 | Fail | Pass |
+| Interfaces: no prefix boundary for `private-key` | `ac1_private_key_line_has_no_prefix_boundary` (BEGIN right after a letter) | 1 | Pass | Pass |
+| AC7: PGP redacted as one block | `ac7_redact_replaces_a_whole_pgp_block_with_one_marker` | 1 | Fail | Pass |
+| AC7: the other quote, redacted | `ac7_redact_replaces_a_literal_holding_the_other_quote` | 2 | Fail | Pass |
+
+Earlier lowercase placeholder cases (`example`, `placeholder`, `xxx` in `ac6_interfaces_boundary_is_reviewed_normally`, and AC6's own near misses) still pass, so the change didn't loosen them. **The CR-only Known limit isn't pinned.** The Notes describe it as a limit, not a required behaviour, so a fix that detected YAML credentials in a CR-only file shouldn't fail a test.
+
+**What every exit-16 case asserts** (`assert_blocked`): exit 16, empty stdout, `provider.requests == []`, stderr exactly one line starting `review-bot: error: `, no value (`V`, and for PEM the BEGIN, body and END lines) in stdout or stderr, and no diff path in the line. "Diff-file line number" is the 1-based line of the file, by `\n`. Each AC6 near miss is "reviewed normally" when the run exits 1 (the mock's canned finding), the provider got one request, and the line is in its prompt.
+
+**AC6's boundary cases from Interfaces:** AKIA with 17 characters, after a letter, after `_`; a `ghp_` token of 37, or after `-`; `sk-` with no digit, or after a letter; `xoxb-` with 9; a 15-character credential; a credential that starts `http://`, or holds `example`, `placeholder`, `xxx`, `<`, or `${`; the name `tokens`; the name `mytoken`; an unquoted `token:` mid-line; and a digit-bearing type string annotating `token` in a one-line parameter list.
+
+### Would the tests fail on wrong code?
+
+**All 6 kinds of wrong code are caught,** and a control passes. A driver on stdin ran pytest in-process over the 84 `main` cases and patched `review.scan_secrets`. No repository file was changed.
+
+| Wrong code | Failing cases |
+|---|---|
+| No scan (`scan_secrets` returns `()`) | 47 of 84: every exit-16 case. AC4's size cases rightly pass |
+| Scan after the parser, on `reviewable_text` (15 on a non-diff) | 5: AC2's `README.md` and `uv.lock` (both kinds), AC4's non-diff |
+| Scan of added lines only | 9: AC2's removed, context, preamble and path (both kinds), AC4's non-diff |
+| Every hit's line one too high | Every case that names a line, AC1's exact line included |
+| Only the first 5 hits returned | 1: AC3, by its total |
+| Control: the real scan | 0 of 84 |
+
+The direct `scan_secrets` and `redact` cases weren't run against wrong code.
+
+### Coverage
+
+The whole suite covers 100% of statements and branches, `secret_scan.py`, `review.py`, `cli.py` and `errors.py` included. These in-process tests count toward it, alongside the developer's unit tests.
+
+### For the developer
+
+**Resolved by the developer by 07:26: `tests/unit/test_secret_scan.py` failed CI's gitleaks step. Severity `blocker` while open.** CI scans the whole tree with `--ignore-gitleaks-allow` and no allowlist, before the tests run. gitleaks 8's `generic-api-key` rule flagged four near-miss lines in it (99, 109, 110 and 112): quoted literals of 16 or more characters, each after a credential-like name. Near misses are not exempt: gitleaks doesn't know they're near misses. **Repro:** `gitleaks dir tests/unit --redact --no-banner --ignore-gitleaks-allow -v`. **Fix direction:** assemble those literals at run time, as this file does.
+
+**Not an AC, for the reviewer:** with one hit the line read, at 07:20, `1 possible secret in the diff (...), so it was not sent to the model. Remove them and rotate any that are real`. "Remove them" follows the plural Interfaces example. **Settled in review round 1:** Interfaces now gives the single-hit line, and `ac1_interfaces_single_hit_line_is_exact` pins it.
+
+**The developer's Notes reading, that a line's first `-` is the removed-line marker,** is covered by AC2's new `removed_line_starting_with_the_value` case. Without that reading, `-AKIA...` would fail the "doesn't follow `-`" boundary and reach the model. That case wasn't run against wrong code.
+
+### Readings of this slice's criteria
+
+None blocks the slice; each is a choice the tests make where the spec could be read two ways.
+
+1. **AC6's SHA-256 digest** is tested under a name that isn't a credential name (`checksum = "<hex>"`). Under `token = "<hex>"` the 64-character literal would meet `assigned-credential`'s rule, so the criterion can only mean a non-credential name.
+2. **"At a word start or after `_`, `-` or `.`"** is read as applying to the name's ending, so `mytoken = "..."` is a near miss and `DB_PASSWORD` a hit. The developer's unit tests read it the same way. If it means the whole name, `mytoken` should block.
+3. **AC7's PEM block ends at `END ... KEY-----`,** keeping the newline after it, so `before\n<block>\nafter\n` becomes `before\n[REDACTED]\nafter\n`. With no `END`, "to the end of the text" takes the trailing newline too, giving `before\n[REDACTED]`.
+4. **AC7's assigned credential keeps its quotes:** only the literal's value is `V`, so `password = "V"` becomes `password = "[REDACTED]"`.
+5. **AC3's "states the total"** is checked as `7 possible secrets`, the Interfaces line's form, and the 6th and 7th line numbers must not appear.
+6. **AC4's "the file was never read whole"** is shown only by the outcome: exit 6 even when `V` sits inside the first 64 bytes, so a scan of a partial read would have given 16. How much was read isn't measured.
+
+### Limits
+
+1. **Hits on the same line, or two kinds overlapping** (an AWS key assigned to `token`), aren't pinned: the spec doesn't say whether that is one hit or two.
+2. **Stderr closed or failing** with a hit (the Notes' P0-S3 AC4 rule) isn't run.
+3. **A Claude run** with a hit isn't run; every exit-16 case uses the mock. The scan precedes the provider, so it shouldn't differ.
+4. **Only two kinds run through AC2's places** (AWS, GitHub); the others run on added lines only.
+5. **`redact`'s use on paths** ("every path written anywhere passes `redact`", design.md) belongs to the slices that write paths, and isn't tested here.
+6. **Run on Windows only** by the tester. CI hasn't been checked.
+7. **The review round 1 cases weren't run against made-up wrong code.** Their evidence is the code before the fix, which 17 of the 20 failed.
+8. **CR-only line endings** (the Notes' Known limit) aren't tested either way, as above. A `diff --cc` section with three or more parents isn't run.
+9. **A literal holding its own opening quote** isn't tested. The rule says no such literal is a match, but it only shortens the literal, so the result depends on what follows.
