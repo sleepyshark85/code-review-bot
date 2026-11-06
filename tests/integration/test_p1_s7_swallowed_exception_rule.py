@@ -96,6 +96,14 @@ def sample_text() -> str:
     return SAMPLE.read_bytes().decode("utf-8")
 
 
+def sample_without_open_text() -> str:
+    """The sample with an encoding on its `open()`, so this rule's is its only hit (P1-S8)."""
+    text = sample_text()
+    encoded = text.replace('open(path, "w")', 'open(path, "w", encoding="utf-8")')
+    assert encoded != text
+    return encoded
+
+
 def rules_module() -> Any:
     return importlib.import_module("review_bot.rules")
 
@@ -110,8 +118,13 @@ def run_rules(text: str) -> Any:
     return rules_module().run_rules(parse_diff(text))
 
 
+def swallowed_findings(text: str) -> list[Any]:
+    """This rule's findings only: since P1-S8, the sample's `open()` is another rule's."""
+    return [item for item in run_rules(text).findings if item.rule == RULE_ID]
+
+
 def rule_fingerprints(text: str) -> list[str]:
-    return [item.fingerprint for item in run_rules(text).findings]
+    return [item.fingerprint for item in swallowed_findings(text)]
 
 
 def verify(proposed: Sequence[Finding], text: str) -> Any:
@@ -126,7 +139,9 @@ def static_rules(log_path: Path) -> dict[str, Any]:
 
 
 def logged_rule_entries(log_path: Path) -> list[Any]:
-    return list_holding(static_rules(log_path), lambda item: holds(item, RULE_ID))
+    """This rule's `static.rules` entries, without other rules' entries."""
+    entries = list_holding(static_rules(log_path), lambda item: holds(item, RULE_ID))
+    return [entry for entry in entries if holds(entry, RULE_ID)]
 
 
 def unanchored_count(data: dict[str, Any]) -> Any:
@@ -153,6 +168,11 @@ def review(bot: Any, log_path: Path) -> Callable[..., Any]:
 
 
 @pytest.fixture
+def sample_without_open(write_diff: Callable[..., Path]) -> Path:
+    return write_diff(sample_without_open_text(), "sample_without_open.diff")
+
+
+@pytest.fixture
 def review_text(review: Callable[..., Any], write_diff: Callable[..., Path]) -> Callable[..., Any]:
     def run(text: str, findings: Sequence[Finding] = (), *flags: str) -> Any:
         return review(write_diff(text), findings, *flags)
@@ -160,11 +180,22 @@ def review_text(review: Callable[..., Any], write_diff: Callable[..., Path]) -> 
     return run
 
 
-# AC1: the sample diff's `except Exception: pass` is found with no model.
+# AC1: the sample diff's `except Exception: pass` is found with no model. Since P1-S8 (AC1), the
+# sample's `open()` prints a second rule line after it, so the exact output is checked without it.
 
 
 def test_p1_s7_ac1_sample_diff_prints_the_rule_line_at_line_35_and_exits_1(review):
     run = review(SAMPLE)
+
+    assert run.exit_code == 1, run.stderr
+    assert run.stdout.splitlines()[0] == rule_line(INVOICE, 35)
+    assert run.stdout.count(RULE_TEXT) == 1
+
+
+def test_p1_s7_ac1_sample_without_its_open_call_prints_only_the_rule_line(
+    review, sample_without_open
+):
+    run = review(sample_without_open)
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout == rule_line(INVOICE, 35) + "\n"
@@ -186,8 +217,8 @@ def test_p1_s7_ac1_documented_command_in_a_child_process_reports_the_rule(tmp_pa
     )
 
     assert completed.returncode == 1, completed.stderr
-    assert completed.stdout == rule_line(INVOICE, 35) + "\n"
-    assert summary(completed.stderr)["rule_findings"] == "1"
+    assert completed.stdout.splitlines()[0] == rule_line(INVOICE, 35)
+    assert completed.stdout.count(RULE_TEXT) == 1
 
 
 def test_p1_s7_ac1_design_rule_summary_appends_its_fields_in_order(review):
@@ -222,7 +253,7 @@ def test_p1_s7_ac1_run_rules_gives_a_rule_sourced_finding():
 
     result = run_rules(sample_text())
 
-    (item,) = result.findings
+    (item,) = swallowed_findings(sample_text())
     assert item.source == findings_module.Source.RULE
     assert item.rule == findings_module.RuleId.SWALLOWED_EXCEPTION
     assert (item.finding.file, item.finding.line) == (INVOICE, 35)
@@ -527,8 +558,8 @@ def test_p1_s7_ac7_limits_readable_hunk_beside_it_still_prints(review_text, log_
 AI_HIGH = finding(line=14, severity="high")
 
 
-def test_p1_s7_ac8_rule_line_prints_first_then_the_ai_line(review):
-    run = review(SAMPLE, [AI_HIGH])
+def test_p1_s7_ac8_rule_line_prints_first_then_the_ai_line(review, sample_without_open):
+    run = review(sample_without_open, [AI_HIGH])
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout == rule_line(INVOICE, 35) + "\n" + ai_line(AI_HIGH) + "\n"
@@ -663,7 +694,7 @@ def moved_sample(lines_down: int) -> str:
 
 
 def test_p1_s7_ac10_hunk_moved_50_lines_down_keeps_the_fingerprint():
-    moved = run_rules(moved_sample(50)).findings
+    moved = swallowed_findings(moved_sample(50))
 
     assert moved[0].finding.line == 85
     assert [item.fingerprint for item in moved] == rule_fingerprints(sample_text())
@@ -777,8 +808,10 @@ TWO_RATIONALES = [
 ]
 
 
-def test_p1_s7_ac11_two_ai_findings_on_one_line_with_different_rationales_both_print(review):
-    run = review(SAMPLE, TWO_RATIONALES)
+def test_p1_s7_ac11_two_ai_findings_on_one_line_with_different_rationales_both_print(
+    review, sample_without_open
+):
+    run = review(sample_without_open, TWO_RATIONALES)
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout.splitlines()[1:] == [ai_line(item) for item in TWO_RATIONALES]
@@ -798,7 +831,7 @@ def test_p1_s7_ac11_two_ai_findings_on_one_line_have_ordinals_0_and_1():
 def test_p1_s7_ac11_ai_finding_and_rule_on_one_line_differ():
     on_the_handler = finding(line=35, category="reliability", rationale="Swallowed.")
 
-    kept = verify([on_the_handler], sample_text()).kept
+    kept = verify([on_the_handler], sample_without_open_text()).kept
 
     assert len(kept) == 2
     assert kept[0].fingerprint != kept[1].fingerprint
@@ -809,8 +842,8 @@ def test_p1_s7_ac11_ai_finding_and_rule_on_one_line_differ():
 SAME = finding(line=14)
 
 
-def test_p1_s7_ac12_identical_ai_findings_print_once_with_deduped_1(review):
-    run = review(SAMPLE, [SAME, SAME])
+def test_p1_s7_ac12_identical_ai_findings_print_once_with_deduped_1(review, sample_without_open):
+    run = review(sample_without_open, [SAME, SAME])
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout == rule_line(INVOICE, 35) + "\n" + ai_line(SAME) + "\n"
@@ -826,16 +859,18 @@ def test_p1_s7_ac12_verify_records_one_duplicate_of_the_kept_fingerprint():
     assert ai[0].fingerprint in repr(result.deduped)
 
 
-def test_p1_s7_ac12_limits_identical_but_for_confidence_is_still_a_duplicate(review):
+def test_p1_s7_ac12_limits_identical_but_for_confidence_is_still_a_duplicate(
+    review, sample_without_open
+):
     """design.md: only file, rule part, line and rationale are compared."""
-    run = review(SAMPLE, [SAME, finding(line=14, confidence=0.4)])
+    run = review(sample_without_open, [SAME, finding(line=14, confidence=0.4)])
 
     assert run.stdout.splitlines()[1:] == [ai_line(SAME)]
     assert summary(run.stderr)["deduped"] == "1"
 
 
-def test_p1_s7_ac12_limits_three_identical_give_deduped_2(review):
-    run = review(SAMPLE, [SAME, SAME, SAME])
+def test_p1_s7_ac12_limits_three_identical_give_deduped_2(review, sample_without_open):
+    run = review(sample_without_open, [SAME, SAME, SAME])
 
     assert run.stdout.splitlines()[1:] == [ai_line(SAME)]
     assert summary(run.stderr)["deduped"] == "2"
@@ -849,8 +884,8 @@ NOT_DUPLICATES = {
 
 
 @pytest.mark.parametrize("other", NOT_DUPLICATES.values(), ids=NOT_DUPLICATES.keys())
-def test_p1_s7_ac12_limits_one_part_differing_keeps_both(review, other):
-    run = review(SAMPLE, [SAME, other])
+def test_p1_s7_ac12_limits_one_part_differing_keeps_both(review, sample_without_open, other):
+    run = review(sample_without_open, [SAME, other])
 
     assert run.stdout.splitlines()[1:] == [ai_line(SAME), ai_line(other)]
     assert summary(run.stderr)["deduped"] == "0"

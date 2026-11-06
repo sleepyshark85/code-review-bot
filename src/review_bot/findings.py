@@ -68,6 +68,7 @@ class RuleId(StrEnum):
     """A check that runs with no model."""
 
     SWALLOWED_EXCEPTION = "swallowed-exception"
+    OPEN_WITHOUT_ENCODING = "open-without-encoding"
 
 
 @dataclass(frozen=True, slots=True)

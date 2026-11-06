@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from diff_support import FINDING_DIFF, FINDING_LINE, SAMPLE_RULE_LINE
+from diff_support import FINDING_DIFF, FINDING_LINE, SAMPLE_RULE_LINES
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 from p0_s4_support import PREFIX, assert_one_error_line
 from real_sdk_support import FINDING_LINE_START
@@ -298,10 +298,10 @@ def test_p1_s18_ac4_main_leaves_the_unraisable_hook_unless_it_built_claude(
         run = bot.review(sample_diff)
 
     # Only Claude's finding is anchored: the mock's canned one is dropped since P1-S6 (AC11). The
-    # mock routes still exit 1, on the sample's swallowed exception, a rule finding since P1-S7.
-    expected = FINDING_LINE if route == "injected_claude" else SAMPLE_RULE_LINE
+    # mock routes still exit 1, on the sample's rule findings (P1-S7 AC1, P1-S8 AC1).
+    expected = [FINDING_LINE] if route == "injected_claude" else list(SAMPLE_RULE_LINES)
     assert run.exit_code == 1, run.stderr
-    assert run.stdout == expected + "\n"
+    assert run.stdout == "".join(f"{line}\n" for line in expected)
     assert sys.unraisablehook is hook
 
 

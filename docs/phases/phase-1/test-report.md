@@ -910,3 +910,53 @@ This file alone covers `rules.py`, `findings.py` and `policy.py` fully, and `fin
 1. **The full gate** was run by the main session, not the tester, and is green (see the status line). `pip-audit` runs in CI.
 2. **Run on Windows only.** AC9's child-process cases are the cross-platform guard, and they run on CI's Linux too.
 3. **Rule vs AI dedup and the model's `rule` tag** are P1-S9's. AC13's `rule` case will be replaced there, as the spec notes.
+
+## P1-S8: Catch `open()` without an encoding with no model
+
+Spec: [p1-s8-open-encoding-rule.md](slices/p1-s8-open-encoding-rule.md). Tests: [`tests/integration/test_p1_s8_open_encoding_rule.py`](../../../tests/integration/test_p1_s8_open_encoding_rule.py), 94 cases. Runs go through `main` with an injected `MockProvider(findings=[])`. AC1 also runs the documented `python -m review_bot Assignment/sample_diff.txt --provider mock` in a child. `run_rules` and `fingerprint_for` are called directly where a criterion is about a finding's identity. No fixture files: every diff is built in the test.
+
+**Status: every criterion passes, 94 of 94, after review round 1 (87 of 87 before it).** The tests were written from the spec and design.md before the code. Against `main` at 17228ae, 34 of the first 79 failed (every case expecting a finding) and 45 passed, most of them vacuously. On the developer's code, one of mine failed: `ac1_design_static_rules_record_holds_the_finding` took the whole `static.rules` list as this rule's entries. It now keeps only this rule's entries. After that, 8 cases were added to pin the developer's Notes (below), and 7 more in review round 1. The full gate after review round 1: ruff format and check clean, mypy strict clean (24 files), pytest --cov 2381 passed, 12 skipped, 0 failed, 100% coverage, pre-commit clean (2366 passed before round 1). The per-record audit-log cost noted below is tracked as [#33](https://github.com/sleepyshark85/code-review-bot/issues/33).
+
+### Criteria
+
+| AC | Tests (`test_p1_s8_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_sample_diff_prints_line_35_then_line_39`: stdout is exactly `SAMPLE_RULE_LINE`, then the spec's line for `billing/invoice.py:39`; `rule_findings=2`. `ac1_documented_command_in_a_child_process_prints_both_lines`. `ac1_run_rules_gives_a_low_reliability_rule_finding_at_39`: `Source.RULE`, `RuleId.OPEN_WITHOUT_ENCODING`, low/reliability, confidence 1.0. Design rules: `ac1_design_fingerprint_uses_the_rule_id_and_the_anchored_line` (`fingerprint_for(rule="open-without-encoding", …, ordinal=0)`), `ac1_design_static_rules_record_holds_the_finding`. `ac1_threshold_medium_drops_the_low_open_finding` | pass (6) |
+| AC2 | `ac2_call_without_encoding_gives_one_finding_at_the_open_line` ×6, the spec's six forms. The 3-line call starts on line 2, so its anchor isn't the hunk's first line. Limits ×9: `'w'`, `"rt"`, `newline=""` only, a nested call argument, a path string holding `encoding=`, `encoding=` only in a trailing comment, a string holding `open(` then a real call, a string holding `#` then a real call, `with open(` over 3 lines. A hunk at `+57` anchors at 59. A CRLF diff | pass (17) |
+| AC3 | `ac3_call_with_encoding_or_binary_mode_gives_no_finding` ×6, the spec's six forms. Limits ×8: `encoding = "utf-8"` with spaces, `mode='rb'`, `"br"`, `"wb+"`, `"xb"`, `mode="rb", buffering=0`, a positional encoding `open(p, "r", -1, "utf-8")`, `with open(` over 4 lines with `encoding=`. Round 1: `encoding=` after a backslash continuation (`ac3_encoding_after_a_backslash_continuation_gives_no_finding`) | pass (15) |
+| AC4 | `ac4_other_opens_and_unsure_calls_give_no_finding` ×8, the spec's eight forms. Limits ×9: `def open(self, p):`, `'open(p)'`, a string with an escaped quote before `open(p)`, a trailing comment, `open(*args)`, `open(p, **options)`, `mode=mode`, `fopen(p)`, `open_file(p)`, `builtins.open(p)` (Out of scope: silent like any attribute call). A call closed only in the next hunk. From the spec's Notes (`ac4_notes_…`): a call spanning 20 lines is found, but 21 or 25 lines aren't; `open()` with no file, `open(p]` and `open(p)` inside a triple-quoted string give none, and a real call after that string is found. Round 1: a hunk starting inside a docstring (` Use it like this:`, `+    open(p)`, ` """`) gives none (`ac4_hunk_starting_inside_a_docstring_gives_no_finding`). AC4's last sentence: an unclosed call and a 21-line call under `@@ garbage @@` give no finding and `unanchored_hits == 0`, from `run_rules` and in `static.rules` (`ac4_call_that_isnt_a_hit_isnt_counted_as_unanchored` ×2) | pass (29) |
+| AC5 | `ac5_call_in_a_file_not_reviewed_as_python_gives_no_finding` ×3: `x.js`, `src/pb/x_pb2.py` (skipped), `docs/notes.md`. `ac5_call_on_a_context_or_removed_line_gives_no_finding` ×2. Control: the same line in `x.py` beside `x.js` gives one. Limits: removing an `encoding=` and re-adding the call without it gives one; a deleted `old.py`, `x.pyi` and `x.py.txt` give none | pass (10) |
+| AC6 | `ac6_one_call_with_encoding_and_one_without_give_one_finding` ×4: encoded first, encoded second, binary first, and `open(p, encoding=detect(open(q)))`. `ac6_two_calls_without_encoding_on_one_line_give_two_findings`: two identical stdout lines, `rule_findings=2`, `deduped=0`. `ac6_two_calls_on_one_line_have_different_fingerprints`: `fingerprint_for(…, ordinal=0)` then `ordinal=1`. Both are logged in `static.rules` | pass (7) |
+| AC7 | `ac7_hit_under_an_unreadable_header_is_counted_not_printed` (renamed in round 1 from `design_rule_…`): as P1-S7 AC7, with `open(p)` under `@@ garbage @@`. Nothing prints, `unanchored_hits` is 1, and so is the `static.rules` count | pass (1) |
+| Limits | Through `main`: 10,000 `open(p)` lines give 10,000 lines and `deduped=0` (3.9 s here). One call with 40,000 argument lines, unclosed, and 40,000 nested unclosed `open(` lines, each 280 to 330 KB under the 400 KB default, give none (0.4 s each). Through `run_rules`: 50,000 unclosed `open(` on one line (0), 20,000 `open(p), ` on one line (20,000), 100,000-deep parentheses (1), and 30,000 calls inside one string (0). Each is bounded at 30 s. Round 1, from the spec's new Limits: an unclosed triple-quoted string over 25,000 `open(p)` lines gives none through `main`; one added line of 387 KB holding 43,000 `open(p)` calls gives 43,000 lines through `main` in 23 s here, bounded at 120 s (see Observation) | pass (9) |
+
+### Handover edits
+
+The sample diff now prints two rule lines. Each earlier test keeps what it protects. `tests/integration/diff_support.py` gains `SAMPLE_OPEN_LINE`, and `SAMPLE_RULE_LINES` (both lines, in print order).
+
+1. **P0-S1 AC1** (`test_p0_s1_cli.py`, the canned finding is dropped) and **AC16** (`test_p0_s1_offline.py`, offline run): stdout is `SAMPLE_RULE_LINES`, still with no canned line. The module docstring names P1-S8 AC1.
+2. **P0-S3 AC5** `[findings]` (`test_p0_s3_stream_failures.py`): both rule lines, then the model's finding, then the summary.
+3. **P1-S18 AC4** `[injected_mock]` and `[mock_flag]`: stdout is `SAMPLE_RULE_LINES`. The Claude route still expects only `FINDING_LINE`.
+4. **P1-S7** (17 cases): these stay about the swallowed-exception rule, not the sample's line count.
+   - `logged_rule_entries` keeps only `swallowed-exception` entries. It had returned the whole `static.rules` list, the same bug as mine above. This fixes AC1's two log cases and AC10's moved-hunk log case.
+   - `rule_fingerprints` and a new `swallowed_findings` keep only this rule's findings. This fixes AC1 `run_rules`, AC10 moved, changed and renamed.
+   - AC1's sample cases (in-process and child) check that the rule line at 35 prints first, and only once. A new case, `ac1_sample_without_its_open_call_prints_only_the_rule_line`, keeps AC1's exact stdout and `rule_findings=1` on the sample with `encoding="utf-8"` added to its `open()`, so the line numbers are the same.
+   - AC8's first-then-AI case, and AC11 and AC12's sample cases, use that same sample, so their `splitlines()[1:]` and `len(kept) == 2` still mean "after the one rule line".
+
+None of the 22 handover failures was a code bug.
+
+### Readings, and what the developer's Notes settled
+
+1. **Settled by the Notes, now pinned:** a fourth positional argument counts as an encoding (AC3 limits). `def open`, `*args`, `**options` and `mode=mode` stay silent (AC4 limits). A call spanning more than 20 lines isn't reported, with the boundary at 20 found and 21 not. A call with no file argument, or closed by a mismatched bracket, isn't reported. Triple-quoted strings are skipped.
+2. **Settled by the spec (AC7, round 1):** a hit under an unreadable header counts in `unanchored_hits`. The test is now named for AC7.
+3. **Settled by the spec (AC4's last sentence, and Out of scope, round 1):** an unclosed call, or one spanning more than 20 lines, isn't counted in `unanchored_hits`; `builtins.open(p)` is silent. Both are pinned.
+4. **Settled by the spec (Notes, Handover, round 1):** P1-S8 AC1 replaces P1-S7 AC1's `rule_findings=1` on the sample diff.
+5. **Test gotcha:** padding a multi-line call with `p,` lines gives it a fourth positional argument, which counts as the encoding. The span tests pad with comment lines instead.
+
+### Observation outside this slice
+
+The 43,000-finding run takes 23 s on this Windows machine, and growth is linear: 5,000, 10,000 and 20,000 findings take 2.2, 5.1 and 11.3 s. `run_rules` takes 1.1 s of that. Most of the rest is the audit log: `audit.record` runs once per finding from `review._record_decision`, and each call reopens the log file (20,000 opens took 5.2 s of an 11.3 s profile). This is P1-S4's design, not a P1-S8 bug, so it's noted rather than reported against this slice. The case's bound is 120 s rather than 30 s, which still catches a quadratic step.
+
+### Coverage
+
+100% overall before round 1, so the slice's modules (`rules`, `fingerprint`, `findings`) are fully covered. Nothing in the criteria was left untested.

@@ -8,7 +8,7 @@ import io
 import sys
 
 import pytest
-from diff_support import SAMPLE_RULE_LINE
+from diff_support import SAMPLE_RULE_LINES
 from stream_support import (
     CLOSED,
     DEV_FULL,
@@ -268,8 +268,8 @@ def test_p0_s3_ac4_stdout_and_stderr_both_failing_exits_14(kind):
 @pytest.mark.parametrize(
     ("command", "code", "stdout_lines"),
     [
-        # The sample's rule finding prints before the model's (P1-S7 AC1, AC8).
-        (injected_command("one_finding"), 1, [SAMPLE_RULE_LINE, FINDING_LINE]),
+        # The sample's rule findings print before the model's (P1-S7 AC1, AC8; P1-S8 AC1).
+        (injected_command("one_finding"), 1, [*SAMPLE_RULE_LINES, FINDING_LINE]),
         (bot_command("--threshold", "critical"), 0, ["No findings at or above critical."]),
     ],
     ids=["findings", "no_findings"],
