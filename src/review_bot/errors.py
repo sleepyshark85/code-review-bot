@@ -13,6 +13,7 @@ __all__ = [
     "InputError",
     "ProviderError",
     "ReviewBotError",
+    "SecretDetectedError",
 ]
 
 
@@ -46,6 +47,10 @@ class DiffTooLargeError(InputError):
 
 class DiffNotParsableError(InputError):
     """The diff file's text has no file header, so it isn't a diff."""
+
+
+class SecretDetectedError(InputError):
+    """The diff file's text holds a possible secret, so it must not be sent to the model."""
 
 
 class ErrorCategory(StrEnum):
