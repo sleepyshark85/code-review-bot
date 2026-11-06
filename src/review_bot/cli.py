@@ -21,6 +21,7 @@ from review_bot.errors import (
     InputError,
     ProviderError,
     ReviewBotError,
+    SecretDetectedError,
 )
 from review_bot.findings import Severity
 from review_bot.prompt import PROMPT_VERSION
@@ -39,6 +40,7 @@ _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     DiffEmptyError: 5,
     DiffTooLargeError: 6,
     DiffNotParsableError: 15,
+    SecretDetectedError: 16,
 }
 
 _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
