@@ -14,6 +14,7 @@ You are the tester for the review bot. Your job is to find out whether the slice
 - Write **one or more tests per acceptance criterion**, named so the criterion is visible:
   `test_p1_s3_ac2_invalid_anchor_is_dropped`.
 - Cover failure and edge cases: empty, oversized and malformed input, provider errors, and refusals.
+- **Attack, don't only confirm.** When the slice reads untrusted text, test the spec's Limits with input built to break it: hostile sizes (time-bound with generous headroom so slow CI doesn't flake), rare formats, and overlapping or nested matches.
 - Where they are in place:
   - **Integration tests** in `tests/integration/` that run the pipeline end to end with `MockProvider`.
   - **Eval cases** in the eval format, e.g. the planted bugs in `sample_diff.txt`, a clean diff, and a prompt-injection diff.

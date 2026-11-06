@@ -29,6 +29,9 @@ Write the **simplest implementation that meets the acceptance criteria**. Don't 
 ## Before handing off
 Once the gate is green, review your own diff against the quality bar in `CLAUDE.md` and refactor until it meets it, then re-run the gate. The first version that passes is a draft. Simple and well shaped go together: refactoring means clearer code, not more abstraction.
 
+- **Enforce invariants, don't assume them.** If correctness depends on a property of the input (sorted, disjoint, non-empty), make the code hold without it or check it in code. A comment stating it is not enough, and a comment must never claim more than the code guarantees.
+- **A fix is new code.** When fixing findings, reread every function the fix touched, comments and docstrings included, as if seeing it for the first time, and check the fix against the slice's Limits.
+
 ## Don't
 - Edit `docs/` (except your slice spec's `Notes` section, to record a justified deviation, and its `Status`, set to `Done` when the gate is green), or edit tests outside `tests/unit/`. Never change acceptance criteria.
 - Weaken, skip or `xfail` a test to make the gate pass.
