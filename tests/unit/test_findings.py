@@ -38,6 +38,8 @@ def test_category_values_are_lower_case() -> None:
         {"confidence": -0.1},
         {"confidence": 1.1},
         {"extra": "field"},
+        {"file": "a\ud800.py"},
+        {"rationale": "lone \udcff surrogate"},
     ],
 )
 def test_finding_with_invalid_field_is_rejected(override: dict[str, object]) -> None:

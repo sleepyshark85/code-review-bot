@@ -1,7 +1,7 @@
 import pytest
 
 from review_bot.findings import Category, Finding, Severity
-from review_bot.render import at_or_above, escape_unprintable, render_findings
+from review_bot.render import escape_unprintable, render_findings
 
 
 def make_finding(
@@ -18,25 +18,6 @@ def make_finding(
         rationale=rationale,
         confidence=0.876,
     )
-
-
-@pytest.mark.parametrize(
-    ("threshold", "expected"),
-    [
-        (Severity.LOW, list(Severity)),
-        (Severity.MEDIUM, [Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]),
-        (Severity.HIGH, [Severity.HIGH, Severity.CRITICAL]),
-        (Severity.CRITICAL, [Severity.CRITICAL]),
-    ],
-)
-def test_at_or_above_keeps_threshold_and_higher(
-    threshold: Severity, expected: list[Severity]
-) -> None:
-    findings = [make_finding(severity=severity) for severity in Severity]
-
-    kept = at_or_above(findings, threshold)
-
-    assert [finding.severity for finding in kept] == expected
 
 
 def test_render_findings_with_none_names_the_threshold() -> None:

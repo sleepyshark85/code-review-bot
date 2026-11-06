@@ -1,0 +1,5 @@
+billing/invoice.py:12 [high/logic] Rationale text. (confidence 0.90)
+billing/invoice.py:14 [high/logic] Rationale text. (confidence 0.90)
+billing/invoice.py:30 [high/logic] Rationale text. (confidence 0.90)
+billing/invoice.py:37 [high/logic] Rationale text. (confidence 0.90)
+billing/invoice.py:41 [high/logic] Rationale text. (confidence 0.90)

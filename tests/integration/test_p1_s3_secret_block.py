@@ -103,7 +103,7 @@ def blocked_line(bot, write_diff, text: str, *values: str, flags: tuple[str, ...
 
 
 def assert_reviewed(bot, write_diff, text: str, line: str) -> None:
-    """The diff was sent: exit 1 from the mock's canned finding, and `line` reached the prompt."""
+    """The diff was sent: the review ran (exit 0, no findings), and `line` reached the prompt."""
     request = bot.request_for(write_diff(text))
     assert line in request.user_prompt
 

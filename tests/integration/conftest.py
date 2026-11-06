@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF, FINDING_FIELDS
 from repo_paths import REPO_ROOT
 
 from review_bot import cli
@@ -42,15 +42,8 @@ class Bot:
         return MockProvider(**kwargs)
 
     def finding(self, **overrides: Any) -> Any:
-        fields = {
-            "file": "src/app.py",
-            "line": 7,
-            "severity": "high",
-            "category": "logic",
-            "rationale": "Rationale text.",
-            "confidence": 0.9,
-        }
-        return Finding(**(fields | overrides))
+        """The shared default finding; it prints only over a diff holding its anchor (P1-S6)."""
+        return Finding(**(FINDING_FIELDS | overrides))
 
     def run(self, *argv: str, provider: Any = None) -> Run:
         """Call `main` with exactly these arguments. A `SystemExit` here fails the test."""
@@ -65,9 +58,9 @@ class Bot:
 
     def request_for(self, path: Path, *flags: str) -> Any:
         """Review `path` and return the one request the provider received."""
-        provider = self.mock()
+        provider = self.mock(findings=[])
         run = self.review(path, *flags, provider=provider)
-        assert run.exit_code == 1, run.stderr
+        assert run.exit_code == 0, run.stderr
         assert len(provider.requests) == 1
         return provider.requests[0]
 
@@ -91,8 +84,11 @@ def write_diff(tmp_path: Path) -> Callable[..., Path]:
 
 @pytest.fixture
 def claude_argv(write_diff: Callable[..., Path]) -> Callable[..., list[str]]:
-    """Arguments reviewing a small diff with `--provider claude` and these flags."""
-    path = write_diff(MINIMAL_DIFF)
+    """Arguments reviewing `FINDING_DIFF` with `--provider claude`.
+
+    The diff holds `FINDING_FIELDS`' anchor, which `fake_sdk.HIGH_FINDING` uses.
+    """
+    path = write_diff(FINDING_DIFF)
 
     def argv(*flags: str) -> list[str]:
         return [str(path), "--provider", "claude", *flags]

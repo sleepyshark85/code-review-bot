@@ -4,6 +4,6 @@ It comes from the developer's `tests/unit/diff_samples.py`. `tests/unit` is on t
 unit tests are collected, but `tests/` always is, so it's imported here as `unit.diff_samples`.
 """
 
-from unit.diff_samples import MINIMAL_DIFF, section
+from unit.diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIFF, section
 
-__all__ = ["MINIMAL_DIFF", "section"]
+__all__ = ["FINDING_DIFF", "FINDING_FIELDS", "FINDING_LINE", "MINIMAL_DIFF", "section"]

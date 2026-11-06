@@ -42,11 +42,11 @@ def delimiter_lines(user_prompt: str, diff: str) -> tuple[str, str]:
 
 
 def test_p0_s1_ac12_sample_diff_is_not_rejected(bot, sample_diff):
-    provider = bot.mock()
+    provider = bot.mock(findings=[])
 
     run = bot.review(sample_diff, provider=provider)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert len(provider.requests) == 1
 
 

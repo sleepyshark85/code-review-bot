@@ -1,2 +1,2 @@
 review-bot: warning: MockProvider output is canned, not a real review.
-provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0 skipped_files=0 model_called=true
+provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0 dropped=0 skipped_files=0 model_called=true

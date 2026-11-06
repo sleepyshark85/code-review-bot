@@ -16,6 +16,7 @@ from review_bot.errors import (
     ProviderError,
     SecretDetectedError,
 )
+from review_bot.findings import Category, Finding, Severity
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.mock import MockProvider
 from review_bot.review import PipelineResult, run_pipeline
@@ -24,9 +25,12 @@ from review_bot.settings import Settings
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
 
 
-def run(diff_path: Path, log_path: Path, provider: MockProvider) -> PipelineResult:
+def run(
+    diff_path: Path, log_path: Path, provider: MockProvider, threshold: Severity = Severity.LOW
+) -> PipelineResult:
     audit = AuditLog(log_path, clock=lambda: datetime(2026, 11, 6, tzinfo=UTC))
-    return asyncio.run(run_pipeline(diff_path, Settings(provider="mock"), provider, audit))
+    settings = Settings(provider="mock", threshold=threshold)
+    return asyncio.run(run_pipeline(diff_path, settings, provider, audit))
 
 
 def write_diff(tmp_path: Path, text: str, name: str = "change.diff") -> Path:
@@ -303,7 +307,7 @@ def test_run_pipeline_with_provider_warnings_writes_and_records_each_in_order(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     log = tmp_path / "audit.jsonl"
-    provider = MockProvider(warnings=["W1", "W2"])
+    provider = MockProvider(findings=[], warnings=["W1", "W2"])
 
     result = run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
 
@@ -361,3 +365,96 @@ def test_run_pipeline_with_provider_diagnostics_records_them_scrubbed_and_shows_
         "diagnostics": ["d", "auth failed for [REDACTED]", "[removed: quotes the diff]"],
     }
     assert capsys.readouterr() == ("", "")
+
+
+def make_finding(
+    file: str = "app.py", severity: Severity = Severity.HIGH, rationale: str = "Why."
+) -> Finding:
+    return Finding(
+        file=file,
+        line=1,
+        severity=severity,
+        category=Category.LOGIC,
+        rationale=rationale,
+        confidence=0.9,
+    )
+
+
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_run_pipeline_reports_only_findings_in_the_diff_at_or_above_the_threshold(
+    tmp_path: Path,
+) -> None:
+    low, high = make_finding(severity=Severity.LOW), make_finding(file="./app.py")
+    provider = MockProvider(findings=[low, make_finding(file="gone.py"), high])
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), tmp_path / "a.jsonl", provider, Severity.HIGH)
+
+    assert [item.finding for item in result.decision.reported] == [make_finding()]
+    assert [item.finding for item in result.decision.below_threshold] == [low]
+    assert len(result.verification.dropped) == 1
+
+
+def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    low, unknown = make_finding(severity=Severity.LOW), make_finding(file="gone.py")
+    provider = MockProvider(findings=[make_finding(file="b/app.py"), unknown, low])
+
+    run(write_diff(tmp_path, MINIMAL_DIFF), log, provider, Severity.HIGH)
+
+    assert events(log)[-5:] == ["verify.checked"] * 3 + ["policy.decided"] * 2
+    records = [record["data"] for record in read_records(log)[-5:]]
+    kept = {
+        "fingerprint": None,
+        "file": "app.py",
+        "line": 1,
+        "severity": "high",
+        "outcome": "kept",
+        "reason": None,
+        "rationale_sha256": sha256("Why."),
+    }
+    assert records[0] == kept
+    assert records[1] == {
+        "fingerprint": None,
+        "file_sha256": sha256("gone.py"),
+        "file_length": len("gone.py"),
+        "line": 1,
+        "severity": "high",
+        "outcome": "dropped",
+        "reason": "unknown_file",
+        "rationale_sha256": sha256("Why."),
+    }
+    assert records[2] == kept | {"severity": "low"}
+    assert records[3:] == [
+        {"file": "app.py", "line": 1, "outcome": "reported"},
+        {"file": "app.py", "line": 1, "outcome": "below_threshold"},
+    ]
+
+
+def test_run_pipeline_records_no_text_of_a_proposal_that_names_no_diff_path(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    file = "SENTINEL-FILE-café.py"
+    findings = [make_finding(file), make_finding(rationale="SENTINEL-RATIONALE")]
+
+    run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider(findings=findings))
+
+    assert "SENTINEL" not in log.read_text(encoding="ascii")
+    unknown = read_records(log)[-3]["data"]
+    assert unknown["file_length"] == len(file)
+    assert unknown["file_sha256"] == sha256(file)
+
+
+def test_run_pipeline_with_no_proposals_records_no_verify_or_policy_stage(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider(findings=[]))
+
+    assert result.verification.checks == ()
+    assert result.decision.reported == ()
+    assert not any(event.startswith(("verify.", "policy.")) for event in events(log))

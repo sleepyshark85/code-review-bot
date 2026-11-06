@@ -17,7 +17,7 @@ import json
 import sys
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF
 from p0_s4_support import PREFIX
 from real_sdk_support import FAKE_CLI, FINDING_LINE_START, assert_failed_cleanly
 from repo_paths import REPO_ROOT
@@ -145,7 +145,7 @@ def run_on_a_fake_cli(tmp_path, monkeypatch, mode):
     fake_cli.write_text(FAKE_CLI, encoding="utf-8")
     marker = tmp_path / "fake_cli_ran"
     diff = tmp_path / "change.diff"
-    diff.write_text(MINIMAL_DIFF, encoding="utf-8")
+    diff.write_text(FINDING_DIFF, encoding="utf-8")
 
     completed, report = run_child(
         tmp_path,

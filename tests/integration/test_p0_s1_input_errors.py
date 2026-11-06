@@ -169,11 +169,11 @@ def test_p0_s1_ac10_exactly_the_default_limit_is_accepted(bot, write_diff):
     header = section("app.py", "")
     content = header + "+" + "x" * (DEFAULT_LIMIT_BYTES - len(header) - 2) + "\n"
     assert len(content.encode("utf-8")) == DEFAULT_LIMIT_BYTES
-    provider = bot.mock()
+    provider = bot.mock(findings=[])
 
     run = bot.review(write_diff(content), provider=provider)
 
-    assert run.exit_code == 1
+    assert run.exit_code == 0, run.stderr
     assert content in provider.requests[0].user_prompt
 
 
@@ -192,9 +192,9 @@ def test_p0_s1_ac11_file_at_the_limit_reaches_the_provider_whole(bot, write_diff
     path = write_diff(content)
     limit = len(content.encode("utf-8"))
     assert path.stat().st_size == limit
-    provider = bot.mock()
+    provider = bot.mock(findings=[])
 
     run = bot.review(path, "--max-diff-bytes", str(limit), provider=provider)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert content in provider.requests[0].user_prompt

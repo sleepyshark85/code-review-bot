@@ -358,9 +358,9 @@ def test_p1_s2_ac7_skip_reasons_follow_the_path_rules():
 
 
 def test_p1_s2_ac7_summary_counts_skipped_files_and_the_model_call(bot, write_diff):
-    run = bot.review(write_diff(MIXED), provider=bot.mock())
+    run = bot.review(write_diff(MIXED), provider=bot.mock(findings=[]))
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert "skipped_files=3 model_called=true" in run.stderr.splitlines()[-1]
 
 
@@ -591,12 +591,12 @@ def test_p1_s2_ac7_plain_unified_faked_header_reaches_the_prompt(bot, write_diff
 
 def test_p1_s2_ac9_plain_unified_readme_is_reviewed_not_skipped(bot, write_diff):
     text = "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n"
-    provider = bot.mock()
+    provider = bot.mock(findings=[])
 
     run = bot.review(write_diff(text), provider=provider)
 
     assert only_file(text).skip_reason is None
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert len(provider.requests) == 1
     assert framed_diff(provider.requests[0].user_prompt) == text
     assert "model_called=true" in run.stderr.splitlines()[-1]

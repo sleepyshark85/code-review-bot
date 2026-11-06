@@ -14,7 +14,7 @@ from claude_agent_sdk import (
     ProcessError,
 )
 from claude_agent_sdk._errors import MessageParseError
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF, MINIMAL_DIFF
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -213,7 +213,7 @@ def test_p0_s4_ac13_a_run_with_no_flags_reaches_claude_not_canned_findings(
 
 
 def test_p0_s4_ac13_summary_of_a_default_run_names_claude(bot, write_diff):
-    diff = write_diff(MINIMAL_DIFF)
+    diff = write_diff(FINDING_DIFF)
     _, settings = bot.parse_args(str(diff))
     fake = FakeSdk(result_message(findings_json(HIGH_FINDING)))
 

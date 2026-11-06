@@ -11,6 +11,9 @@ of the default path unset it and change into `tmp_path` first.
 
 No secret appears in this file: each value is assembled at run time, as in P1-S3's tests.
 `review_bot.audit` is imported per test, so a missing module fails its own tests only.
+
+Since P1-S6 the mock's canned finding is dropped (its anchor isn't in any diff), so a run on the
+canned mock exits 0. The exit code isn't what these tests protect: the log is.
 """
 
 import hashlib
@@ -307,7 +310,7 @@ def test_p1_s4_ac1_every_line_is_an_audit_v1_record_of_one_run(logged, write_dif
     run = logged(write_diff(MINIMAL_DIFF))
 
     after = datetime.now(UTC)
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     records = read_records(log_path)
     assert {record["schema"] for record in records} == {SCHEMA}
     run_ids = {record["run_id"] for record in records}
@@ -326,7 +329,7 @@ def test_p1_s4_ac1_every_line_is_an_audit_v1_record_of_one_run(logged, write_dif
 def test_p1_s4_ac1_start_parsed_called_end_appear_in_that_order(logged, write_diff, log_path):
     run = logged(write_diff(MINIMAL_DIFF))
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     names = events(read_records(log_path))
     required = ["run.start", "parse.parsed", "agent.called", "run.end"]
     positions = [names.index(name) for name in required]
@@ -440,7 +443,7 @@ def test_p1_s4_ac4_neither_flag_nor_variable_writes_under_the_working_directory(
 ):
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     records = read_records(in_empty_directory / DEFAULT_LOG)
     assert events(records)[-1] == "run.end"
 
@@ -451,7 +454,7 @@ def test_p1_s4_ac4_variable_sets_the_path(bot, write_diff, in_empty_directory, m
 
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert events(read_records(target))[-1] == "run.end"
     assert not (in_empty_directory / DEFAULT_LOG).exists()
 
@@ -463,7 +466,7 @@ def test_p1_s4_ac4_flag_wins_over_the_variable(bot, write_diff, in_empty_directo
 
     run = bot.review(write_diff(MINIMAL_DIFF), AUDIT_FLAG, str(from_flag), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert events(read_records(from_flag))[-1] == "run.end"
     assert not from_variable.exists()
     assert not (in_empty_directory / DEFAULT_LOG).exists()
@@ -478,7 +481,7 @@ def test_p1_s4_ac4_an_overridden_unwritable_variable_doesnt_stop_the_run(
 
     run = bot.review(write_diff(MINIMAL_DIFF), AUDIT_FLAG, str(from_flag), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert events(read_records(from_flag))[-1] == "run.end"
 
 
@@ -487,7 +490,7 @@ def test_p1_s4_ac4_relative_flag_is_under_the_working_directory(
 ):
     run = bot.review(write_diff(MINIMAL_DIFF), AUDIT_FLAG, "nested/run.jsonl", provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert events(read_records(in_empty_directory / "nested" / "run.jsonl"))[-1] == "run.end"
 
 
@@ -518,7 +521,7 @@ def test_p1_s4_ac5_parsed_lists_a_skipped_file_with_its_reason(logged, write_dif
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     parsed = only(read_records(log_path), "parse.parsed")
     skipped = list_holding(parsed, lambda entry: holds(entry, "README.md"))
     assert any(holds(entry, "README.md", "docs") for entry in skipped)
@@ -539,7 +542,7 @@ def test_p1_s4_ac5_parsed_lists_a_mismatched_hunk_by_file_index_and_declared_sta
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     parsed = only(read_records(log_path), "parse.parsed")
     hunks = list_holding(parsed, lambda entry: holds(entry, "app.py", 23))
     assert len(hunks) == 1
@@ -554,7 +557,7 @@ def test_p1_s4_ac5_hunk_with_an_unreadable_header_has_null_start_and_no_header_t
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert marker not in log_path.read_text(encoding="ascii")
     assert "@@" not in log_path.read_text(encoding="ascii")
     parsed = only(read_records(log_path), "parse.parsed")
@@ -592,7 +595,7 @@ def test_p1_s4_ac5_51_skipped_files_and_51_flagged_hunks_list_the_first_50_plus_
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     parsed = only(read_records(log_path), "parse.parsed")
     skipped = list_holding(parsed, lambda entry: holds(entry, docs[0]))
     assert len(skipped) == LISTED_AT_MOST
@@ -668,7 +671,7 @@ def test_p1_s4_ac5_skipped_path_decoding_byte_377_is_written_in_git_quoted_form(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, f"expected exit 1 (not audit exit 17): {run.stderr}"
+    assert run.exit_code == 0, f"expected exit 0 (not audit exit 17): {run.stderr}"
     assert log_path.read_bytes().isascii()
     assert_no_surrogate_escape(log_path)
     expected = json.loads(
@@ -694,7 +697,7 @@ def test_p1_s4_ac5_valid_utf8_path_is_plain_with_no_path_quoted_key(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert_no_surrogate_escape(log_path)
     assert skipped_files(log_path) == [{"file": "docs/caf\u00e9.md", "reason": "docs"}]
 
@@ -709,7 +712,7 @@ def test_p1_s4_ac5_mismatched_hunk_in_a_path_decoding_byte_377_is_written_in_git
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert_no_surrogate_escape(log_path)
     assert flagged_hunks(log_path) == [
         {"file": '"src/caf\\377.py"', "index": 0, "new_start": 4, "path_quoted": True}
@@ -764,7 +767,7 @@ def test_p1_s4_ac5_limits_non_utf8_path_uses_the_designs_exact_escaping(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert_no_surrogate_escape(log_path)
     assert skipped_files(log_path) == [{"file": expected, "reason": "docs", "path_quoted": True}]
 
@@ -784,7 +787,7 @@ def test_p1_s4_ac5_skipped_deleted_file_is_logged_by_its_old_path(logged, write_
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert skipped_files(log_path) == [{"file": "docs/old.md", "reason": "docs"}]
 
 
@@ -796,7 +799,7 @@ def test_p1_s4_ac5_flagged_hunk_in_a_deleted_file_is_logged_by_its_old_path(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert flagged_hunks(log_path) == [{"file": "src/gone.py", "index": 0, "new_start": 0}]
 
 
@@ -825,7 +828,7 @@ def test_p1_s4_ac5_skipped_deleted_file_with_a_non_utf8_old_path_is_quoted(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert skipped_files(log_path) == [
         {"file": '"docs/caf\\377.md"', "reason": "docs", "path_quoted": True}
     ]
@@ -855,7 +858,7 @@ def test_p1_s4_ac1_limits_hostile_skipped_path_keeps_one_record_per_line(
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     records = read_records(log_path)
     assert {record["schema"] for record in records} == {SCHEMA}
     assert len({record["run_id"] for record in records}) == 1
@@ -876,7 +879,7 @@ def test_p1_s4_ac1_limits_hostile_mismatched_hunk_path_keeps_one_record_per_line
 
     run = logged(write_diff(text), provider=None)
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     records = read_records(log_path)
     hunks = list_holding(only(records, "parse.parsed"), lambda entry: holds(entry, 8))
     assert len(hunks) == 1
@@ -975,7 +978,7 @@ def test_p1_s4_ac6_secret_in_a_clean_diffs_own_path_is_not_written(
 
     run = logged(write_diff(MINIMAL_DIFF, f"{value}.diff"), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert value not in log_path.read_text(encoding="ascii")
 
 
@@ -1550,7 +1553,7 @@ def test_p1_s4_ac13_default_path_creates_the_directory_with_a_gitignore_of_star(
 ):
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     ignore = in_empty_directory / ".review-bot" / ".gitignore"
     assert "*" in ignore.read_text(encoding="utf-8").splitlines()
 
@@ -1563,7 +1566,7 @@ def test_p1_s4_ac13_git_ignores_the_default_directory(bot, write_diff, in_empty_
 
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     status = subprocess.run(  # noqa: S603 - fixed arguments
         [git, "status", "--porcelain", "--untracked-files=all"],
         cwd=in_empty_directory,
@@ -1582,7 +1585,7 @@ def test_p1_s4_ac13_existing_default_directory_gets_no_gitignore(
 
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert not (in_empty_directory / ".review-bot" / ".gitignore").exists()
     assert (in_empty_directory / DEFAULT_LOG).exists()
 
@@ -1604,7 +1607,7 @@ def test_p1_s4_ac13_custom_flag_path_gets_no_gitignore(bot, write_diff, in_empty
         write_diff(MINIMAL_DIFF), AUDIT_FLAG, "custom/audit.jsonl", provider=bot.mock()
     )
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert (in_empty_directory / "custom" / "audit.jsonl").exists()
     assert not (in_empty_directory / "custom" / ".gitignore").exists()
     assert not (in_empty_directory / ".review-bot").exists()
@@ -1618,7 +1621,7 @@ def test_p1_s4_ac13_custom_path_inside_review_bot_gets_no_gitignore(
         write_diff(MINIMAL_DIFF), AUDIT_FLAG, ".review-bot/other.jsonl", provider=bot.mock()
     )
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert not (in_empty_directory / ".review-bot" / ".gitignore").exists()
 
 
@@ -1629,7 +1632,7 @@ def test_p1_s4_ac13_custom_variable_path_gets_no_gitignore(
 
     run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
-    assert run.exit_code == 1, run.stderr
+    assert run.exit_code == 0, run.stderr
     assert not (in_empty_directory / "env-logs" / ".gitignore").exists()
     assert not (in_empty_directory / ".review-bot").exists()
 

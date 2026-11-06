@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF, FINDING_FIELDS, MINIMAL_DIFF
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -46,6 +46,7 @@ from test_p1_s4_audit_log import entry_lists, events, only, read_records, scalar
 
 from review_bot import cli
 from review_bot.errors import ErrorCategory, ProviderError
+from review_bot.findings import Finding
 from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
 
@@ -158,7 +159,7 @@ def log_path(tmp_path: Path) -> Path:
 def claude_logged(bot: Any, write_diff: Callable[..., Path], log_path: Path) -> Callable[..., Any]:
     """Run `main` with `--provider claude` over a fake `sdk_call`, logging to `log_path`."""
 
-    def review(sdk_call: Any, *flags: str, diff: str = MINIMAL_DIFF) -> Any:
+    def review(sdk_call: Any, *flags: str, diff: str = FINDING_DIFF) -> Any:
         argv = [str(write_diff(diff)), "--provider", "claude", AUDIT_FLAG, str(log_path), *flags]
         _, settings = cli.parse_args(argv)
         return bot.run(*argv, provider=ClaudeAgentProvider(settings, sdk_call=sdk_call))
@@ -351,10 +352,12 @@ def test_p1_s5_ac3_mock_warning_with_stderr_lost_stays_in_the_log(
 ):
     lose_stderr()
 
-    run = mock_logged(MockProvider(warnings=("W-SENTINEL",)))
+    run = mock_logged(
+        MockProvider(findings=[Finding(**FINDING_FIELDS)], warnings=("W-SENTINEL",)), FINDING_DIFF
+    )
 
-    assert run.exit_code == 1
-    assert "mock/example.py" in run.stdout
+    assert run.exit_code == 1, run.stderr
+    assert "src/app.py:7" in run.stdout
     assert "W-SENTINEL" in warning_texts(log_path)
 
 

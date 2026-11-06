@@ -1,21 +1,10 @@
-"""The severity threshold filter, the text output for findings, and escaping untrusted text."""
+"""The text output for findings, and escaping untrusted text."""
 
-from collections.abc import Iterable, Sequence
-from typing import Final
+from collections.abc import Sequence
 
 from review_bot.findings import Finding, Severity
 
-__all__ = ["at_or_above", "escape_unprintable", "render_findings"]
-
-_SEVERITY_RANK: Final = {severity: rank for rank, severity in enumerate(Severity)}
-
-
-def at_or_above(findings: Iterable[Finding], threshold: Severity) -> tuple[Finding, ...]:
-    """Return the findings whose severity is at least the threshold."""
-    minimum_rank = _SEVERITY_RANK[threshold]
-    return tuple(
-        finding for finding in findings if _SEVERITY_RANK[finding.severity] >= minimum_rank
-    )
+__all__ = ["escape_unprintable", "render_findings"]
 
 
 def render_findings(findings: Sequence[Finding], threshold: Severity) -> str:
