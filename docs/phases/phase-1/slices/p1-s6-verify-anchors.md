@@ -26,7 +26,7 @@ Over a fixture with the sample diff's exact hunk headers and line numbers, but n
 `verify_findings`, `VerifyResult`, `decide`: [design.md](../design.md#interfaces). `DropReason` values are the reasons above. `rule_findings` is empty until P1-S7.
 
 Changed in build, main session, 2026-11-06:
-- **Audit events:** `verify.checked`, one per proposal: `fingerprint` (null until P1-S7), `file` or else `file_sha256` and `file_length`, `line`, `severity`, `outcome` (`kept` or `dropped`), `reason` (a `DropReason`, or `null` when kept), `rationale_sha256`. `policy.decided`, one per kept finding: `file`, `line`, `outcome` (`reported` or `below_threshold`).
+- **Audit events:** `verify.checked`, one per proposal: `fingerprint` (null until P1-S7), `file` or else `file_sha256` and `file_length`, `line`, `severity`, `outcome` (`kept` or `dropped`), `reason` (a `DropReason`, or `null` when kept), `rationale_sha256`. `policy.decided`, one per kept finding: `file`, `line`, `outcome` (`reported` or `below_threshold`). P1-S7 adds `duplicate` and `duplicate_of`: [audit log](../design.md#audit-log) (changed in build, main session, 2026-11-06).
 - **Matched path:** a kept finding is reported and logged under the diff path it matched, so `./billing/invoice.py` is logged as `billing/invoice.py` (AC4).
 - **Summary:** `dropped=N` comes right before `skipped_files=` ([compatibility](../design.md#compatibility)).
 

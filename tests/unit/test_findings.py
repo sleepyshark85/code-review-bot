@@ -105,3 +105,16 @@ def test_parse_findings_with_invalid_output_rejects_it_whole(raw: str) -> None:
         parse_findings(raw)
 
     assert caught.value.category is ErrorCategory.INVALID_OUTPUT
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("source", "rule"), ("fingerprint", "0123456789abcdef"), ("rule", "swallowed-exception")],
+)
+def test_parse_findings_rejects_a_field_only_code_may_set(name: str, value: str) -> None:
+    raw = json.dumps({"findings": [valid_fields(**{name: value})]})
+
+    with pytest.raises(ProviderError) as caught:
+        parse_findings(raw)
+
+    assert caught.value.category is ErrorCategory.INVALID_OUTPUT

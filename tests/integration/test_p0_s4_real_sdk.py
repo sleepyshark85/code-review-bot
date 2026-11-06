@@ -200,7 +200,8 @@ def test_p0_s4_ac8_cli_that_never_exits_hits_the_deadline_with_one_line(run_real
 # --- AC6's note: stderr closed or failing, in a real process -------------------------------------
 
 
-# The sample diff is reviewed here, so the finding sits on one of its added lines (P1-S6).
+# P1-S6's copy of the sample diff is reviewed here, so the finding sits on one of its added lines
+# (P1-S6), and no rule finding (P1-S7) makes a run with no model findings exit 1.
 SAMPLE_FINDING = HIGH_FINDING | {"file": "billing/invoice.py", "line": 14}
 
 
@@ -210,7 +211,7 @@ def overridden_signal_command(result, *flags):
         "-c",
         OVERRIDDEN_SIGNAL_CHILD,
         result,
-        "Assignment/sample_diff.txt",
+        "tests/fixtures/p1_s6/anchors.diff",
         "--provider",
         "claude",
         *flags,

@@ -102,6 +102,11 @@ Same precedence as [Phase 0's table](../phase-0/design.md#settings). `--format` 
 Decision: [ADR 0003](../../adr/0003-finding-fingerprints.md).
 
 - **Input:** version `v1`, file, rule part, SHA-256 of the anchored line with whitespace collapsed and ends stripped, and an ordinal. The rule part is the rule ID, or `ai:<category>` for an untagged AI finding. Output: the first 16 hex digits of the SHA-256 of those parts.
+- **Encoding (changed in build, main session, 2026-11-06):** Phase 2 keys comments on fingerprints, so this is fixed for `v1`:
+  - **File:** the diff path the finding matched, as `verify` reports it.
+  - **Rule part:** the rule ID (`swallowed-exception`) for a rule finding, and for an AI finding the model tagged; `ai:` then the category value (`ai:reliability`) for an untagged one.
+  - **Anchored line:** its text, without the diff marker. Every run of Unicode whitespace (Python's `str.split()`) becomes one space, both ends are stripped, and the result is encoded as UTF-8, with a lone surrogate written as its own 3 bytes (`surrogatepass`). Its SHA-256 is written as 64 lowercase hex digits.
+  - **Joined:** a JSON array in that order, `["v1", file, rule part, anchor hash, ordinal]`, with the ordinal a JSON integer. Separators are `", "` between items, with no space inside the brackets. Every non-ASCII character is a `\uXXXX` escape, with lowercase hex, a surrogate pair above U+FFFF and a lone surrogate as its own escape, as Python's `json.dumps` with its defaults writes it. The text is encoded as ASCII, and the fingerprint is the first 16 lowercase hex digits of its SHA-256.
 - **Ordinal:** 0-based among findings sharing the other parts, in `kept` order, so two AI findings on one line stay separate.
 - **Rule vs AI:** an AI finding is a duplicate if a rule finding has the same file and `rule`, in the same hunk, within 3 new-version lines, **and the AI severity is at or below the rule's**. Otherwise both print, so a model tag can't suppress a more serious finding.
 - **AI vs AI:** only when file, rule part, anchored line and rationale are all identical. The ordinal isn't compared.
@@ -122,7 +127,7 @@ One JSON object per line: `schema` (`audit/v1`), `run_id`, `ts` (UTC), `stage`, 
 | `static` | `secrets`: kinds and diff lines. `rules`: fingerprint, rule, file, line, severity; unanchored hit count |
 | `parse` | `parsed`: `files` and `hunks` counts; `skipped_files` (each `file`, `reason`) and `flagged_hunks` (each `file`, `index`, `new_start`), for mismatched or unreadable headers, at most 50 each, with `skipped_files_total` and `flagged_hunks_total` |
 | `agent` | `called`: tokens, duration. `skipped`: reason. `warning`: scrubbed text. `failed`: category, scrubbed diagnostics |
-| `verify` | `checked`, for each proposal: `fingerprint` or null, `file` (the diff path it matched) if it matches one, otherwise `file_sha256` and `file_length`; `line`, `severity`, `outcome` (`kept` or `dropped`), `reason`, `rationale_sha256` |
+| `verify` | `checked`, for each proposal: `fingerprint` or null, `file` (the diff path it matched) if it matches one, otherwise `file_sha256` and `file_length`; `line`, `severity`, `outcome` (`kept`, `dropped`, or from P1-S7 `duplicate`), `reason` (null when kept or `duplicate`), `rationale_sha256`; from P1-S7, `duplicate_of` (the fingerprint it duplicated, or null) (changed in build, main session, 2026-11-06) |
 | `policy` | `decided`, for each kept finding: `file`, `line`, `outcome` (`reported` or `below_threshold`) |
 | `triage` | [Labels](slices/p1-s12-triage.md#interfaces) |
 

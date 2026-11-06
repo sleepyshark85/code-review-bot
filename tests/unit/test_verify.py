@@ -2,8 +2,9 @@ import pytest
 from diff_samples import section
 
 from review_bot.diff_parser import parse_diff
-from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
-from review_bot.verify import DropReason, verify_findings
+from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
+from review_bot.fingerprint import fingerprint_for
+from review_bot.verify import DropReason, ProposalCheck, verify_findings
 
 # `app.py` has added and context lines 10 to 12 and a removed line; `README.md` is skipped.
 DIFF = (
@@ -23,6 +24,10 @@ def make_finding(file: str = "app.py", line: int = 10, rationale: str = "Why.") 
     )
 
 
+def rule_finding(finding: Finding) -> ReviewedFinding:
+    return ReviewedFinding(finding, Source.RULE, RuleId.SWALLOWED_EXCEPTION, "0123456789abcdef")
+
+
 def reasons(diff: str, *findings: Finding) -> list[DropReason | None]:
     result = verify_findings(findings, (), parse_diff(diff))
     return [check.drop_reason for check in result.checks]
@@ -32,7 +37,8 @@ def reasons(diff: str, *findings: Finding) -> list[DropReason | None]:
 def test_verify_findings_keeps_an_added_or_context_line(line: int) -> None:
     result = verify_findings([make_finding(line=line)], (), parse_diff(DIFF))
 
-    assert result.kept == (ReviewedFinding(make_finding(line=line), Source.AI),)
+    [kept] = result.kept
+    assert (kept.finding, kept.source, kept.rule) == (make_finding(line=line), Source.AI, None)
     assert result.dropped == ()
 
 
@@ -131,22 +137,34 @@ def test_verify_findings_keeps_valid_findings_in_the_order_proposed_and_checks_e
     assert [check.proposed.rationale for check in result.dropped] == ["dropped"]
 
 
-def test_verify_findings_puts_rule_findings_first_by_file_and_line() -> None:
+def test_verify_findings_puts_rule_findings_first_in_the_order_given() -> None:
     rules = [
-        ReviewedFinding(make_finding(file="b.py", line=1), Source.RULE),
-        ReviewedFinding(make_finding(file="a.py", line=9), Source.RULE),
-        ReviewedFinding(make_finding(file="a.py", line=2), Source.RULE),
+        rule_finding(make_finding(file="b.py", line=1)),
+        rule_finding(make_finding(file="a.py", line=9)),
     ]
 
     result = verify_findings([make_finding()], rules, parse_diff(DIFF))
 
     assert [(item.finding.file, item.finding.line, item.source) for item in result.kept] == [
-        ("a.py", 2, Source.RULE),
-        ("a.py", 9, Source.RULE),
         ("b.py", 1, Source.RULE),
+        ("a.py", 9, Source.RULE),
         ("app.py", 10, Source.AI),
     ]
     assert len(result.checks) == 1
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    [
+        {},
+        {"drop_reason": DropReason.UNKNOWN_FILE, "fingerprint": "f"},
+        {"duplicate_of": "f", "fingerprint": "g"},
+    ],
+    ids=["none", "dropped_and_kept", "duplicate_and_kept"],
+)
+def test_proposal_check_needs_exactly_one_outcome(outcomes: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        ProposalCheck(make_finding(), "app.py", **outcomes)  # type: ignore[arg-type]
 
 
 def test_verify_findings_with_nothing_proposed_checks_nothing() -> None:
@@ -154,3 +172,80 @@ def test_verify_findings_with_nothing_proposed_checks_nothing() -> None:
 
     assert result.kept == ()
     assert result.checks == ()
+
+
+def test_verify_findings_fingerprints_a_kept_finding_by_its_anchored_line() -> None:
+    result = verify_findings([make_finding(file="./app.py", line=11)], (), parse_diff(DIFF))
+
+    expected = fingerprint_for(file="app.py", rule="ai:logic", anchor_text="b = 3", ordinal=0)
+    assert [reviewed.fingerprint for reviewed in result.kept] == [expected]
+    assert result.checks[0].fingerprint == expected
+
+
+def test_verify_findings_keeps_alike_findings_with_different_rationales_apart() -> None:
+    proposed = [make_finding(rationale="One."), make_finding(rationale="Two.")]
+
+    result = verify_findings(proposed, (), parse_diff(DIFF))
+
+    assert [reviewed.fingerprint for reviewed in result.kept] == [
+        fingerprint_for(file="app.py", rule="ai:logic", anchor_text="a = 1", ordinal=0),
+        fingerprint_for(file="app.py", rule="ai:logic", anchor_text="a = 1", ordinal=1),
+    ]
+    assert result.deduped == ()
+
+
+def test_verify_findings_keeps_the_first_of_findings_alike_in_all_but_severity_and_prefix() -> None:
+    first = make_finding()
+    repeat = make_finding(file="b/app.py").model_copy(
+        update={"severity": Severity.LOW, "confidence": 0.1}
+    )
+
+    result = verify_findings([first, repeat], (), parse_diff(DIFF))
+
+    assert [reviewed.finding for reviewed in result.kept] == [first]
+    [duplicate] = result.deduped
+    assert duplicate.proposed == repeat
+    assert duplicate.duplicate_of == result.kept[0].fingerprint
+    assert (duplicate.drop_reason, duplicate.fingerprint) == (None, None)
+    assert result.dropped == ()
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        make_finding(line=11),
+        make_finding(rationale="Other."),
+        make_finding().model_copy(update={"category": Category.SECURITY}),
+    ],
+    ids=["line", "rationale", "category"],
+)
+def test_verify_findings_does_not_dedupe_findings_differing_in_an_identifying_part(
+    other: Finding,
+) -> None:
+    result = verify_findings([make_finding(), other], (), parse_diff(DIFF))
+
+    assert len(result.kept) == 2
+    assert result.deduped == ()
+
+
+def test_verify_findings_does_not_count_a_dropped_finding_as_the_first_of_its_kind() -> None:
+    proposed = [make_finding(line=99), make_finding(line=99), make_finding()]
+
+    result = verify_findings(proposed, (), parse_diff(DIFF))
+
+    assert len(result.dropped) == 2
+    assert result.deduped == ()
+    assert [reviewed.fingerprint for reviewed in result.kept] == [
+        fingerprint_for(file="app.py", rule="ai:logic", anchor_text="a = 1", ordinal=0)
+    ]
+
+
+def test_verify_findings_keeps_a_rule_findings_own_fingerprint() -> None:
+    rule = rule_finding(make_finding(line=10))
+
+    result = verify_findings([make_finding()], [rule], parse_diff(DIFF))
+
+    assert result.kept[0] == rule
+    assert result.kept[1].fingerprint == fingerprint_for(
+        file="app.py", rule="ai:logic", anchor_text="a = 1", ordinal=0
+    )

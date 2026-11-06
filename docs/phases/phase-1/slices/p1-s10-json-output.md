@@ -30,4 +30,5 @@ With a scripted `MockProvider`. Schema in Interfaces.
 - Markdown (P1-S11); triage values (P1-S12) stay null here.
 
 ## Notes
-**README (main session):** describe `--format json` in Usage, and say text stays the default.
+- **README (main session):** describe `--format json` in Usage, and say text stays the default.
+- **Non-UTF-8 paths (changed before build, main session, 2026-11-06):** a finding's `file`, or a skipped file's path, can hold lone surrogates for bytes that aren't valid UTF-8 (rule findings on such paths are built with `model_construct`). Write it as the audit log does: git's quoted form plus `path_quoted: true` on that object ([paths in `audit/v1`](../design.md#audit-log)). Trap: `Finding.model_dump_json()` raises `PydanticSerializationError` on such a path, turning exit 1 into 14.

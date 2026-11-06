@@ -1,4 +1,4 @@
-"""Orchestrate one review: scan and parse the diff, call the provider, verify, apply the threshold.
+"""Orchestrate one review: scan, parse, run the rules, call the provider, verify, decide.
 
 Each stage's decision is recorded in the audit log.
 """
@@ -22,9 +22,10 @@ from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetecte
 from review_bot.policy import Decision, decide
 from review_bot.prompt import PROMPT_VERSION, build_request
 from review_bot.providers.base import LLMProvider, ReviewResponse, TokenUsage
+from review_bot.rules import RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
-from review_bot.verify import AnchorCheck, VerifyResult, verify_findings
+from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
 __all__ = ["PipelineResult", "run_pipeline"]
 
@@ -45,6 +46,7 @@ class _AgentSkipReason(StrEnum):
 class _VerifyOutcome(StrEnum):
     KEPT = "kept"
     DROPPED = "dropped"
+    DUPLICATE = "duplicate"
 
 
 class _PolicyOutcome(StrEnum):
@@ -74,7 +76,8 @@ async def run_pipeline(
 ) -> PipelineResult:
     """Review the diff at ``diff_path`` with ``provider``, sending only the files not skipped.
 
-    A finding is reported only if its file and line are in the diff and its severity meets the
+    The rules' findings come first. A model finding is reported only if its file and line are in
+    the diff and it repeats no earlier one, and any finding only if its severity meets the
     threshold. Each stage's decision goes to ``audit``; the run's end is the caller's to record.
     The provider's warnings go to stderr too, before the caller writes the review.
 
@@ -97,9 +100,12 @@ async def run_pipeline(
     # which names paths.
     _stop_on_secrets(_scan_decoded_paths(parsed.decoded_paths), audit)
     audit.record(Stage.PARSE, "parsed", _parsed_data(parsed))
+    rule_result = run_rules(parsed)
+    audit.record(Stage.STATIC, "rules", _rules_data(rule_result))
 
     skipped = tuple(file for file in parsed.files if file.skip_reason is not None)
     if len(skipped) == len(parsed.files):
+        # The rules check only files that aren't skipped, so they found nothing here either.
         audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.NOTHING_TO_REVIEW})
         return PipelineResult(
             VerifyResult(kept=(), checks=()),
@@ -111,8 +117,7 @@ async def run_pipeline(
 
     response = await _call_provider(provider, parsed, settings, diff, audit)
     # The model proposes, code disposes: nothing it returns is reported before both checks.
-    # No rule findings yet: the rules arrive in P1-S7.
-    verification = verify_findings(response.findings, (), parsed)
+    verification = verify_findings(response.findings, rule_result.findings, parsed)
     _record_verification(verification, audit)
     decision = decide(verification.kept, settings.threshold)
     _record_decision(decision, audit)
@@ -241,16 +246,32 @@ def _logged_path_fields(file: FileDiff) -> dict[str, JsonValue]:
     return file_fields(_NO_PATH if file.old_path is None else file.old_path)
 
 
+def _rules_data(result: RuleResult) -> dict[str, JsonValue]:
+    return {
+        "findings": [
+            {
+                "fingerprint": reviewed.fingerprint,
+                "rule": reviewed.rule,
+                **file_fields(reviewed.finding.file),
+                "line": reviewed.finding.line,
+                "severity": reviewed.finding.severity,
+            }
+            for reviewed in result.findings
+        ],
+        "unanchored_hits": result.unanchored_hits,
+    }
+
+
 def _record_verification(verification: VerifyResult, audit: AuditLog) -> None:
     for check in verification.checks:
         audit.record(Stage.VERIFY, "checked", _verify_data(check))
 
 
-def _verify_data(check: AnchorCheck) -> dict[str, JsonValue]:
+def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
     """A proposal's anchor and outcome, with hashes in place of the model's text.
 
     A ``file`` that names no diff path is the model's own text, so only its hash and length are
-    kept. There is no fingerprint until P1-S7.
+    kept. ``fingerprint`` is set for a kept finding, and ``duplicate_of`` for a duplicate.
     """
     finding = check.proposed
     if check.diff_path is None:
@@ -261,14 +282,23 @@ def _verify_data(check: AnchorCheck) -> dict[str, JsonValue]:
     else:
         file_data = file_fields(check.diff_path)
     return {
-        "fingerprint": None,
+        "fingerprint": check.fingerprint,
         **file_data,
         "line": finding.line,
         "severity": finding.severity,
-        "outcome": _VerifyOutcome.KEPT if check.drop_reason is None else _VerifyOutcome.DROPPED,
+        "outcome": _verify_outcome(check),
         "reason": check.drop_reason,
+        "duplicate_of": check.duplicate_of,
         "rationale_sha256": _sha256(finding.rationale),
     }
+
+
+def _verify_outcome(check: ProposalCheck) -> _VerifyOutcome:
+    if check.drop_reason is not None:
+        return _VerifyOutcome.DROPPED
+    if check.duplicate_of is not None:
+        return _VerifyOutcome.DUPLICATE
+    return _VerifyOutcome.KEPT
 
 
 def _record_decision(decision: Decision, audit: AuditLog) -> None:

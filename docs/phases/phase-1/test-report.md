@@ -835,3 +835,78 @@ This file alone covers `verify.py`, `policy.py` and `render.py` fully, statement
 2. **A future dedup slice** may collapse P0-S3's `many_findings` child, which repeats one identical finding 5,000 times. Today nothing dedups AI findings, so the case still outgrows the stream buffers.
 3. **Cost is shown by one time bound**, with wide headroom. Growth isn't measured.
 4. **Run on Windows only** by the tester. CI on Linux hasn't been checked.
+
+## P1-S7: Catch swallowed exceptions with no model, with stable fingerprints
+
+Spec: [p1-s7-swallowed-exception-rule.md](slices/p1-s7-swallowed-exception-rule.md). Tests: [`tests/integration/test_p1_s7_swallowed_exception_rule.py`](../../../tests/integration/test_p1_s7_swallowed_exception_rule.py), 100 cases. Runs go through `main` with an injected `MockProvider(findings=[])` unless a criterion scripts model output. AC1 also runs the documented `python -m review_bot Assignment/sample_diff.txt --provider mock` in a child. `run_rules`, `fingerprint_for` and `verify_findings` are called directly where a criterion names them. Fixture: [`tests/fixtures/p1_s7/fingerprints.golden.json`](../../../tests/fixtures/p1_s7/fingerprints.golden.json), seven inputs and their fingerprints, including an indented anchor, ordinal 1, an `ai:logic` rule part, a non-ASCII path and line, a lone surrogate in the path and the anchor, and a path holding an astral character, a tab and a `"`.
+
+**Status: every criterion passes, 100 of 100 after review round 1 (98 of 98 before it).** The tests were written from the spec, design.md's [fingerprints and dedup](design.md#fingerprints-and-dedup), its Interfaces and ADR 0003, before the code existed. When the file first ran, `rules.py` and `fingerprint.py` were already present: 94 passed, and the 4 AC9 golden cases failed only because the golden values weren't written yet (see "For the designer", item 3). The main session's full gate on the finished tree: ruff format and check clean, mypy strict clean (24 files), pytest --cov 2224 passed, 12 skipped, 0 failed, 100% coverage, pre-commit clean (after review round 1; 2218 before it).
+
+### Gate
+
+The main session ran the full gate on the finished tree, with the result in the status line above: 2224 passed, 100% coverage. The tester ran only its own files. Before review round 1, this slice's file and the handover files passed together, 551 passed and 12 skipped. Before the handover edits, 19 cases had failed across those files (976 run, with `tests/conformance`). After round 1, this file and `test_p1_s18_clean_sdk_shutdown.py` pass together, 112 of 112, and `ruff format --check` and `ruff check` are clean on `tests/integration`.
+
+### Review round 1
+
+1. **A rule finding on a path that isn't UTF-8**, end to end (`ac6_limits_non_utf8_python_path_is_reported_escaped_and_logged_quoted`). Git's `"b/caf\377.py"` holds a swallowed handler. The run exits 1, and stdout is the rule line for `caf\udcff.py:3`, as the renderer escapes it. The `static.rules` entry and the `policy.decided` record each hold `file: "\"caf\\377.py\""` and `path_quoted: true`.
+2. **Golden rows for each encoding branch** in design.md's [Encoding](design.md#fingerprints-and-dedup): file `caf\udcff.py` with anchor `x\udcff` (`surrogatepass`, and a lone surrogate as its own `\udcff` escape), and a file holding U+1F600, a tab and a `"`, with an anchor holding the same character among whitespace to collapse. Each value was computed step by step from the Encoding text, checked against `fingerprint_for`, and only then written. The five earlier values were recomputed the same way and are unchanged.
+3. **Limits through `main`:** 40,000 `+except:` lines, about 360 KB, under the 400 KB default (`limits_40k_bare_except_lines_near_the_size_limit_finish_in_bounded_time`). Every clause looks ahead for a body. This exits 0 with no findings in 0.4 s here, within 30 s. The developer's fix (indexing, not slicing) had already landed when this case first ran. The developer's unit test notes that the quadratic version took about 4 s, so this bound catches a hang or worse growth but wouldn't catch that regression. The developer's unit test guards that one.
+4. **P1-S18 nit:** `main_leaves_the_unraisable_hook_unless_it_built_claude` now asserts stdout per route: Claude's anchored finding, `FINDING_LINE`, on the Claude route, and only `SAMPLE_RULE_LINE` on the mock routes, so it shows again that the canned finding is dropped.
+
+### Criteria
+
+| AC | Tests (`test_p1_s7_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_sample_diff_prints_the_rule_line_at_line_35_and_exits_1`: stdout is exactly the spec's line for `billing/invoice.py:35`, `rule_findings=1`. `ac1_documented_command_in_a_child_process_reports_the_rule`. `ac1_run_rules_gives_a_rule_sourced_finding`: `Source.RULE`, `RuleId.SWALLOWED_EXCEPTION`, medium/reliability, confidence 1.0, 16-hex fingerprint, 0 unanchored. Design rules: `ac1_design_rule_summary_appends_its_fields_in_order` (`rule_findings`, `dropped`, `deduped`, `skipped_files`, `model_called`, `run_id`), `ac1_design_rule_static_rules_record_holds_the_finding` (fingerprint, rule, file, line, severity), `ac1_logged_fingerprint_is_the_rule_findings_fingerprint` | pass (6) |
+| AC2 | `ac2_swallowing_handler_gives_one_finding_at_the_except_line` ×4, the spec's four forms. Limits ×7: in a method, tab-indented, `except E: ...`, `except E:pass`, a comment after the colon, a comment after `pass`, `except os.error:`. A CRLF diff. Nested handlers give two findings, at the inner and the later `except` | pass (13) |
+| AC3 | `ac3_handler_doing_something_first_gives_no_finding` ×3, the spec's three bodies. Lookalikes ×8: `except E: raise`, `except E: log(e); pass`, `passed = True`, `pass_through(e)`, `excepted = 1` then `pass`, a commented-out handler, `finally: pass`, `else: pass` | pass (11) |
+| AC4 | `ac4_context_except_with_added_pass_gives_a_finding`. `ac4_handler_not_added_gives_no_finding` ×2 (both context, both removed). Limits: a removed `log(e)` between a context `except` and an added `pass` still gives a finding. A hunk at `+57` anchors at 59 | pass (4) |
+| AC5 | `ac5_hunk_ending_right_after_except_gives_no_finding`. Limits: only a removed line, or only a comment, after the `except`. A `pass` in the next hunk isn't taken as the body | pass (4) |
+| AC6 | `ac6_same_lines_in_a_file_not_reviewed_as_python_give_no_finding` ×4: `x.js`, `x.pyi`, `src/pb/x_pb2.py` (generated, skipped), `docs/notes.md`. Control: the same lines in `x.py` beside `x.js` give one finding. Limits: `x.py.txt`, `x_py`, `x.pyc`, and a deleted `old.py`. A `.py` path that isn't UTF-8 is reported escaped and logged quoted (review round 1) | pass (10) |
+| AC7 | `ac7_hit_under_an_unreadable_header_prints_nothing` (exit 0, `rule_findings=0`). `ac7_run_rules_counts_it_as_an_unanchored_hit` (`findings == ()`, `unanchored_hits == 1`). `ac7_static_rules_record_has_the_count`. Limits: a readable hunk beside it still prints, and the count stays 1 | pass (4) |
+| AC8 | `ac8_rule_line_prints_first_then_the_ai_line` (AI on line 14, so the rule isn't first by line number). `ac8_threshold_high_keeps_only_the_ai_high`. Also: `--threshold high` with an AI medium exits 0. `--threshold medium` keeps the rule and drops an AI low. `--threshold critical` on the rule alone exits 0 (the spec's handover note). Design rule: rule findings ordered by file then line (`a.py:5`, `b.py:3`, though `b.py` comes first in the diff), then AI | pass (6) |
+| AC9 | `ac9_fingerprint_matches_the_golden_file` (7 cases). `ac9_fingerprint_is_16_lowercase_hex_digits`. `ac9_fingerprint_doesnt_depend_on_the_process` ×3: a fresh interpreter with `PYTHONHASHSEED` 0, 1 and 4242. `ac9_each_part_changes_the_fingerprint`. Limits: moving a `/` between `file` and `rule` changes the value | pass (7) |
+| AC10 | `ac10_hunk_moved_50_lines_down_keeps_the_fingerprint` (line 85, same value), and the same through the `static.rules` record. `ac10_reindented_handler_keeps_the_fingerprint` ×4 (4, 2 or 12 spaces, a tab). `ac10_whitespace_inside_the_line_is_collapsed`. `ac10_changed_code_on_the_anchored_line_changes_the_fingerprint` (`BaseException`). `ac10_renamed_file_changes_the_fingerprint`. Beyond: an AI finding moved with its hunk keeps its fingerprint | pass (10) |
+| AC11 | `ac11_two_identical_handlers_print_two_findings` (`rule_findings=2`, `deduped=0`), with fingerprints equal to `fingerprint_for(…, ordinal=0)` and `ordinal=1`, and both logged. `ac11_two_ai_findings_on_one_line_with_different_rationales_both_print`, with fingerprints equal to `fingerprint_for(rule="ai:logic", …)` at ordinals 0 and 1. An AI finding and the rule on one line differ | pass (6) |
+| AC12 | `ac12_identical_ai_findings_print_once_with_deduped_1`. `ac12_verify_records_one_duplicate_of_the_kept_fingerprint`. Limits: differing only in confidence is still a duplicate. Three identical give `deduped=2`. Another category, another line, or a rationale differing only in case keeps both (×3) | pass (7) |
+| AC13 | `ac13_model_output_claiming_a_code_set_field_exits_13` ×3 (`source`, `fingerprint`, `rule`): exit 13, empty stdout. Control: the same output without the field prints. Limits: a claim over the sample diff, which has a rule hit, still exits 13 with empty stdout | pass (5) |
+| Limits | 5,000 handlers in one file: 5,000 lines, `deduped=0`, within 30 s. Through `run_rules`, within 30 s each: an `except` tuple of 100,000 names, 200,000 spaces with and without a colon, and 50,000 `except` words on one line. Through `main`: 40,000 `+except:` lines, about 360 KB (review round 1) | pass (6) |
+
+### Handover edits (spec Notes)
+
+The sample diff now gets a rule finding, the summary gains two fields, and identical AI findings are deduplicated. Each earlier test keeps what it protects. P0-S1 AC2's `--threshold critical` tests stand unchanged and pass. `tests/integration/diff_support.py` gains `SAMPLE_RULE_LINE`, the sample's rule line.
+
+1. **`Bot.request_for`** (`conftest.py`) takes `exit_code=0`. The sample-diff callers pass 1, so the guard stays exact everywhere else. Used by P0-S1 AC12 and AC13 (`test_p0_s1_prompt.py`) and by P1-S2 AC1 through `reviewed_text`, which takes the same keyword.
+2. **P0-S1 AC1** (`test_p0_s1_cli.py`): `…_replaced_by_p1_s6_ac11_command_exits_0` is renamed `…_replaced_by_p1_s7_ac1_command_exits_1`. The canned-finding case expects stdout to be `SAMPLE_RULE_LINE` only, which still proves the canned finding is dropped. The module docstring says so.
+3. **P0-S1 AC12** (`sample_diff_is_not_rejected`) and **AC16** (offline run): exit 1. AC16's stdout is `SAMPLE_RULE_LINE`, and it keeps the canned notice check.
+4. **P0-S3** (`test_p0_s3_stream_failures.py`): the `many_findings` child repeated one finding 5,000 times, which P1-S7 AC12 now collapses to one, as P1-S6's report foresaw. The rationales are now distinct (`0000xxx…` to `4999xxx…`), so stdout still outgrows the buffers. AC5's "findings" case checks both stdout lines, the rule line and then the finding, before the summary, not only the first.
+5. **P0-S4 AC6's note** (`test_p0_s4_real_sdk.py`): the "none" case must exit 0, so the overridden-signal child now reviews `tests/fixtures/p1_s6/anchors.diff`, the sample with no rule hit and the same line 14.
+6. **P1-S18 AC4**: the mock routes over the sample exit 1. Every route now expects 1, and the hook checks are unchanged. Since review round 1, the route test also asserts stdout: `FINDING_LINE` for Claude, and only `SAMPLE_RULE_LINE` for the mock routes.
+7. **P1-S4 AC8**: the three stderr goldens in `tests/fixtures/p1_s4/` gain `rule_findings=0` before `dropped=` and `deduped=0` after it. The sample-diff log case expects exit 1. It still finds no added or context line in the log, now that `static.rules` has data.
+
+No failure looked like a code bug.
+
+### For the designer (all resolved)
+
+All three were resolved in build by the main session on 2026-11-06. Item 1 is now in the spec's [Out of scope](slices/p1-s7-swallowed-exception-rule.md#out-of-scope) as a known miss. Item 2 is in design.md's [audit table](design.md#audit-log): `verify.checked` gains outcome `duplicate` and `duplicate_of`. Item 3 is in design.md's [Encoding](design.md#fingerprints-and-dedup), which the golden rows now follow. The original notes:
+
+1. **Multi-line `except` clauses aren't caught.** `except (\n    A,\n    B,\n):\n    pass`, the form black gives a long tuple, gives no finding and no unanchored hit. No criterion covers it, so no test is red for it. It's a real-world false negative. Should the spec name it in scope, or in Out of scope beside multi-line strings?
+2. **A duplicate's `verify` outcome.** A deduplicated AI proposal is logged as `outcome: "duplicate"`, with `duplicate_of` holding the kept fingerprint and `fingerprint: null`. The developer records this in the spec's Notes, but design.md's audit table still lists only `kept` or `dropped` for `verify.checked`, so the table should catch up. No test pins it.
+3. **AC9's encoding isn't in the spec.** design.md lists the parts, not how they're joined. The developer joins them as a JSON array, `["v1", file, rule, sha256(collapsed line), ordinal]`, ASCII-escaped. The tester recomputed every golden value with `hashlib` from that reading, and each matched `fingerprint_for` before it was pinned. So the golden file guards against drift, not against the choice itself. Since Phase 2 keys comments on these values, the designer may want to write the encoding into design.md.
+
+### Readings of this slice's criteria
+
+1. **The `static.rules` keys** aren't named. Values are looked for wherever they sit, except the unanchored count, which is found by a key containing `unanchored`, as design.md's "unanchored hit count" suggests. The developer uses `findings` and `unanchored_hits`.
+2. **AC10's reindent** is checked through `run_rules`. design.md's "whitespace collapsed" is also checked directly on `fingerprint_for`, which was read as normalising its own `anchor_text`. The developer's does.
+3. **AC12's `deduped` record** is checked by finding the kept fingerprint in `repr(result.deduped)`, because its shape isn't fixed.
+4. **The AC2, AC3 and AC6 Limits cases** are the tester's readings of "a handler whose first statement is `pass` or `...`" and "Python files". A comment after `except E:` or `pass` still counts, `pass_through()` doesn't, and `.pyc` or `x.py.txt` isn't Python.
+
+### Coverage
+
+This file alone covers `rules.py`, `findings.py` and `policy.py` fully, and `fingerprint.py` at 92%. The uncovered line is the negative-ordinal `ValueError`, which no criterion reaches. The whole suite covers 100%, in the main session's gate.
+
+### Limits
+
+1. **The full gate** was run by the main session, not the tester, and is green (see the status line). `pip-audit` runs in CI.
+2. **Run on Windows only.** AC9's child-process cases are the cross-platform guard, and they run on CI's Linux too.
+3. **Rule vs AI dedup and the model's `rule` tag** are P1-S9's. AC13's `rule` case will be replaced there, as the spec notes.

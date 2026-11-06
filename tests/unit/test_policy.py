@@ -13,7 +13,7 @@ def reviewed(severity: Severity, line: int = 7) -> ReviewedFinding:
         rationale="Why.",
         confidence=0.9,
     )
-    return ReviewedFinding(finding, Source.AI)
+    return ReviewedFinding(finding, Source.AI, None, f"fingerprint-{line}")
 
 
 @pytest.mark.parametrize(
