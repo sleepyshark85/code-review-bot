@@ -7,15 +7,25 @@ anchors).
 
 import itertools
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from enum import StrEnum
+from enum import Enum, StrEnum, auto
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Final
 
 from review_bot.errors import DiffNotParsableError
 
-__all__ = ["DiffLine", "FileDiff", "Hunk", "LineKind", "ParsedDiff", "SkipReason", "parse_diff"]
+__all__ = [
+    "DecodedPath",
+    "DiffLine",
+    "FileDiff",
+    "Hunk",
+    "LineKind",
+    "ParsedDiff",
+    "SkipReason",
+    "parse_diff",
+]
 
 
 class LineKind(StrEnum):
@@ -77,11 +87,39 @@ class FileDiff:
 
 
 @dataclass(frozen=True, slots=True)
+class DecodedPath:
+    """A string read from a file's header lines, and the 1-based diff line it was read from.
+
+    It is either a path the parser read, exactly as read, or any other C-quoted string on a
+    header line, decoded the same way. A file's header lines run from its file-start line to its
+    first ``@@``.
+    """
+
+    text: str
+    diff_line: int
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedDiff:
-    """The parsed files, and the input minus skipped file sections, otherwise byte for byte."""
+    """The parsed files, and the input minus skipped file sections, otherwise byte for byte.
+
+    ``decoded_paths`` are every file's decoded header strings, in diff line order, so a secret
+    spelt in escapes can be scanned for in its decoded form.
+    """
 
     files: tuple[FileDiff, ...]
     reviewable_text: str
+    decoded_paths: tuple[DecodedPath, ...]
+
+
+class _PathSource(Enum):
+    """The kind of header line a path was read from."""
+
+    FILE_START = auto()  # diff --git, diff --cc or diff --combined
+    MINUS = auto()  # ---
+    PLUS = auto()  # +++
+    SOURCE = auto()  # rename from, copy from
+    TARGET = auto()  # rename to, copy to
 
 
 # Git starts each file with one of these; a combined diff (merge conflicts) names a single path.
@@ -93,7 +131,8 @@ _HUNK_HEADER: Final = re.compile(r"@@ -(\d{1,9})(?:,(\d{1,9}))? \+(\d{1,9})(?:,(
 _BINARY_PREFIX: Final = "Binary files "
 _BINARY_SUFFIX: Final = " differ"
 _GIT_BINARY_PATCH: Final = "GIT binary patch"
-_QUOTED_AT_START: Final = re.compile(r'"(?:[^"\\]|\\.)*"')
+# Possessive, so a string that never closes fails in one pass instead of backtracking.
+_QUOTED_AT_START: Final = re.compile(r'"(?:[^"\\]|\\.)*+"')
 _ESCAPE: Final = re.compile(rb"\\(?:([0-3][0-7]{2})|(.))")
 _ESCAPED_BYTES: Final = {
     b"a": b"\a",
@@ -104,9 +143,16 @@ _ESCAPED_BYTES: Final = {
     b"t": b"\t",
     b"v": b"\v",
 }
-# The headers that name a renamed or copied file's old and new paths.
-_SOURCE_PATH_HEADERS: Final = ("rename from ", "copy from ")
-_TARGET_PATH_HEADERS: Final = ("rename to ", "copy to ")
+# The headers whose path is the whole rest of the line. A combined diff's path has no ``a/`` or
+# ``b/`` prefix to strip, and neither do a renamed or copied file's.
+_REST_OF_LINE_PATHS: Final = {
+    "diff --cc ": _PathSource.FILE_START,
+    "diff --combined ": _PathSource.FILE_START,
+    "rename from ": _PathSource.SOURCE,
+    "copy from ": _PathSource.SOURCE,
+    "rename to ": _PathSource.TARGET,
+    "copy to ": _PathSource.TARGET,
+}
 _DEV_NULL: Final = "/dev/null"
 _MARKERS: Final = {"+": LineKind.ADDED, "-": LineKind.REMOVED, " ": LineKind.CONTEXT}
 
@@ -160,7 +206,11 @@ def parse_diff(text: str) -> ParsedDiff:
         )
 
     bounds = list(itertools.pairwise([*starts, len(lines)]))
-    files = tuple(_parse_file(lines[start:end]) for start, end in bounds)
+    parsed_files = [
+        _parse_file(lines[start:end], first_diff_line=start + 1) for start, end in bounds
+    ]
+    files = tuple(file for file, _ in parsed_files)
+    decoded_paths = tuple(decoded for _, file_paths in parsed_files for decoded in file_paths)
     if not git_starts:
         # Without git's file headers, a file header faked inside a hunk looks like a real one, so
         # nothing is skipped: a faked "file" is still sent for review instead of being hidden.
@@ -171,7 +221,11 @@ def parse_diff(text: str) -> ParsedDiff:
         if file.skip_reason is None
     ]
     preamble = "".join(raw_lines[: starts[0]])
-    return ParsedDiff(files=files, reviewable_text=preamble + "".join(kept_sections))
+    return ParsedDiff(
+        files=files,
+        reviewable_text=preamble + "".join(kept_sections),
+        decoded_paths=decoded_paths,
+    )
 
 
 def _split_lines(text: str) -> list[str]:
@@ -201,19 +255,30 @@ def _opens_unified_file(lines: list[str], index: int) -> bool:
     )
 
 
-def _parse_file(lines: list[str]) -> FileDiff:
+def _parse_file(
+    lines: list[str], *, first_diff_line: int
+) -> tuple[FileDiff, tuple[DecodedPath, ...]]:
+    """Parse one file's section, and decode its header lines' paths and quoted strings."""
     first_hunk = next(
         (index for index, line in enumerate(lines) if line.startswith("@@")), len(lines)
     )
-    header = _read_file_header(lines[:first_hunk])
+    header = _read_file_header(lines[:first_hunk], first_diff_line=first_diff_line)
     # A deleted file has no new path, so it's classified by its old one.
     path_reason = _skip_reason_for(header.path or header.old_path or "")
-    return FileDiff(
+    file = FileDiff(
         path=header.path,
         old_path=header.old_path,
         hunks=_parse_hunks(lines[first_hunk:]),
         skip_reason=SkipReason.BINARY if header.is_binary else path_reason,
     )
+    return file, header.decoded_paths
+
+
+@dataclass(frozen=True, slots=True)
+class _PathRead:
+    source: _PathSource
+    path: str
+    token_span: tuple[int, int]  # where the path's token sits in its line, as ``re.Match.span``
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,27 +286,20 @@ class _FileHeader:
     path: str | None  # None if deleted
     old_path: str | None  # None if new
     is_binary: bool
+    decoded_paths: tuple[DecodedPath, ...]
 
 
-def _read_file_header(lines: list[str]) -> _FileHeader:
-    plus_path = minus_path = source_path = target_path = git_path = None
+def _read_file_header(lines: list[str], *, first_diff_line: int) -> _FileHeader:
+    paths: dict[_PathSource, str] = {}
+    decoded_paths: list[DecodedPath] = []
     is_new = is_deleted = is_binary = False
-    for line in lines:
-        if line.startswith("diff --git "):
-            git_path = _path_from(_last_path_token(line.removeprefix("diff --git ")))
-        elif line.startswith(_COMBINED_FILE_STARTS):
-            # ``diff --cc <path>``: one path, with no ``a/`` or ``b/`` prefix to strip.
-            git_path = _unquote(line.split(" ", 2)[2])
-        elif line.startswith("--- "):
-            minus_path = _path_from(_first_path_token(line.removeprefix("--- ")))
-            is_new = is_new or minus_path == _DEV_NULL
-        elif line.startswith("+++ "):
-            plus_path = _path_from(_first_path_token(line.removeprefix("+++ ")))
-            is_deleted = is_deleted or plus_path == _DEV_NULL
-        elif line.startswith(_SOURCE_PATH_HEADERS):
-            source_path = _unquote(line.split(" ", 2)[2])
-        elif line.startswith(_TARGET_PATH_HEADERS):
-            target_path = _unquote(line.split(" ", 2)[2])
+    for diff_line, line in enumerate(lines, start=first_diff_line):
+        read = _read_path(line)
+        decoded_paths += _decode_line(line, read, diff_line)
+        if read is not None:
+            paths[read.source] = read.path
+            is_new = is_new or (read.source is _PathSource.MINUS and read.path == _DEV_NULL)
+            is_deleted = is_deleted or (read.source is _PathSource.PLUS and read.path == _DEV_NULL)
         elif line.startswith("new file mode"):
             is_new = True
         elif line.startswith("deleted file mode"):
@@ -252,9 +310,60 @@ def _read_file_header(lines: list[str]) -> _FileHeader:
             is_binary = True
     # Git names a renamed or copied file's paths in its own headers. Any other file keeps its
     # path, so ``diff --git``'s new path is also its old one.
-    old_path = None if is_new else minus_path or source_path or git_path
-    path = None if is_deleted else plus_path or target_path or git_path
-    return _FileHeader(path=path, old_path=old_path, is_binary=is_binary)
+    git_path = paths.get(_PathSource.FILE_START)
+    old_path = paths.get(_PathSource.MINUS) or paths.get(_PathSource.SOURCE) or git_path
+    path = paths.get(_PathSource.PLUS) or paths.get(_PathSource.TARGET) or git_path
+    return _FileHeader(
+        path=None if is_deleted else path,
+        old_path=None if is_new else old_path,
+        is_binary=is_binary,
+        decoded_paths=tuple(decoded_paths),
+    )
+
+
+def _decode_line(line: str, read: _PathRead | None, diff_line: int) -> Iterator[DecodedPath]:
+    """Yield a header line's path as ``read``, then its other C-quoted strings, decoded.
+
+    The quoted string that is the path's own token isn't yielded again, so nothing is counted
+    twice. One that pairs the line's quotes differently, and so only overlaps it, is yielded.
+    """
+    path_span = None
+    if read is not None:
+        yield DecodedPath(read.path, diff_line)
+        path_span = read.token_span
+    for quoted in _quoted_strings(line):
+        if quoted.span() != path_span:
+            yield DecodedPath(_unquote(quoted.group()), diff_line)
+
+
+def _quoted_strings(line: str) -> Iterator[re.Match[str]]:
+    """Read a line's C-quoted strings left to right, stopping at one that never closes.
+
+    A string that never closes runs to the end of the line, so no other string follows it. Each
+    search resumes where the last string ended, so the cost is linear in the line.
+    """
+    opening = line.find('"')
+    while opening != -1:
+        quoted = _QUOTED_AT_START.match(line, opening)
+        if quoted is None:
+            return
+        yield quoted
+        opening = line.find('"', quoted.end())
+
+
+def _read_path(line: str) -> _PathRead | None:
+    """Read the path a header line names, or return None if it names none."""
+    if line.startswith("diff --git "):
+        start = len("diff --git ") + _new_path_start(line.removeprefix("diff --git "))
+        return _PathRead(_PathSource.FILE_START, _path_from(line[start:]), (start, len(line)))
+    if line.startswith(("--- ", "+++ ")):
+        token = _first_path_token(line[4:])
+        source = _PathSource.MINUS if line.startswith("-") else _PathSource.PLUS
+        return _PathRead(source, _path_from(token), (4, 4 + len(token)))
+    for prefix, source in _REST_OF_LINE_PATHS.items():
+        if line.startswith(prefix):
+            return _PathRead(source, _unquote(line[len(prefix) :]), (len(prefix), len(line)))
+    return None
 
 
 def _path_from(token: str) -> str:
@@ -268,15 +377,18 @@ def _first_path_token(rest: str) -> str:
     return rest.split("\t", 1)[0]
 
 
-def _last_path_token(rest: str) -> str:
-    """The new path in ``diff --git``'s ``a/old b/new``; a best guess when paths hold spaces."""
+def _new_path_start(rest: str) -> int:
+    """Where ``diff --git``'s ``a/old b/new`` has its new path; a best guess when paths hold spaces.
+
+    The new path runs from there to the end of the line.
+    """
     if rest.endswith('"'):
         # Inside a quoted path a quote is always escaped, so a space then a quote can only open
         # the last quoted path.
-        return rest[rest.rfind(' "') + 1 :]
+        return rest.rfind(' "') + 1
     if " b/" in rest:
-        return "b/" + rest.rsplit(" b/", 1)[1]
-    return rest.rsplit(" ", 1)[-1]
+        return rest.rindex(" b/") + 1
+    return rest.rfind(" ") + 1
 
 
 def _unquote(token: str) -> str:

@@ -10,7 +10,12 @@ from audit_records import data_of, events
 from diff_samples import MINIMAL_DIFF, section
 
 from review_bot.audit import AuditLog
-from review_bot.errors import ErrorCategory, ProviderError, SecretDetectedError
+from review_bot.errors import (
+    DiffNotParsableError,
+    ErrorCategory,
+    ProviderError,
+    SecretDetectedError,
+)
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.mock import MockProvider
 from review_bot.review import PipelineResult, run_pipeline
@@ -226,3 +231,69 @@ def test_run_pipeline_names_a_section_with_no_old_or_new_path_dev_null(tmp_path:
     assert data_of(log, "parse.parsed")["flagged_hunks"] == [
         {"file": "/dev/null", "index": 0, "new_start": 1}
     ]
+
+
+def octal(text: str) -> str:
+    """Every byte of ``text`` as a three-digit octal escape, as git writes an unusual path."""
+    return "".join(f"\\{byte:03o}" for byte in text.encode("utf-8"))
+
+
+def quoted_docs_file(name: str) -> str:
+    """A new docs file, skipped, whose quoted path spells ``name`` in octal escapes only."""
+    path = f"docs/{octal(name)}.md"
+    return (
+        f'diff --git "a/{path}" "b/{path}"\nnew file mode 100644\n--- /dev/null\n'
+        f'+++ "b/{path}"\n@@ -0,0 +1 @@\n+x\n'
+    )
+
+
+def test_run_pipeline_with_a_secret_spelt_in_a_quoted_path_records_and_names_its_lines(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    message, provider = review_expecting_secrets(
+        write_diff(tmp_path, quoted_docs_file(AWS_KEY)), log
+    )
+
+    named = "; ".join(f"aws-access-key at diff line {line}" for line in (1, 1, 4))
+    assert f"3 possible secrets in the diff ({named})" in message
+    assert provider.requests == []
+    assert events(log) == ["run.start", "static.secrets", "agent.skipped"]
+    assert data_of(log, "agent.skipped") == {"reason": "secret_detected"}
+    log_text = log.read_text(encoding="ascii")
+    assert AWS_KEY not in log_text
+    assert octal(AWS_KEY) not in log_text
+
+
+def test_run_pipeline_with_a_raw_secret_names_only_it_and_not_a_decoded_one(
+    tmp_path: Path,
+) -> None:
+    text = quoted_docs_file(AWS_KEY) + section("app.py", f"+{AWS_KEY}\n")
+
+    message, _ = review_expecting_secrets(write_diff(tmp_path, text), tmp_path / "audit.jsonl")
+
+    assert "1 possible secret in the diff (aws-access-key at diff line 11)" in message
+
+
+def test_run_pipeline_names_a_decoded_secret_by_its_header_line_despite_an_escaped_line_feed(
+    tmp_path: Path,
+) -> None:
+    text = f'diff --git a/x b/x\nrename to "x\\n{octal(AWS_KEY)}.py"\n'
+
+    message, _ = review_expecting_secrets(write_diff(tmp_path, text), tmp_path / "audit.jsonl")
+
+    assert "(aws-access-key at diff line 2)" in message
+
+
+def test_run_pipeline_with_text_that_is_not_a_diff_redacts_only_the_path_in_its_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    diff = Path("-----END RSA " + "PRIVATE KEY-----.diff")
+    diff.write_bytes(b"+x\n")
+
+    with pytest.raises(DiffNotParsableError) as caught:
+        run(diff, tmp_path / "audit.jsonl", MockProvider())
+
+    assert str(caught.value).startswith("Diff [REDACTED].diff can't be parsed. It has no file")

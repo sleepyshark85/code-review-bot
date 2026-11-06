@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import version
@@ -12,12 +12,12 @@ from typing import Final
 
 from review_bot.audit import AuditLog, JsonValue, Stage, file_fields
 from review_bot.diff_input import load_diff
-from review_bot.diff_parser import FileDiff, ParsedDiff, parse_diff
+from review_bot.diff_parser import DecodedPath, FileDiff, ParsedDiff, parse_diff
 from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetectedError
 from review_bot.findings import Finding
 from review_bot.prompt import PROMPT_VERSION, build_request
 from review_bot.providers.base import LLMProvider, TokenUsage
-from review_bot.secret_scan import SecretHit, scan_secrets
+from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 
 __all__ = ["PipelineResult", "run_pipeline"]
@@ -65,15 +65,15 @@ async def run_pipeline(
     diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
     audit.record(Stage.RUN, "start", _start_data(settings, diff))
     # Before the parser, so nothing the parser misreads or drops can carry a secret past the scan.
-    hits = scan_secrets(diff)
-    if hits:
-        audit.record(Stage.STATIC, "secrets", _secrets_data(hits))
-        audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.SECRET_DETECTED})
-        raise SecretDetectedError(_secrets_message(hits))
+    _stop_on_secrets(scan_secrets(diff), audit)
     try:
         parsed = parse_diff(diff)
     except DiffNotParsableError as exc:
-        raise DiffNotParsableError(f"Diff {diff_path} can't be parsed. {exc}") from exc
+        shown_path = redact(str(diff_path))
+        raise DiffNotParsableError(f"Diff {shown_path} can't be parsed. {exc}") from exc
+    # Only reached with clean raw text, so no secret is counted twice; before the parse record,
+    # which names paths.
+    _stop_on_secrets(_scan_decoded_paths(parsed.decoded_paths), audit)
     audit.record(Stage.PARSE, "parsed", _parsed_data(parsed))
 
     skipped = tuple(file for file in parsed.files if file.skip_reason is not None)
@@ -113,6 +113,28 @@ def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
         "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
         "diff_bytes": len(diff_bytes),
     }
+
+
+def _stop_on_secrets(hits: Sequence[SecretHit], audit: AuditLog) -> None:
+    """Record the hits and raise, so the diff never reaches the model, if there are any.
+
+    Raises:
+        SecretDetectedError: If ``hits`` isn't empty.
+    """
+    if hits:
+        audit.record(Stage.STATIC, "secrets", _secrets_data(hits))
+        audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.SECRET_DETECTED})
+        raise SecretDetectedError(_secrets_message(hits))
+
+
+def _scan_decoded_paths(paths: Iterable[DecodedPath]) -> tuple[SecretHit, ...]:
+    """Scan each path on its own, so a hit names the diff line the path was read from.
+
+    A decoded path can hold an escaped line feed, so its own line numbers mean nothing here.
+    """
+    return tuple(
+        SecretHit(hit.kind, path.diff_line) for path in paths for hit in scan_secrets(path.text)
+    )
 
 
 def _secrets_data(hits: Sequence[SecretHit]) -> dict[str, JsonValue]:

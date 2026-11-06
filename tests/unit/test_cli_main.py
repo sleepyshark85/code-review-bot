@@ -18,6 +18,7 @@ from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
 
+AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
 CANNED_LINE = (
     "mock/example.py:1 [high/logic] Canned MockProvider finding, not a real review. "
     "(confidence 1.00)\n"
@@ -525,3 +526,50 @@ def test_main_with_a_failed_review_whose_end_cannot_be_recorded_keeps_its_code_a
     error, warning = capsys.readouterr().err.splitlines()
     assert error.startswith("review-bot: error: ")
     assert warning.startswith("review-bot: warning: Can't write the audit log ")
+
+
+@pytest.mark.parametrize(
+    ("argv", "exit_code"),
+    [
+        (["x.diff", f"tmp/{AWS_KEY}.diff"], 2),
+        ([f"tmp/{AWS_KEY}.diff", "--provider", "mock"], 3),
+    ],
+    ids=["stray-argument", "missing-diff"],
+)
+def test_main_redacts_a_secret_in_a_path_on_the_error_line(
+    argv: list[str], exit_code: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv) == exit_code
+
+    err = capsys.readouterr().err
+    assert "[REDACTED].diff" in err
+    assert AWS_KEY not in err
+
+
+def test_main_with_every_file_skipped_redacts_each_named_path_on_its_own(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    end_marker = "-----END RSA " + "PRIVATE KEY-----"
+    diff = tmp_path / "docs.diff"
+    diff.write_bytes((section(f"docs/{end_marker}.md") + section("notes.md")).encode("utf-8"))
+
+    assert main([str(diff), "--provider", "mock"]) == 0
+
+    warning, _summary = capsys.readouterr().err.splitlines()
+    assert warning == (
+        "review-bot: warning: nothing was reviewed: every changed file was skipped: "
+        "[REDACTED].md, notes.md (2 in total)"
+    )
+
+
+def test_main_with_a_missing_diff_named_by_a_key_marker_keeps_the_whole_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    name = "-----END RSA " + "PRIVATE KEY-----.diff"
+
+    assert main([name, "--provider", "mock"]) == 3
+
+    assert capsys.readouterr().err == (
+        "review-bot: error: Diff not found: [REDACTED].diff. Check the path.\n"
+    )

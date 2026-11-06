@@ -610,3 +610,68 @@ AC10 and AC11 need a log that fails partway through a run. On Windows, a file he
 3. **"No rescan of the diff per record"** (Limits, cost) is shown only by the time bounds, which have wide headroom. Linear growth isn't measured.
 4. **Concurrent runs appending to one file** aren't tested. The spec promises nothing for them.
 5. **Run on Windows only** by the tester. CI on Linux hasn't been checked, and the `\377` and hostile-path cases may behave differently there.
+
+## P1-S19: Stop a secret spelt in a quoted path's escapes from reaching stderr or the model
+
+Spec: [p1-s19-decoded-path-secret.md](slices/p1-s19-decoded-path-secret.md). Tests: [`tests/integration/test_p1_s19_decoded_path_secret.py`](../../../tests/integration/test_p1_s19_decoded_path_secret.py), 70 cases, all in-process: `main` with an injected `MockProvider`. AC11 also calls `parse_diff` and `scan_secrets` as its oracle. Every `V`, and its escaped form `E(V)`, is assembled at run time.
+
+**Status: every criterion passes** against the developer's uncommitted working tree on base `0e3aeae`, so a later `src/` change needs a re-run. The tests were written from the spec before the developer's code could be imported. Run against a clean worktree of `0e3aeae` (before the fix), 58 of the 70 fail, each for the expected reason: the run isn't blocked, or a path isn't redacted. The 12 that pass there are the criteria that hold already: AC5, AC6's raw-hit case, the generator guard, malformed quoting, and the cost bounds.
+
+### Gate
+
+`ruff format --check`, `ruff check` and `mypy` (strict) are clean. `pytest --cov`, re-run after review round 1 against the developer's finished working tree: 1713 passed, 12 skipped, 0 failed, 100% of statements and branches. The first run's one failure, a 0.5 s unit bound that flaked under load, is fixed (see "For the developer").
+
+### Criteria
+
+| AC | Tests (`test_p1_s19_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_issue_24_repro_exits_16_naming_three_hits` (the exact P1-S3 line for lines 1, 1 and 5), `ac1_quoted_repro_line_equals_the_plain_paths_line` | pass (2) |
+| AC2 | `ac2_quoted_path_anywhere_in_the_header_exits_16_naming_its_line` ×24: both `diff --git` paths, `diff --cc`, `---`, `+++`, rename from and to, copy from and to, both `Binary files` paths, and a plain unified diff, each for a reviewed `src/…py` file and a skipped `docs/…md` one. Each checks that every hit names that line, and that `V` and `E(V)` are on neither stream. Also `ac2_reviewed_file_src_path_exits_16`. Beyond the list, `ac2_beyond_quoted_path_exits_16_naming_its_first_line` ×4: `diff --combined`, an unknown header line (`note "…"`), the quoted path in a second file, and CRLF endings | pass (29) |
+| AC3 | `ac3_fully_escaped_form_of_each_kind_exits_16_naming_it` ×7: every byte of a form of each kind, including a PEM `BEGIN` line and `token = "L"`, escaped in a skipped file's `+++` path | pass (7) |
+| AC4 | `ac4_hit_names_the_line_holding_the_quoted_path` ×3: only the first byte escaped, `\377` before `E(V)`, `\n` before `E(V)`. Each has exactly one hit, on the `+++` line | pass (3) |
+| AC5 | `ac5_clean_decoded_path_in_a_skipped_file_is_p1_s2_ac9` ×2 (`caf\303\251`, `AKIA` plus 15): exit 0, `No findings at or above low.`, `model_called=false`, and the warning names exactly the decoded path, `docs/café.md (1 in total)` and the near miss's `docs/AKIA….md (1 in total)`, so a warning that redacted every path would fail. `ac5_clean_decoded_path_in_a_reviewed_file_is_reviewed` ×2: one request holding the added line | pass (4) |
+| AC6 | `ac6_raw_hit_alone_is_named_when_a_path_also_holds_one` (`1 possible secret`, line 5 only), `ac6_without_the_raw_hit_the_paths_hits_are_named` (lines 6, 6 and 10) | pass (2) |
+| AC7 | `ac7_records_match_a_raw_hit_and_hold_no_value`: exactly `run.start`, `static.secrets`, `agent.skipped`, `run.end`, with no `parse.parsed`. `static.secrets` equals the plain-path run's, `secret_detected`, 16. The file holds neither `V` nor `E(V)`, raw or JSON-escaped | pass (1) |
+| AC8 | `ac8_end_marker_path_is_redacted_from_its_start_in_the_warning`: exit 0, and the warning names `[REDACTED].md`, with no `docs/` and no `PRIVATE` | pass (1) |
+| AC9 | `ac9_command_line_path_holding_v_is_redacted_in_the_error_line` ×6 (2: stray extra argument; 3: missing; 4: directory; 5: empty; 6: `--max-diff-bytes 8`; 15: prose): one error line holding `[REDACTED].diff`, and no `V` | pass (6) |
+| AC10 | `ac10_parsers_pick_of_the_new_path_is_scanned`: `diff --git "x" "y\" "b/src/E(V).py"`, exit 16, hits on line 1 only | pass (1) |
+| AC11 | `ac11_property_yielded_path_with_a_detected_form_always_exits_16` (Hypothesis, 300 examples, derandomised). It generates nine header shapes with a closed, unclosed or bare token: `V` plain, fully or partly escaped, beside `\377`, `\n`, `\t`, `\q`, `\8`, `\400`, `\"`, a space or a trailing `\`. Whenever a yielded `path` or `old_path` scans as a hit, the run must exit 16 with no request. `ac11_generator_yields_paths_with_detected_forms` checks that at least 20 of 200 examples reach that assertion | pass (2) |
+| AC12 | `ac12_unquoted_rename_to_path_exits_16_naming_its_line` ×2 (`rename to -V.md`, `rename to password: "L".md`). Each first asserts that `scan_secrets` misses the raw text, then that line 4 is named | pass (2) |
+| Limits | Escapes keep their character: `\q`, `\8` and `\400` complete a form that the raw text lacks (×3, exit 16). Malformed quoting: no closing quote, and a trailing lone `\`, don't fail the run (×2). Cost: a ~400 KB header line of `\101`, of unclosed `\"` and of `" "` strings (×3), and the `\101` line ending in `/E(V)` (exit 16), each under 20 s; 10,000 files with quoted paths under 60 s (exit 0, `skipped_files=10000`). Measured here: 0.1 to 0.15 s for each 400 KB line, about 1 s for 10,000 files | pass (10) |
+
+### P1-S4's tests changed to match
+
+P1-S4's `ac6_limits_…` tests expected exit 0 for an octal-quoted `V` in a skipped path, a flagged hunk's path, three non-UTF-8 paths and a deleted file's old path, with `[REDACTED]` in `parse.parsed`. P1-S19 AC2 and AC4 make each of those exit 16 before any parse record, so those eight tests would fail once this slice lands. In `tests/integration/test_p1_s4_audit_log.py`:
+
+- They are now one parametrised test, `ac6_limits_octal_quoted_secret_path_is_blocked_and_not_written` ×12 (6 shapes × aws and github). It checks exit 16, no request, no `V` in the log, no `parse.parsed`, and `run.end` with 16.
+- P1-S4's Limits rule that a path passes `redact` before it's written is still covered, now with an input that reaches `parse.parsed`: an `END` marker alone, which `redact` replaces but the scan doesn't flag (P1-S19 AC8). `ac6_limits_end_marker_in_a_skipped_path_is_redacted` ×2 compares whole entries: `[REDACTED].md`, and `"[REDACTED]\377.md"` with `path_quoted: true`. `ac6_limits_end_marker_in_a_flagged_hunk_path_is_redacted` covers a hunk's path.
+
+Before the fix, the 12 blocked cases fail and the 3 `END` cases pass. After it, all 15 pass.
+
+### Would the tests fail on wrong code?
+
+The run before the fix is the main check: 58 failures cover every criterion except AC5, which holds by design. Some wrong implementations a reviewer might worry about:
+
+- **Scanning decoded paths even after a raw hit** would double-count. `ac6_raw_hit_alone…` asserts one hit.
+- **Only scanning the parser's paths** misses `diff --git`'s old side, `rename from`, `copy from` and `Binary files`' old side (AC2), and the unknown header line.
+- **Only scanning C-quoted strings** misses AC10's pairing and AC12's unquoted paths.
+- **Naming the decoded line after an escaped `\n`** fails AC4's exact `[(aws-access-key, 4)]`.
+- **Dropping the backslash but not keeping the character** (`\q` gives nothing) fails the `\q`, `\8` and `\400` cases.
+
+### For the developer
+
+1. **Flaky unit bound, fixed in review round 1.** `tests/unit/test_diff_parser.py::test_parse_diff_reads_a_long_hostile_header_line_in_linear_time` asserted under 0.5 s, and `[many-short-strings]` failed in a full `pytest --cov` run on Windows while passing alone. The bound is now 5 s, which still catches quadratic work on a 400 KB line.
+
+### Readings of this slice's criteria
+
+1. **"Naming the diff line that holds the quoted path"** (AC2, AC4) is read as every hit naming that line. Where `V` sits in more than one string (AC1, the second-file case), only the first line is checked against the spec's list.
+2. **AC8's warning** is checked to start with `[REDACTED].md`. The count suffix is P1-S2's choice.
+3. **AC9's stray argument** goes after a valid diff path, with `--provider mock` after it.
+4. **AC11's "holds a detected form"** is `scan_secrets(path)` returning a hit. `parse_diff` may yield a path holding a lone surrogate for a non-UTF-8 byte (P1-S2 Interfaces), and that's what's scanned.
+5. **Malformed quoting** (Limits) only promises that the run doesn't fail. With no closing quote, the parser may or may not yield `V`, so exits 0, 1 and 16 are all accepted, and `V` must not reach stderr.
+
+### Limits
+
+1. **Escaped secrets in hunk lines and the preamble** are out of scope and aren't tested.
+2. **Cost is shown by time bounds only**, with wide headroom. Growth isn't measured.
+3. **Run on Windows only** by the tester. CI on Linux hasn't been checked.
