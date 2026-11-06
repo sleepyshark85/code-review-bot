@@ -1,3 +1,6 @@
+import pytest
+
+from review_bot.findings import RuleId
 from review_bot.prompt import build_request
 
 
@@ -20,3 +23,26 @@ def test_system_prompt_anchors_line_numbers_to_the_new_version() -> None:
 
     assert "the line number in the new version of the file" in system_prompt
     assert "for a removed line, the nearest line in the new version" in system_prompt
+
+
+# The prompt and its framing are pinned to PROMPT_VERSION by a digest table in
+# tests/integration/test_p1_s9_dedupe.py (P1-S9 AC11), not here.
+
+
+def test_system_prompt_names_the_rule_field_and_when_to_omit_it() -> None:
+    system_prompt = build_request("d", model="m").system_prompt
+
+    assert "- rule: optional." in system_prompt
+    assert "Omit it, or use null, for any other problem." in system_prompt
+
+
+@pytest.mark.parametrize("rule", list(RuleId))
+def test_system_prompt_names_each_rule_id(rule: RuleId) -> None:
+    assert rule.value in build_request("d", model="m").system_prompt
+
+
+def test_system_prompt_says_where_a_line_may_anchor_and_that_header_counts_may_be_wrong() -> None:
+    system_prompt = build_request("d", model="m").system_prompt
+
+    assert "It must be an added or context line shown in a hunk" in system_prompt
+    assert "the header's line counts may be wrong" in system_prompt

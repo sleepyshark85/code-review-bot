@@ -1,10 +1,13 @@
+import time
+from dataclasses import replace
+
 import pytest
 from diff_samples import section
 
 from review_bot.diff_parser import parse_diff
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
-from review_bot.fingerprint import fingerprint_for
-from review_bot.verify import DropReason, ProposalCheck, verify_findings
+from review_bot.fingerprint import Fingerprinter, fingerprint_for
+from review_bot.verify import DropReason, ProposalCheck, VerifyResult, verify_findings
 
 # `app.py` has added and context lines 10 to 12 and a removed line; `README.md` is skipped.
 DIFF = (
@@ -249,3 +252,159 @@ def test_verify_findings_keeps_a_rule_findings_own_fingerprint() -> None:
     assert result.kept[1].fingerprint == fingerprint_for(
         file="app.py", rule="ai:logic", anchor_text="a = 1", ordinal=0
     )
+
+
+# `app.py` has hunk 1 with lines 1 and 2, and hunk 2 with lines 20 to 28; the rule finding is on
+# line 24, the `except` clause.
+RULE_DIFF = (
+    "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n"
+    "@@ -1 +1,2 @@\n a = 1\n+b = 2\n"
+    "@@ -18,0 +20,9 @@\n+try:\n+    x()\n+    y()\n+    z()\n+except Exception:\n+    pass\n"
+    "+w()\n+v()\n+u()\n"
+)
+SWALLOWED = RuleId.SWALLOWED_EXCEPTION
+RULE_FINGERPRINT = fingerprint_for(
+    file="app.py", rule=SWALLOWED, anchor_text="except Exception:", ordinal=0
+)
+
+
+def swallowed_rule_finding(file: str = "app.py", line: int = 24) -> ReviewedFinding:
+    finding = make_finding(file=file, line=line).model_copy(update={"severity": Severity.MEDIUM})
+    return ReviewedFinding(finding, Source.RULE, SWALLOWED, RULE_FINGERPRINT)
+
+
+def tagged_finding(
+    line: int = 24, severity: Severity = Severity.MEDIUM, rule: RuleId | None = SWALLOWED
+) -> Finding:
+    return make_finding(line=line).model_copy(update={"severity": severity, "rule": rule})
+
+
+def verify_against_rule(*proposed: Finding, rule: ReviewedFinding | None = None) -> VerifyResult:
+    rule_findings = [swallowed_rule_finding() if rule is None else rule]
+    return verify_findings(proposed, rule_findings, parse_diff(RULE_DIFF))
+
+
+@pytest.mark.parametrize("line", [21, 23, 24, 25, 27])
+@pytest.mark.parametrize("severity", [Severity.LOW, Severity.MEDIUM])
+def test_verify_findings_dedupes_a_tagged_finding_near_the_rule_finding(
+    line: int, severity: Severity
+) -> None:
+    result = verify_against_rule(tagged_finding(line=line, severity=severity))
+
+    assert [reviewed.source for reviewed in result.kept] == [Source.RULE]
+    [duplicate] = result.deduped
+    assert duplicate.duplicate_of == RULE_FINGERPRINT
+
+
+@pytest.mark.parametrize("line", [20, 28, 2], ids=["4_above", "4_below", "other_hunk"])
+def test_verify_findings_keeps_a_tagged_finding_too_far_from_the_rule_finding(line: int) -> None:
+    result = verify_against_rule(tagged_finding(line=line))
+
+    assert len(result.kept) == 2
+    assert result.deduped == ()
+
+
+@pytest.mark.parametrize("severity", [Severity.HIGH, Severity.CRITICAL])
+def test_verify_findings_keeps_a_tagged_finding_more_severe_than_the_rule_finding(
+    severity: Severity,
+) -> None:
+    result = verify_against_rule(tagged_finding(severity=severity))
+
+    assert [reviewed.finding.severity for reviewed in result.kept] == [Severity.MEDIUM, severity]
+    assert result.deduped == ()
+
+
+@pytest.mark.parametrize(
+    "rule", [None, RuleId.OPEN_WITHOUT_ENCODING], ids=["untagged", "other_rule"]
+)
+def test_verify_findings_keeps_a_finding_not_tagged_with_the_rule_on_its_line(
+    rule: RuleId | None,
+) -> None:
+    result = verify_against_rule(tagged_finding(rule=rule))
+
+    assert len(result.kept) == 2
+    assert result.deduped == ()
+
+
+def test_verify_findings_keeps_a_tagged_finding_in_another_file_than_the_rule_finding() -> None:
+    result = verify_against_rule(tagged_finding(), rule=swallowed_rule_finding(file="other.py"))
+
+    assert len(result.kept) == 2
+    assert result.deduped == ()
+
+
+def test_verify_findings_drops_a_tagged_finding_with_a_bad_line_instead_of_deduping_it() -> None:
+    result = verify_against_rule(tagged_finding(line=29))
+
+    assert [check.drop_reason for check in result.checks] == [DropReason.LINE_NOT_IN_DIFF]
+    assert result.deduped == ()
+
+
+def test_verify_findings_fingerprints_a_tagged_finding_by_its_rule_id_after_the_rules() -> None:
+    result = verify_against_rule(tagged_finding(severity=Severity.HIGH))
+
+    [_, kept] = result.kept
+    assert kept.rule is SWALLOWED
+    assert kept.fingerprint == fingerprint_for(
+        file="app.py", rule=SWALLOWED, anchor_text="except Exception:", ordinal=1
+    )
+    assert kept.fingerprint != RULE_FINGERPRINT
+
+
+def test_verify_findings_fingerprints_an_untagged_finding_by_its_category() -> None:
+    result = verify_against_rule(tagged_finding(rule=None))
+
+    [_, kept] = result.kept
+    assert kept.rule is None
+    assert kept.fingerprint == fingerprint_for(
+        file="app.py", rule="ai:logic", anchor_text="except Exception:", ordinal=0
+    )
+
+
+def test_verify_findings_dedupes_alike_tagged_findings_away_from_any_rule_finding() -> None:
+    result = verify_against_rule(tagged_finding(line=2), tagged_finding(line=2))
+
+    assert len(result.kept) == 2
+    [duplicate] = result.deduped
+    assert duplicate.duplicate_of == result.kept[1].fingerprint
+
+
+def test_verify_findings_dedupes_many_tagged_findings_against_many_rule_findings_quickly() -> None:
+    # One hunk adding 20,000 lines, a rule finding on each, and 4,000 tagged model findings: half
+    # at `low`, which repeat the rule finding on their line, and half at `high`, which don't.
+    line_count, tagged_count = 20_000, 4_000
+    parsed = parse_diff(section("app.py", "+x\n" * line_count))
+    fingerprinter = Fingerprinter()
+    rules = [
+        ReviewedFinding(
+            make_finding(line=line).model_copy(update={"severity": Severity.MEDIUM}),
+            Source.RULE,
+            SWALLOWED,
+            fingerprinter.fingerprint(file="app.py", rule=SWALLOWED, anchor_text="x"),
+        )
+        for line in range(1, line_count + 1)
+    ]
+    proposed = [
+        tagged_finding(line=line, severity=Severity.LOW if line % 2 else Severity.HIGH)
+        for line in range(1, tagged_count + 1)
+    ]
+
+    started = time.perf_counter()
+    result = verify_findings(proposed, rules, parsed)
+    elapsed = time.perf_counter() - started
+
+    assert (len(result.deduped), len(result.kept)) == (
+        tagged_count // 2,
+        line_count + tagged_count // 2,
+    )
+    assert len({reviewed.fingerprint for reviewed in result.kept}) == len(result.kept)
+    assert elapsed < 5.0
+
+
+def test_verify_findings_names_the_lowest_matching_rule_finding_as_the_one_repeated() -> None:
+    below = replace(swallowed_rule_finding(line=26), fingerprint="bbbbbbbbbbbbbbbb")
+    above = replace(swallowed_rule_finding(line=22), fingerprint="aaaaaaaaaaaaaaaa")
+
+    result = verify_findings([tagged_finding()], [below, above], parse_diff(RULE_DIFF))
+
+    assert [check.duplicate_of for check in result.deduped] == ["aaaaaaaaaaaaaaaa"]

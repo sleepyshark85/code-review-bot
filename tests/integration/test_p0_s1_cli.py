@@ -7,6 +7,7 @@ that needs a finding to print injects one over a diff holding its anchor. P1-S7 
 command exit 1 again, with the sample's swallowed exception as its line
 (`test_p1_s7_swallowed_exception_rule.py`), and P1-S8 AC1 added its `open()` without an encoding
 as a second (`test_p1_s8_open_encoding_rule.py`). AC2's `--threshold critical` still exits 0.
+P1-S9 AC10 changed AC3's `prompt=p0-v1` to `prompt=p1-v1` (`test_p1_s9_dedupe.py`).
 """
 
 import itertools
@@ -23,7 +24,7 @@ from repo_paths import REPO_ROOT
 pytestmark = pytest.mark.integration
 
 SEVERITIES_ASCENDING = ("low", "medium", "high", "critical")
-SUMMARY = "provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0"
+SUMMARY = "provider=mock model=claude-opus-5-5 prompt=p1-v1 input_tokens=0 output_tokens=0"
 SENTINEL = "SENTINEL-DIFF-TEXT"
 SENTINEL_DIFF = section("app.py", f"+{SENTINEL}\n")
 CANNED_NOTICE = "review-bot: warning: MockProvider output is canned, not a real review."

@@ -2,8 +2,8 @@
 
 A model finding is kept only if its ``file`` names a reviewable new path and its ``line`` is an
 added or context line in it. A near miss is dropped, never moved to a nearby line (ADR 0006). A
-kept finding repeating an earlier one's file, category, line and rationale is a duplicate
-(ADR 0003).
+finding that passes is a duplicate if it repeats a nearby rule finding at no higher severity, or
+an earlier model finding's file, rule part, line and rationale (ADR 0003).
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -11,16 +11,30 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from review_bot.diff_parser import ParsedDiff
-from review_bot.findings import Finding, ReviewedFinding, Source
+from review_bot.diff_parser import Hunk, ParsedDiff
+from review_bot.findings import Finding, ReviewedFinding, RuleId, Source
 from review_bot.fingerprint import Fingerprinter
 
 __all__ = ["DropReason", "ProposalCheck", "VerifyResult", "verify_findings"]
 
 # A finding's ``file`` may carry one of these before a diff path (Phase 1 design, Line anchors).
 _PATH_PREFIXES: Final = ("./", "a/", "b/")
+# How many new-version lines apart a model finding and the rule finding it repeats may be.
+_NEARBY_LINES: Final = 3
 
-type _LineTexts = Mapping[str, Mapping[int, str]]
+
+@dataclass(frozen=True, slots=True)
+class _AnchorLine:
+    """An added or context line's text, and the hunk showing it."""
+
+    text: str
+    hunk: Hunk
+
+
+type _AnchorLines = Mapping[str, Mapping[int, _AnchorLine]]
+type _RuleFindingsByLine = Mapping[
+    tuple[str, RuleId | None], Mapping[int, Sequence[ReviewedFinding]]
+]
 
 
 class DropReason(StrEnum):
@@ -89,17 +103,17 @@ def verify_findings(
             kept first, in the order given, which ``run_rules`` makes file then line.
         parsed: The diff the findings are about.
     """
-    line_texts = _anchor_line_texts(parsed)
+    anchor_lines = _anchor_lines(parsed)
     skipped_paths = {
         file.path for file in parsed.files if file.path is not None and file.skip_reason is not None
     }
-    known_paths = line_texts.keys() | skipped_paths
-    checks = _check_all(proposed, line_texts, known_paths)
+    known_paths = anchor_lines.keys() | skipped_paths
+    checks = _check_all(proposed, rule_findings, anchor_lines, known_paths)
     kept_ai = tuple(
         ReviewedFinding(
             check.proposed.model_copy(update={"file": check.diff_path}),
             Source.AI,
-            None,
+            check.proposed.rule,
             check.fingerprint,
         )
         for check in checks
@@ -108,32 +122,32 @@ def verify_findings(
     return VerifyResult(kept=(*rule_findings, *kept_ai), checks=checks)
 
 
-def _anchor_line_texts(parsed: ParsedDiff) -> dict[str, dict[int, str]]:
-    """Each reviewable new path, with the text of its added and context lines by number.
+def _anchor_lines(parsed: ParsedDiff) -> dict[str, dict[int, _AnchorLine]]:
+    """Each reviewable new path, with its added and context lines by number.
 
     A path with no such line, such as one whose hunks only remove lines, maps to an empty dict.
-    When sections sharing a path number a line twice, the first one's text is kept.
+    When hunks sharing a path number a line twice, the first one's line is kept.
     """
-    texts: dict[str, dict[int, str]] = {}
+    anchors: dict[str, dict[int, _AnchorLine]] = {}
     for file in parsed.files:
         if file.path is None or file.skip_reason is not None:
             continue
-        numbered = texts.setdefault(file.path, {})
+        numbered = anchors.setdefault(file.path, {})
         for hunk in file.hunks:
             for line in hunk.lines:
                 if line.new_line is not None:
-                    numbered.setdefault(line.new_line, line.text)
-    return texts
+                    numbered.setdefault(line.new_line, _AnchorLine(line.text, hunk))
+    return anchors
 
 
 def _drop_reason(
-    finding: Finding, diff_path: str | None, line_texts: _LineTexts
+    finding: Finding, diff_path: str | None, anchor_lines: _AnchorLines
 ) -> DropReason | None:
     if diff_path is None:
         return DropReason.UNKNOWN_FILE
-    if diff_path not in line_texts:
+    if diff_path not in anchor_lines:
         return DropReason.SKIPPED_FILE
-    if finding.line not in line_texts[diff_path]:
+    if finding.line not in anchor_lines[diff_path]:
         return DropReason.LINE_NOT_IN_DIFF
     return None
 
@@ -150,32 +164,78 @@ def _diff_path_named(file: str, known_paths: Collection[str]) -> str | None:
 
 
 def _check_all(
-    proposed: Sequence[Finding], line_texts: _LineTexts, known_paths: Collection[str]
+    proposed: Sequence[Finding],
+    rule_findings: Sequence[ReviewedFinding],
+    anchor_lines: _AnchorLines,
+    known_paths: Collection[str],
 ) -> tuple[ProposalCheck, ...]:
-    """Drop each finding whose anchor misses; fingerprint the rest, or mark a repeat a duplicate.
+    """Drop each finding whose anchor misses; mark a repeat a duplicate; fingerprint the rest.
 
-    Two findings are alike when their path, rule part, line and rationale are all the same; the
-    ordinal isn't compared. A rule finding's rule part is a ``RuleId``, never ``ai:``, so no rule
-    finding shares a model finding's parts, and ordinals are counted among model findings only.
+    A finding is compared first with the rule findings (``_repeated_rule_finding``), then with the
+    model findings kept before it: two are alike when their path, rule part, line and rationale
+    are all the same, whatever their ordinals. Ordinals count on from the rule findings', so a
+    model finding never takes a rule finding's fingerprint.
     """
-    fingerprinter = Fingerprinter()
+    fingerprinter = Fingerprinter(taken=(reviewed.fingerprint for reviewed in rule_findings))
+    rule_findings_by_line = _rule_findings_by_line(rule_findings)
     kept_fingerprints: dict[tuple[str, str, int, str], str] = {}
     checks: list[ProposalCheck] = []
     for finding in proposed:
         diff_path = _diff_path_named(finding.file, known_paths)
-        reason = _drop_reason(finding, diff_path, line_texts)
+        reason = _drop_reason(finding, diff_path, anchor_lines)
         # ``diff_path is None`` always has a reason; it is tested only so mypy narrows the type.
         if reason is not None or diff_path is None:
             checks.append(ProposalCheck(finding, diff_path, drop_reason=reason))
             continue
-        rule_part = f"ai:{finding.category}"
+        lines = anchor_lines[diff_path]
+        rule_part = finding.rule or f"ai:{finding.category}"
         alike = (diff_path, rule_part, finding.line, finding.rationale)
-        if alike in kept_fingerprints:
-            checks.append(ProposalCheck(finding, diff_path, duplicate_of=kept_fingerprints[alike]))
+        duplicate_of = _repeated_rule_finding(finding, diff_path, lines, rule_findings_by_line)
+        if duplicate_of is None:
+            duplicate_of = kept_fingerprints.get(alike)
+        if duplicate_of is not None:
+            checks.append(ProposalCheck(finding, diff_path, duplicate_of=duplicate_of))
             continue
         fingerprint = fingerprinter.fingerprint(
-            file=diff_path, rule=rule_part, anchor_text=line_texts[diff_path][finding.line]
+            file=diff_path, rule=rule_part, anchor_text=lines[finding.line].text
         )
         kept_fingerprints[alike] = fingerprint
         checks.append(ProposalCheck(finding, diff_path, fingerprint=fingerprint))
     return tuple(checks)
+
+
+def _rule_findings_by_line(rule_findings: Sequence[ReviewedFinding]) -> _RuleFindingsByLine:
+    """The rule findings by file and rule, then by line, each line's in the order given."""
+    by_line: dict[tuple[str, RuleId | None], dict[int, list[ReviewedFinding]]] = {}
+    for reviewed in rule_findings:
+        key = (reviewed.finding.file, reviewed.rule)
+        by_line.setdefault(key, {}).setdefault(reviewed.finding.line, []).append(reviewed)
+    return by_line
+
+
+def _repeated_rule_finding(
+    finding: Finding,
+    diff_path: str,
+    lines: Mapping[int, _AnchorLine],
+    rule_findings_by_line: _RuleFindingsByLine,
+) -> str | None:
+    """The fingerprint of a rule finding that ``finding`` repeats, or None.
+
+    ``finding`` sits in ``diff_path``, whose anchor lines are ``lines``. It repeats a rule finding
+    of the rule it is tagged with, in the same file and hunk, at most ``_NEARBY_LINES`` lines
+    away, and at least as severe as it, so a tag can't hide a more serious finding. Each line's
+    hunk is the one ``lines`` holds for it. Of several, the one on the lowest line is returned,
+    and on that line the first given.
+    """
+    if finding.rule is None:
+        return None
+    same_rule = rule_findings_by_line.get((diff_path, finding.rule), {})
+    hunk = lines[finding.line].hunk
+    for line in range(finding.line - _NEARBY_LINES, finding.line + _NEARBY_LINES + 1):
+        anchor = lines.get(line)
+        if anchor is None or anchor.hunk is not hunk:
+            continue
+        for reviewed in same_rule.get(line, ()):
+            if finding.severity.rank <= reviewed.finding.severity.rank:
+                return reviewed.fingerprint
+    return None

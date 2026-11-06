@@ -8,6 +8,7 @@ Fingerprints and dedup).
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Iterable
 from typing import Final
 
 __all__ = ["Fingerprinter", "fingerprint_for"]
@@ -38,11 +39,14 @@ class Fingerprinter:
 
     The first finding with a given file, rule part and collapsed anchor text gets ordinal 0, the
     next one 1, and so on, so two identical findings on one line, or two identical lines in one
-    file, keep separate identities.
+    file, keep separate identities. An ordinal whose fingerprint is ``taken`` is skipped, so
+    findings fingerprinted by another ``Fingerprinter`` keep theirs, and later findings sharing
+    their parts count on from them.
     """
 
-    def __init__(self) -> None:
-        """Start with no finding seen."""
+    def __init__(self, taken: Iterable[str] = ()) -> None:
+        """Start with no finding seen, and ``taken`` never to be given out."""
+        self._taken = frozenset(taken)
         self._seen: Counter[tuple[str, str, str]] = Counter()
         # Each anchor text's hash, worked out once, so many findings on one long line cost
         # that line's length once, not once each.
@@ -55,9 +59,12 @@ class Fingerprinter:
             anchor_sha256 = _anchor_sha256(anchor_text)
             self._anchor_sha256s[anchor_text] = anchor_sha256
         parts = (file, rule, anchor_sha256)
-        ordinal = self._seen[parts]
-        self._seen[parts] += 1
-        return _fingerprint(file, rule, anchor_sha256, ordinal)
+        while True:
+            ordinal = self._seen[parts]
+            self._seen[parts] += 1
+            fingerprint = _fingerprint(file, rule, anchor_sha256, ordinal)
+            if fingerprint not in self._taken:
+                return fingerprint
 
 
 def _anchor_sha256(anchor_text: str) -> str:
