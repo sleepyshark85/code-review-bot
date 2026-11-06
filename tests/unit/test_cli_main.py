@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TextIO, cast, override
 
 import pytest
+from diff_samples import MINIMAL_DIFF, section
 
 from review_bot.cli import build_provider, main, parse_args
 from review_bot.errors import ConfigError, ErrorCategory, InputError, ProviderError
@@ -25,7 +26,7 @@ CANNED_LINE = (
 @pytest.fixture
 def diff_path(tmp_path: Path) -> Path:
     path = tmp_path / "change.diff"
-    path.write_text("+print('hello')\n", encoding="utf-8")
+    path.write_text(MINIMAL_DIFF, encoding="utf-8")
     return path
 
 
@@ -298,3 +299,74 @@ def test_main_with_injected_provider_uses_it_instead_of_building_one(
 
     assert len(provider.requests) == 1
     assert "canned" not in capsys.readouterr().err
+
+
+def test_main_with_every_file_skipped_names_ten_paths_then_the_total(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = [f"docs/{index:02}.md" for index in range(12)]
+    diff = tmp_path / "docs.diff"
+    diff.write_bytes("".join(section(path) for path in paths).encode("utf-8"))
+    provider = MockProvider()
+
+    assert main([str(diff), "--provider", "mock"], provider=provider) == 0
+
+    warning, summary = capsys.readouterr().err.splitlines()
+    assert warning == (
+        "review-bot: warning: nothing was reviewed: every changed file was skipped: "
+        f"{', '.join(paths[:10])} (12 in total)"
+    )
+    assert summary.endswith(" skipped_files=12 model_called=false")
+    assert provider.requests == []
+
+
+def test_main_with_only_a_deleted_binary_file_names_it_as_deleted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "binary.diff"
+    diff.write_bytes(
+        b"diff --git a/x.bin b/x.bin\ndeleted file mode 100644\n"
+        b"Binary files a/x.bin and /dev/null differ\n"
+    )
+
+    assert main([str(diff), "--provider", "mock"]) == 0
+
+    warning, _summary = capsys.readouterr().err.splitlines()
+    assert warning.endswith("skipped: (deleted file) (1 in total)")
+
+
+def test_main_with_mock_and_every_file_skipped_omits_the_canned_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "lock.diff"
+    diff.write_bytes(section("uv.lock").encode("utf-8"))
+
+    assert main([str(diff), "--provider", "mock"]) == 0
+
+    assert "canned" not in capsys.readouterr().err
+
+
+def test_main_with_a_reviewed_file_reports_the_skipped_count_and_the_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "mixed.diff"
+    diff.write_bytes((section("README.md") + MINIMAL_DIFF).encode("utf-8"))
+
+    assert main([str(diff)], provider=MockProvider(findings=[])) == 0
+
+    assert capsys.readouterr().err.endswith(" skipped_files=1 model_called=true\n")
+
+
+def test_main_with_text_that_is_not_a_diff_returns_15_naming_the_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "notes.diff"
+    diff.write_bytes(b"+x\n")
+    provider = MockProvider()
+
+    assert main([str(diff)], provider=provider) == 15
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"review-bot: error: Diff {diff} can't be parsed. ")
+    assert provider.requests == []

@@ -1,6 +1,6 @@
 # P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S1
 - **Touches:** `diff_parser` (new), `review`, `errors`, `cli`
 
@@ -33,9 +33,9 @@ A developer's review spends no tokens on files nobody wants reviewed, survives m
 
 | Skip | Paths |
 |---|---|
-| Docs | `.md`, `.rst`, `.adoc`, `.txt`, except `requirements*.txt` and `CMakeLists.txt`; `LICENSE*`; `CHANGELOG*` |
+| Docs | `.md`, `.rst`, `.adoc`, `.txt`, except `requirements*.txt` and `CMakeLists.txt`; `LICENSE*` and `CHANGELOG*` only with no extension or a docs extension |
 | Lock | `uv.lock`, `poetry.lock`, `Pipfile.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `composer.lock`, `Gemfile.lock` |
-| Generated | `*.min.js`, `*.min.css`, `*.map`, `*_pb2.py`, `*_pb2_grpc.py`, `*.pb.go`, `*.generated.*`; under a root `dist/` or `build/`; under a `vendor/` or `node_modules/` at any depth |
+| Generated | `*.min.js`, `*.min.css`, `*.map`, `*_pb2.py`, `*_pb2_grpc.py`, `*.pb.go`; under a root `dist/` or `build/`; under a `vendor/` or `node_modules/` at any depth |
 
 ## Out of scope
 - Secret scan (P1-S3), audit records (P1-S4), checking findings against the parse (P1-S6).
@@ -44,3 +44,10 @@ A developer's review spends no tokens on files nobody wants reviewed, survives m
 - **Handovers:** P0-S1 AC12's non-diff case is replaced by AC5, and AC11 needs a limit that fits a real diff. `write_diff("+x\n")` is a literal at about 60 sites, and `claude_argv` writes it too: replace them with one shared constant for a real minimal diff, in one change. `tests/fixtures/p0_s1/prompt_injection.diff` targets `notes.md`, now skipped, so P0-S1 AC13's tests must retarget it to a code path.
 - **Test dependency:** the developer adds `hypothesis` (CONVENTIONS §14) for the parser's tests; the tester can't edit `pyproject.toml`.
 - **README (main session):** add exit 15 at line 16, and say non-diff text is rejected.
+- **Implementation choices (developer):**
+  - The AC9 warning ends `<up to 10 paths, comma-separated> (<N> in total)`. A skipped deleted file keeps `path` `None` and is named `(deleted file)`. It is classified by its old path: the `---` line, or else the file-start line (`diff --git`, `diff --cc` or `diff --combined`).
+  - The summary always appends `skipped_files=N model_called=true|false`. When the model isn't called, the mock's "canned" warning is left out, since no canned output was produced.
+  - The shared minimal diff is `MINIMAL_DIFF` in `tests/unit/diff_samples.py`, the only test path the developer can write to. Integration tests import it through `tests/integration/diff_support.py`. A tests-root module owned by the tester would be the better home.
+  - **File starts (changed in review round 3, approved by the user 2026-11-06):** if the text has any `diff --git`, `diff --cc` or `diff --combined` line, it is a git diff and only those lines start files, so hunk lines can't fake a file header. Git writes the latter two for conflicted files during a merge. A binary file is one with a `Binary files … differ` or `GIT binary patch` line, and its path comes from the file-start line.
+  - **Plain unified diffs (decided by the main session, 2026-11-06):** without any of those file-start lines, a file header inside a hunk can't be told apart from a real one, so such a diff skips no files: every section is reviewed. This fails closed, costing tokens on docs in rare plain diffs, instead of letting a faked header hide code.
+- **Changed during review (main session, 2026-11-06):** `CHANGELOG.py`, `LICENSE.js` and `x.generated.py` are reviewed, so naming a file can't hide its code. A deleted file is skipped by its old path.

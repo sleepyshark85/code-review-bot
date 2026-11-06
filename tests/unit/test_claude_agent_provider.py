@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
 )
+from diff_samples import MINIMAL_DIFF
 
 from review_bot.cli import main
 from review_bot.errors import ErrorCategory, ProviderError
@@ -223,7 +224,7 @@ def test_main_with_overridden_signal_and_unavailable_stderr_exits_by_the_finding
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: object
 ) -> None:
     diff_path = tmp_path / "change.diff"
-    diff_path.write_text("+print('hello')\n", encoding="utf-8")
+    diff_path.write_text(MINIMAL_DIFF, encoding="utf-8")
     monkeypatch.setattr("sys.stderr", stderr)
     sdk_call = scripted(assistant_error("rate_limit"), result_message(result=VALID_RESULT))
 

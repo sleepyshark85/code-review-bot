@@ -13,6 +13,7 @@ import sys
 
 import pytest
 from claude_agent_sdk import AssistantMessage, TextBlock
+from diff_support import MINIMAL_DIFF
 from fake_sdk import FakeSdk
 from repo_paths import REPO_ROOT
 
@@ -99,7 +100,7 @@ def test_p0_s2_ac13_raised_exception_exits_14_without_the_text(claude_review, er
 
 def test_p0_s2_ac13_sdk_log_line_stays_off_stderr_in_a_real_process(tmp_path):
     diff = tmp_path / "change.diff"
-    diff.write_text("+x\n", encoding="utf-8")
+    diff.write_text(MINIMAL_DIFF, encoding="utf-8")
 
     completed = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
         [sys.executable, "-c", LOGGING_PROVIDER_CHILD, str(diff), "--provider", "claude"],
@@ -134,7 +135,7 @@ def test_p0_s2_ac13_exception_after_other_messages_exits_14(claude_review):
     ids=["raises", "raises_cancelled", "returns_none", "returns_a_non_finding"],
 )
 def test_p0_s2_ac17_misbehaving_provider_exits_14(bot, write_diff, provider):
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert_failed_cleanly(run)
 
@@ -146,7 +147,7 @@ def test_p0_s2_ac17_exception_from_a_step_of_main_exits_14(bot, write_diff, monk
 
     monkeypatch.setattr(cli, function, explode)
 
-    assert_failed_cleanly(bot.review(write_diff("+x\n")))
+    assert_failed_cleanly(bot.review(write_diff(MINIMAL_DIFF)))
 
 
 def test_p0_s2_ac17_closed_stream_exits_14_in_process(bot, write_diff, monkeypatch):
@@ -154,7 +155,7 @@ def test_p0_s2_ac17_closed_stream_exits_14_in_process(bot, write_diff, monkeypat
     closed.close()
     monkeypatch.setattr(sys, "stdout", closed)
 
-    run = bot.review(write_diff("+x\n"), provider=bot.mock())
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock())
 
     assert run.exit_code == 14, run.stderr
     assert "Traceback" not in run.stderr

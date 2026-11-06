@@ -3,6 +3,7 @@
 import re
 
 import pytest
+from diff_support import MINIMAL_DIFF, section
 
 from review_bot.findings import Category, Finding, Severity
 
@@ -17,7 +18,6 @@ ANY_DIFF = {
     "no_final_newline": "diff --git a/x.py b/x.py\n+unique-diff-marker = 1",
     "crlf": "diff --git a/x.py b/x.py\r\n+unique-diff-marker = 1\r\n",
     "non_ascii": "diff --git a/x.py b/x.py\n+unique-diff-marker = 'é→'\n",
-    "single_line": "unique-diff-marker, not even a diff",
 }
 
 
@@ -77,12 +77,8 @@ def test_p0_s1_ac12_crlf_line_endings_reach_the_prompt_unchanged(bot, write_diff
     assert text in request.user_prompt
 
 
-def test_p0_s1_ac12_text_that_is_not_a_diff_is_accepted(bot, write_diff):
-    text = "just some notes, parsing is Phase 1\n"
-
-    request = bot.request_for(write_diff(text))
-
-    assert text in request.user_prompt
+# AC12's "text that is not a diff is accepted", and AC13's `single_line` case, were replaced by
+# P1-S2 AC5: such text now exits 15 (`test_p1_s2_parse_and_skip.py`).
 
 
 @pytest.mark.parametrize("diff", ANY_DIFF.values(), ids=ANY_DIFF.keys())
@@ -122,13 +118,13 @@ def test_p0_s1_ac13_lookalike_delimiters_are_not_the_real_ones(bot, write_diff, 
 
 
 def test_p0_s1_ac13_system_prompt_states_the_same_hash_rule(bot, write_diff):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt.lower()
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt.lower()
 
     assert "same hash" in system_prompt
 
 
 def test_p0_s1_ac13_system_prompt_says_lookalike_delimiters_are_data(bot, write_diff):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt.lower()
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt.lower()
 
     assert re.search(r"[^.]*\bother hash\b[^.]*\bdata\b", system_prompt)
 
@@ -142,7 +138,7 @@ def test_p0_s1_ac13_system_prompt_does_not_contain_the_diff(bot, write_diff, dif
 
 
 def test_p0_s1_ac13_system_prompt_says_delimited_content_is_untrusted_data(bot, write_diff):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt.lower()
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt.lower()
 
     assert "untrusted" in system_prompt
     assert re.search(r"\bdata\b", system_prompt)
@@ -161,9 +157,11 @@ def _delimiters_of(bot, write_diff, text: str) -> tuple[str, str]:
     ids=["as_a_bare_line", "as_an_added_line", "inside_a_longer_line"],
 )
 def test_p0_s1_ac14_delimiters_from_another_diff_are_not_reused(bot, write_diff, embed):
-    other_opening, other_closing = _delimiters_of(bot, write_diff, "+the other diff\n")
+    other_opening, other_closing = _delimiters_of(
+        bot, write_diff, section("other.py", "+the other diff\n")
+    )
     diff = (
-        "diff --git a/x b/x\n"
+        section("x.py", "")
         + embed.format(line=other_opening)
         + "+between\n"
         + embed.format(line=other_closing)
@@ -188,14 +186,14 @@ def test_p0_s1_ac14_delimiters_stay_unique_as_collisions_accumulate(bot, write_d
 
 
 def test_p0_s1_ac15_system_prompt_requires_the_bare_json_shape(bot, write_diff):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt
 
     assert "json" in system_prompt.lower()
     assert re.search(r'\{\s*"findings"\s*:\s*\[', system_prompt)
 
 
 def test_p0_s1_ac15_system_prompt_forbids_a_code_fence(bot, write_diff):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt.lower()
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt.lower()
 
     assert "fence" in system_prompt
 
@@ -211,14 +209,14 @@ def names_value(system_prompt: str, value: str) -> bool:
 
 @pytest.mark.parametrize("field", FINDING_FIELDS)
 def test_p0_s1_ac15_system_prompt_labels_each_finding_field(bot, write_diff, field):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt
 
     assert labels_field(system_prompt, field), f"{field!r} isn't labelled"
 
 
 @pytest.mark.parametrize("value", SEVERITY_VALUES + CATEGORY_VALUES)
 def test_p0_s1_ac15_system_prompt_names_each_enum_value(bot, write_diff, value):
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt
 
     assert names_value(system_prompt, value), f"{value!r} isn't named"
 
@@ -228,7 +226,7 @@ def test_p0_s1_ac15_system_prompt_covers_everything_in_the_real_schema(bot, writ
     fields = list(Finding.model_fields)
     values = [member.value for member in (*Severity, *Category)]
 
-    system_prompt = bot.request_for(write_diff("+x = 1\n")).system_prompt
+    system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt
 
     assert [field for field in fields if not labels_field(system_prompt, field)] == []
     assert [value for value in values if not names_value(system_prompt, value)] == []

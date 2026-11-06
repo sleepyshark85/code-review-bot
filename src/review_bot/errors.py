@@ -6,6 +6,7 @@ __all__ = [
     "ConfigError",
     "DiffEmptyError",
     "DiffNotFoundError",
+    "DiffNotParsableError",
     "DiffTooLargeError",
     "DiffUnreadableError",
     "ErrorCategory",
@@ -41,6 +42,10 @@ class DiffEmptyError(InputError):
 
 class DiffTooLargeError(InputError):
     """The diff file is over the byte limit."""
+
+
+class DiffNotParsableError(InputError):
+    """The diff file's text has no file header, so it isn't a diff."""
 
 
 class ErrorCategory(StrEnum):

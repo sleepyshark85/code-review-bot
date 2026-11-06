@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from diff_support import MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 from p0_s4_support import PREFIX, assert_one_error_line
 from real_sdk_support import FINDING_LINE_START
@@ -167,7 +168,7 @@ def fake_cli(tmp_path, monkeypatch):
 @pytest.fixture
 def run_bot(fake_cli, tmp_path):
     diff = tmp_path / "change.diff"
-    diff.write_text("+x\n", encoding="utf-8")
+    diff.write_text(MINIMAL_DIFF, encoding="utf-8")
 
     def run(mode, *flags, extra="none", close_stdout=False, review=None):
         review = review or (str(diff), "--provider", "claude")

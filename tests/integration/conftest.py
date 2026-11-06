@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from diff_support import MINIMAL_DIFF
 from repo_paths import REPO_ROOT
 
 from review_bot import cli
@@ -91,7 +92,7 @@ def write_diff(tmp_path: Path) -> Callable[..., Path]:
 @pytest.fixture
 def claude_argv(write_diff: Callable[..., Path]) -> Callable[..., list[str]]:
     """Arguments reviewing a small diff with `--provider claude` and these flags."""
-    path = write_diff("+x\n")
+    path = write_diff(MINIMAL_DIFF)
 
     def argv(*flags: str) -> list[str]:
         return [str(path), "--provider", "claude", *flags]

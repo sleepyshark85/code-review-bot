@@ -232,3 +232,172 @@ The whole suite covers 100% of statements and branches, `cli.py` included. Child
 5. **AC4's reports are checked by their text,** `Exception ignored in` and `SENTINEL`, not their whole form.
 6. **AC3 releases the object between `main` and `sys.exit`.** An object collected later, at interpreter shutdown, isn't exercised.
 7. **AC4's in-process check** covers three routes that return 1. A failing injected or mock run isn't checked for the hook.
+
+## P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff
+
+Spec: [p1-s2-parse-and-skip.md](slices/p1-s2-parse-and-skip.md). Tests: [`tests/integration/test_p1_s2_parse_and_skip.py`](../../../tests/integration/test_p1_s2_parse_and_skip.py), 114 cases after the plain-diff decision (112 after fix round 1, 87 before it). All but two run in-process: `parse_diff` directly, and `main` with an injected `MockProvider`. The two parse-time cases run a child process, so a regression fails at a timeout instead of blocking the suite.
+
+**Status: every criterion passes, after fix round 1 and the plain-diff decision.** The run was against the uncommitted working tree on base `a308085`. The developer's last `src/` change was at 00:21:55 on 2026-11-06, and their last unit-test change at 00:22:09, both before the run started at 00:22:27. A later `src/` change needs a re-run. The tests were written from the spec's criteria and Interfaces before the developer's code was read. Only `diff_parser`'s public dataclass fields were read afterwards, to build the wrong-code checks, and `review.py`'s import of `parse_diff`, to know where to patch it.
+
+### Gate
+
+| Check | Result |
+|---|---|
+| `ruff format --check .` | Pass |
+| `ruff check .` | Pass |
+| `mypy` (strict) | Pass |
+| `uv run pytest --cov -q`, whole suite, after the plain-diff decision | 1143 passed, 12 skipped (`/dev/full`, Windows), 100% coverage (619 statements, 114 branches); 115.49 s in pytest, 120 s wall clock |
+| The same, after fix round 1 | 1138 passed, 12 skipped (`/dev/full`, Windows), 100% coverage (619 statements, 114 branches); 107.15 s in pytest, 111 s wall clock |
+| The same, before fix round 1 | 1099 passed, 12 skipped, 100% (614 statements, 120 branches); 108.56 s in pytest, 112 s wall clock |
+| `pre-commit`, `pip-audit` | Not run by the tester |
+
+**Timing.** A single run, so a small difference may be noise. The new file took 1.1 to 3.3 s alone across the wrong-code runs. Against P1-S18's run after fix round 1 (126.54 s, 975 passed), the suite is 18 s faster with 124 more cases, which is more likely machine load than the slice's effect. It wasn't re-measured.
+
+### Criteria
+
+Test names drop the `test_p1_s2_` prefix.
+
+| AC | Test | Cases | Result |
+|---|---|---|---|
+| AC1 | `ac1_sample_is_one_file_with_two_mismatched_hunks` | 1 | Pass |
+| AC1 | `ac1_sample_added_and_context_lines_are_12_to_14_and_30_to_41` | 1 | Pass |
+| AC1 | `ac1_sample_added_lines_are_14_32_to_36_and_38_to_41` | 1 | Pass |
+| AC1 | `ac1_blank_before_the_second_header_is_not_a_body_line` | 1 | Pass |
+| AC1 | `ac1_blank_before_export_csv_is_context_line_37` | 1 | Pass |
+| AC1 | `ac1_sample_is_reviewed_whole` | 1 | Pass |
+| AC1, beyond its text | `ac1_numbering_follows_the_body_not_the_declared_counts` (Hypothesis, 60 examples) | 1 | Pass |
+| AC2 | `ac2_header_with_no_counts_numbers_from_its_start` | 1 | Pass |
+| AC2 | `ac2_no_newline_marker_is_not_a_line` | 1 | Pass |
+| AC2 | `ac2_crlf_endings_leave_no_carriage_return` | 1 | Pass |
+| AC2 | `ac2_file_headers_inside_a_hunk_without_a_hunk_header_are_body_lines` | 1 | Pass |
+| AC3 | `ac3_unreadable_new_start_gives_no_line_numbers` | 2 (`@@ garbage @@`, `@@ -1,2 +x,2 @@`) | Pass |
+| AC3 | `ac3_unreadable_hunk_still_reaches_the_prompt` | 1 | Pass |
+| AC4 | `ac4_path_is_the_new_path_or_none_when_deleted` | 7 (rename, new, deleted, `--no-prefix`, quoted octal, plain unified, `b/b/q.py` keeps one `b/`) | Pass |
+| AC4 | `ac4_new_file_numbers_from_line_1` | 1 | Pass |
+| AC5 | `ac5_parse_diff_raises_for_text_with_no_file_header` | 3 (`+x\n`, prose, orphan hunks) | Pass |
+| AC5 | `ac5_text_with_no_file_header_exits_15_naming_the_path` | 3 (the same) | Pass |
+| AC6 | `ac6_preamble_is_not_rejected_and_stays_in_reviewable_text` | 1 | Pass |
+| AC6 | `ac6_preamble_reaches_the_prompt` | 1 | Pass |
+| AC7 | `ac7_prompt_holds_only_the_preamble_and_app_section` | 1 | Pass |
+| AC7 | `ac7_skip_reasons_follow_the_path_rules` | 1 | Pass |
+| AC7, from Compatibility | `ac7_summary_counts_skipped_files_and_the_model_call` | 1 | Pass |
+| AC8 | `ac8_crlf_diff_reaches_the_prompt_byte_for_byte` | 1 | Pass |
+| AC9 | `ac9_all_skipped_exits_0_with_warning` | 1 | Pass |
+| AC9 | `ac9_all_skipped_summary_says_the_model_wasnt_called` | 1 | Pass |
+| AC9 | `ac9_warning_names_ten_paths_then_a_count` | 1 (12 paths) | Pass |
+| AC10 | `ac10_generated_marker_in_content_is_still_reviewed` | 2 (`# @generated`, `# DO NOT EDIT`) | Pass |
+| AC10 | `ac10_binary_section_is_skipped_as_binary` | 1 | Pass |
+| AC10 | `ac10_binary_section_leaves_the_prompt` | 1 | Pass |
+| AC11 | `ac11_path_is_not_skipped`, `ac11_path_is_reviewed` | 6 each | Pass |
+| AC11 | `ac11_path_is_skipped`, `ac11_skipped_path_leaves_the_prompt` | 5 each | Pass |
+| AC11, the Interfaces table | `ac11_interfaces_table_path_is_skipped_with_its_reason` | 25, after fix round 1 (see below) | Pass |
+
+No failures to reproduce.
+
+**How the prompt is compared.** The criteria's "byte for byte" is checked as equality, not containment. The diff between the opening and closing delimiter lines of `user_prompt` must equal the expected text. In AC7, `app.py` sits between skipped sections, so a removal that takes too much or too little fails.
+
+### Handovers (spec Notes)
+
+1. **The shared constant.** The developer's `tests/unit/diff_samples.py` holds `MINIMAL_DIFF` (one hunk adding `x` to `app.py`) and `section(path, body)`. [`tests/integration/diff_support.py`](../../../tests/integration/diff_support.py) re-exports them as `unit.diff_samples`. `tests/` is always on the path, but `tests/unit` is there only when unit tests are collected, and it has no `__init__.py`, so it imports as a namespace package. One change replaced 59 `write_diff("+x\n")` and `write_text("+x\n", ...)` sites, `claude_argv` among them, across 12 files. It also replaced the 2 lambda sites in P0-S3's `INPUT_FAILURES`. Untouched: the `"+x"` user prompts given straight to a provider (`p0_s4_support.py`, conformance), which are never parsed, and `b"\xff\xfe+x\n"`, which is invalid UTF-8 on purpose.
+2. **P0-S1 AC12's non-diff case is retired** in favour of AC5, with a comment in `test_p0_s1_prompt.py`. **AC13's `single_line` case**, `"unique-diff-marker, not even a diff"`, is the same input, so it was retired too (2 cases).
+3. **P0-S1 AC11's limit** is now each diff's own size. The three variants stay: ASCII, multi-byte and CRLF, each as a real diff.
+4. **`prompt_injection.diff`** now targets `app/handler.py` instead of `notes.md`. P0-S1 AC13's two tests over it pass unchanged.
+5. **Breakage the Notes didn't list.** These are the same handover, for other headerless inputs. No assertion was weakened.
+   - P0-S1 AC13 and AC15: 8 `write_diff("+x = 1\n")` sites now use `MINIMAL_DIFF`. They only read the system prompt.
+   - P0-S1 AC14: the diffs whose delimiters are reused now use `section`.
+   - P0-S1 AC3: `f"+{SENTINEL}\n"` is now `section("app.py", ...)`.
+   - P0-S1 AC4's flag-beats-variable test: `b"x" * 11` at limit 11 became `MINIMAL_DIFF` at its size, with the variable at one byte less.
+   - P0-S1 AC10's exact-default-limit file is now a real diff padded to exactly 400,000 bytes.
+   - P0-S2 AC15's victim test, run in a separate pytest, wrote `"+x"`. It now writes `MINIMAL_DIFF`'s value inline.
+   - **P0-S3 AC6's `stderr.endswith("output_tokens=N\n")`** contradicts Phase 1's Compatibility rule, which appends `skipped_files=` and `model_called=`. It now requires the exact value to end a field, `output_tokens=N` then a space or the line's end. That is the same value check, without pinning the line's last field. **For the designer:** this is a Phase 0 criterion's test changed by a Phase 1 rule, but it isn't in the slice's Notes.
+
+### Would the tests fail on wrong code?
+
+**All 24 kinds of wrong code are caught,** and a no-op control passes all 87 cases. A driver ran pytest in-process against the P1-S2 file and patched `parse_diff` in every `review_bot` module that held it, `diff_parser` and `review`, or filtered `cli`'s stderr lines. It lived in `tests/` while it ran and was then deleted: the path guard blocks the scratchpad, and the shell mangled it on stdin. No repository file was changed by it.
+
+| Wrong code | Failing cases |
+|---|---|
+| **A parser that trusts the declared counts**, consuming each hunk's body until they are met, written from scratch | 52 of 87, including all 6 of AC1 and the Hypothesis case (it doesn't skip, so most skip cases fail too) |
+| **A skip rule that matches `docs/conf.py`** (any path under `docs/`) | 2: AC11's `docs/conf.py`, parse and prompt |
+| **A skip rule that matches `src/build/x.py`** (`build/` or `dist/` at any depth) | 4: AC11's `src/build/x.py` and `src/dist/x.py`, parse and prompt |
+| `vendor/` matched at the root only | 1: AC11's `src/vendor/x.py` |
+| Every `.txt` skipped | 6: AC11's `requirements*.txt` and `CMakeLists.txt` |
+| A file opted out by `@generated` or `DO NOT EDIT` in its content | 2: AC10 |
+| Nothing skipped | 42: AC7, AC9, AC10's binary cases, AC11's skipped paths, the table |
+| Binary reported as `generated` | 1: AC10 |
+| Every leading `a/` and `b/` stripped | 1: AC4's `b/b/q.py` |
+| A deleted file keeps its old path | 1: AC4 |
+| Octal escapes not decoded | 1: AC4 |
+| CRLF normalised in `reviewable_text` | 1: AC8 |
+| Preamble dropped | 4: AC6 (both), AC7 (two) |
+| Removed lines advance the new numbering | 8: AC1 (4, Hypothesis included), AC2 (4) |
+| `has_count_mismatch` always false | 4: AC1, Hypothesis, AC3 (both) |
+| An unreadable start numbered from 1 | 2: AC3 |
+| The blank before the second `@@` kept as context, line 15 | 2: AC1 |
+| Text with no file header accepted | 6: AC5, parse and `main` |
+| The error line doesn't name the path | 3: AC5 |
+| No "nothing was reviewed" warning | 2: AC9 |
+| `model_called=true` when nothing was called | 2: AC9 |
+| `skipped_files=0` always | 3: AC7's summary, AC9 (two) |
+| The warning names all 12 paths | 1: AC9's ten-path case |
+| The warning has no count after the tenth path | 1: AC9's ten-path case |
+
+These ran on the P1-S2 file only, not the whole suite. "The provider isn't called" in AC5 and AC9 is shown by `provider.requests == []`. The "nothing skipped" row shows that it fails when the provider is called.
+
+### Fix round 1: regression tests
+
+The review found seven issues, which the developer fixed in `src/`. The spec's Interfaces table and Notes changed with it; the criteria didn't. Before the fix landed, the tester probed the unfixed parser. **Every item below misbehaved there as the review said:**
+- A faked header split `q.sql` in two, with and without `diff --git`, and dropped `DROP TABLE users;`.
+- Both 5000-digit headers raised `ValueError`, which `main` turns into exit 14.
+- The crafted lines took **53 s at 120 KB** (escaped quotes) and **74 s at 300 KB** (`and`s).
+- Deleted `uv.lock`, `README.md` and `app.py` were all reviewed.
+- A `GIT binary patch` section wasn't binary.
+- `CHANGELOG.py` and `LICENSE.js` were skipped as docs, and `x.generated.py` as generated.
+
+New and changed tests, with names shortened as above:
+
+| Item | Test | Cases | Result |
+|---|---|---|---|
+| 1. AC7, faked header with `diff --git` | `ac7_faked_file_header_in_a_git_diff_stays_in_one_file`, `ac7_faked_file_header_in_a_git_diff_cant_hide_lines` | 2 | Pass |
+| 1. AC7, faked header in a plain unified diff, after the decision below | `ac7_plain_unified_faked_header_cant_hide_lines`, `ac7_plain_unified_faked_header_reaches_the_prompt` | 2 | Pass |
+| The decision: a plain unified diff skips no files | `ac9_plain_unified_readme_is_reviewed_not_skipped`: a plain diff of only `README.md` calls the model, exits 1, and reaches the prompt whole | 1 | Pass |
+| 2. AC3, 5000-digit new start and count | `ac3_5000_digit_header_number_gives_no_line_numbers`, `ac3_5000_digit_header_number_is_reviewed_not_exit_14` | 2 each | Pass |
+| 3. Parse time near the 400,000-byte default limit | `crafted_line_near_the_size_limit_parses_quickly` (a `diff --git` line of repeated `\"`; a `Binary files ` line of repeated ` and `) | 2 | Pass |
+| 4. Deleted files | `ac11_deleted_file_is_skipped_by_its_old_path` (`uv.lock`, `README.md`), `ac11_deleted_skipped_file_leaves_the_prompt`, `ac11_deleted_code_file_is_still_reviewed`, `ac9_only_deleted_skipped_files_warn_as_deleted_file` | 5 | Pass |
+| 5. `GIT binary patch` | `ac10_git_binary_patch_is_skipped_as_binary`, `ac10_git_binary_patch_leaves_the_prompt` | 2 | Pass |
+| 6. Tightened table | `ac11_code_named_like_docs_or_generated_is_not_skipped` and `..._is_reviewed` (`CHANGELOG.py`, `LICENSE.js`, `x.generated.py`, `api/client.generated.ts`); the table gains `LICENSE.md` and `CHANGELOG.rst`, keeps `CHANGELOG`, and loses `api/client.generated.ts` | 8 new; table 25 | Pass |
+| 7. P0-S1 AC11's new text | `test_p0_s1_ac11_file_at_the_limit_reaches_the_provider_whole`: already a real diff exactly `--max-diff-bytes` long, all of it reaching the provider, exit 1. Only its comment changed | 3 | Pass |
+
+- **Item 1's plain form was first pinned as the developer's "residual risk",** then flipped by the main session's decision in the spec's Notes: a plain unified diff skips no files. The flipped tests require `DROP TABLE users;` in the prompt, the whole input in `reviewable_text`, and no skipped file. They don't pin how many files the plain form splits into, since the decision is about skipping, not splitting.
+  - **Evidence against the earlier code:** the 00:12:15 parser passed the old pin, so it skipped the plain-form `README.md` as docs and kept `DROP TABLE users;` out of `reviewable_text`. The two flipped tests and the README case assert the opposite. Unlike the other items, they weren't rerun against a rebuilt version, because the developer's change landed (00:21:48) before they could run.
+  - **Every other skip case uses `diff --git` input,** so the decision doesn't touch them: `section()`, `deleted()`, `BINARY` and `GIT_BINARY` all start with a `diff --git` line. The plain-form inputs (AC2, AC3, AC4 and the property test) all use `.py` paths and assert no skip reason, so they don't depend on the decision.
+- **Item 3's bound is 1 s,** for the parse alone, timed inside the child. The fixed parser takes about 1 ms on each input, so the margin is about 1000 times. The child is killed after 60 s. A first bound of 5 s was too loose: a quadratic scan that only copies each suffix took 4.5 s at 400 KB and passed it.
+- **Moving `MINIMAL_DIFF` to a root `tests/` module wasn't cheap.** The developer's unit tests import it as `diff_samples` from `tests/unit`, and the tester can't edit them. It stays where it is.
+
+**Would they fail on the unfixed behaviour?** Yes, every new test of fix round 1. The plain-form tests were then flipped (see above). No copy of the unfixed parser survives: the Git index holds only an intent-to-add entry. So each pre-fix behaviour was rebuilt in memory around the fixed parser, from the probe's results. A temporary driver in `tests/`, deleted after use, patched `parse_diff` in `diff_parser` and `review`. For item 3 it prefixed the child's code instead. A no-op control passed all 110 non-timing cases.
+
+| Unfixed behaviour, rebuilt | New tests that fail |
+|---|---|
+| `diff --git` lines ignored for file starts (old splitting) | 12 new: all 4 of items 1 (`diff --git` form) and 5, item 2's 2 `main` cases, 2 of item 4's, and item 6's 4 prompt cases. Also 22 older cases, since this wrong version breaks most prompts |
+| `int()` on a 5000-digit number raises `ValueError` | All 4 of item 2 |
+| A quadratic scan of long lines: suffix copy, and copy plus count | Both of item 3: 2.3 s and 4.2 s, then 55 s and 25 s, against 1 s |
+| Deleted files not skipped | 4 of item 4. `ac11_deleted_code_file_is_still_reviewed` rightly passes; it guards against over-skipping |
+| `GIT binary patch` not binary | Both of item 5 |
+| The old table: `CHANGELOG*` and `LICENSE*` at any extension, `*.generated.*` | All 8 of item 6's new reviewed cases. `LICENSE.md` and `CHANGELOG.rst` were skipped before too, so they guard against over-loosening |
+
+### Coverage
+
+The whole suite covers 100% of statements and branches, `diff_parser.py`, `review.py`, `cli.py` and `errors.py` included. This slice's in-process tests count toward it, alongside the developer's unit tests. The two parse-time children aren't measured.
+
+### Limits
+
+1. **AC9's "then a count"** could mean the unnamed paths (2) or all of them (12). The test accepts either number after the tenth path, and doesn't pin the separator or the order beyond "the first 10 in diff order".
+2. **A `diff --git` line with no hunk** (`diff --git a/x.py b/x.py\n+marker\n`, used by P0-S1 AC12 and AC13) is accepted today. AC5 says "no file header", and the spec doesn't say whether `diff --git` alone counts as one, so this isn't pinned.
+3. **Not pinned, because the spec doesn't say:** removed lines' `new_line`, `has_count_mismatch` for a header with no counts, `Hunk.header`'s exact text, the case of paths (`README.MD`), and a pure rename with no hunks.
+4. **AC4's plain unified diff has no timestamps.** GNU `diff -u` writes `--- a.py\t2024-01-01 ...`, which isn't exercised.
+5. **AC5 and AC9 use `--provider mock` only.** A Claude run over a non-diff or an all-skipped diff isn't run.
+6. **The shared constant crosses into `tests/unit`.** If `tests/unit` gains an `__init__.py`, or the developer moves `diff_samples.py`, `diff_support.py` must follow.
+7. **Hypothesis writes `.hypothesis/`** in the repository root. It is ignored by Git.
+8. **Run on Windows only** by the tester. CI hasn't been checked.
+9. **Plain unified diffs skip nothing** (the main session's decision). A plain diff of docs or lock files now costs tokens. Whether the faked header still splits the file in the plain form isn't pinned.
+10. **Parse time is checked for two crafted lines only,** at one size. Other long-line shapes, such as hunk headers and quoted `---` paths, aren't timed.

@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import pytest
+from diff_support import MINIMAL_DIFF, section
 
 pytestmark = pytest.mark.integration
 
@@ -104,7 +105,7 @@ def test_p0_s1_ac8_other_invalid_utf8_exits_4(bot, write_diff, content):
 
 
 def test_p0_s1_ac8_permission_error_on_read_exits_4(bot, write_diff, deny_reads):
-    path = write_diff("+x\n")
+    path = write_diff(MINIMAL_DIFF)
     provider = bot.mock()
     deny_reads(path)
     with pytest.raises(PermissionError):
@@ -164,7 +165,10 @@ def test_p0_s1_ac10_the_limit_counts_bytes_not_characters(bot, write_diff):
 
 
 def test_p0_s1_ac10_exactly_the_default_limit_is_accepted(bot, write_diff):
-    content = "x" * DEFAULT_LIMIT_BYTES
+    # Since P1-S2 the file must be a real diff, so one added line pads it to the limit.
+    header = section("app.py", "")
+    content = header + "+" + "x" * (DEFAULT_LIMIT_BYTES - len(header) - 2) + "\n"
+    assert len(content.encode("utf-8")) == DEFAULT_LIMIT_BYTES
     provider = bot.mock()
 
     run = bot.review(write_diff(content), provider=provider)
@@ -173,17 +177,24 @@ def test_p0_s1_ac10_exactly_the_default_limit_is_accepted(bot, write_diff):
     assert content in provider.requests[0].user_prompt
 
 
+# AC11 as changed by P1-S2: "a diff exactly `--max-diff-bytes` bytes long", so each limit is the
+# diff's own size.
 @pytest.mark.parametrize(
     "content",
-    ["abcdefghij", "ééééé", "abc\r\ndef\r\n"],
+    [
+        section("app.py", "+abcdefghij\n"),
+        section("app.py", "+ééééé\n"),
+        section("app.py", "+abc\n+def\n").replace("\n", "\r\n"),
+    ],
     ids=["ascii", "multi_byte", "crlf_line_endings"],
 )
 def test_p0_s1_ac11_file_at_the_limit_reaches_the_provider_whole(bot, write_diff, content):
     path = write_diff(content)
-    assert path.stat().st_size == 10
+    limit = len(content.encode("utf-8"))
+    assert path.stat().st_size == limit
     provider = bot.mock()
 
-    run = bot.review(path, "--max-diff-bytes", "10", provider=provider)
+    run = bot.review(path, "--max-diff-bytes", str(limit), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert content in provider.requests[0].user_prompt

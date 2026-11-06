@@ -2,10 +2,12 @@
 
 import io
 import json
+import re
 import sys
 import unicodedata
 
 import pytest
+from diff_support import MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 
 from review_bot.errors import ErrorCategory, ProviderError
@@ -99,7 +101,7 @@ def test_p0_s3_ac4_unavailable_stderr_review_returns_its_own_code(
 ):
     lose_stderr()
 
-    run = bot.review(write_diff("+x\n"), *flags)
+    run = bot.review(write_diff(MINIMAL_DIFF), *flags)
 
     assert run.exit_code == code
     assert bool(run.stdout) == (code != 2)
@@ -126,7 +128,7 @@ def test_p0_s3_ac4_unavailable_stderr_failed_review_keeps_its_code(
     provider = bot.mock(error=error) if error else RaisesSentinel()
     lose_stderr()
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert run.exit_code == code
     assert run.stderr == ""
@@ -138,7 +140,7 @@ def test_p0_s3_ac4_stdout_failing_with_stderr_unavailable_returns_14(
     break_stdout()
     lose_stderr()
 
-    run = bot.review(write_diff("+x\n"))
+    run = bot.review(write_diff(MINIMAL_DIFF))
 
     assert run.exit_code == 14
     assert run.stderr == ""
@@ -146,9 +148,9 @@ def test_p0_s3_ac4_stdout_failing_with_stderr_unavailable_returns_14(
 
 @pytest.mark.parametrize("code", [0, 1, MARK], ids=["zero", "one", "model_text"])
 def test_p0_s3_ac4_system_exit_from_a_provider_returns_14_in_process(bot, write_diff, code):
-    fixed_line = bot.review(write_diff("+x\n"), provider=RaisesSentinel()).stderr
+    fixed_line = bot.review(write_diff(MINIMAL_DIFF), provider=RaisesSentinel()).stderr
 
-    run = bot.review(write_diff("+x\n"), provider=RaisesSystemExit(code))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=RaisesSystemExit(code))
 
     assert run.exit_code == 14, run.stderr
     assert run.stdout == ""
@@ -158,8 +160,8 @@ def test_p0_s3_ac4_system_exit_from_a_provider_returns_14_in_process(bot, write_
 
 
 INPUT_FAILURES = {
-    "missing_3": (3, lambda write: write("+x\n").with_name("absent.diff"), ()),
-    "directory_4": (4, lambda write: write("+x\n").parent, ()),
+    "missing_3": (3, lambda write: write(MINIMAL_DIFF).with_name("absent.diff"), ()),
+    "directory_4": (4, lambda write: write(MINIMAL_DIFF).parent, ()),
     "not_utf8_4": (4, lambda write: write(b"\xff\xfe+x\n"), ()),
     "empty_5": (5, lambda write: write(""), ()),
     "too_large_6": (6, lambda write: write("+xx\n"), ("--max-diff-bytes", "1")),
@@ -181,14 +183,14 @@ def test_p0_s3_ac5_input_failure_is_one_error_line(bot, write_diff, code, path_o
 def test_p0_s3_ac5_provider_failure_is_one_error_line(bot, write_diff, category, message):
     provider = bot.mock(error=ProviderError(category, message))
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert 7 <= run.exit_code <= 13, run.stderr
     assert_only_the_error_line(run.stderr)
 
 
 def test_p0_s3_ac5_internal_error_is_one_error_line(bot, write_diff):
-    run = bot.review(write_diff("+x\n"), provider=RaisesSentinel())
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=RaisesSentinel())
 
     assert run.exit_code == 14, run.stderr
     assert_only_the_error_line(run.stderr)
@@ -201,7 +203,7 @@ def test_p0_s3_ac5_internal_error_is_one_error_line(bot, write_diff):
     ids=["unknown_flag", "invalid_value", "invalid_number"],
 )
 def test_p0_s3_ac5_usage_error_starts_with_the_error_line(bot, write_diff, flags):
-    run = bot.review(write_diff("+x\n"), *flags)
+    run = bot.review(write_diff(MINIMAL_DIFF), *flags)
 
     assert run.exit_code == 2, run.stderr
     assert_error_line_first_usage_may_follow(run.stderr)
@@ -217,7 +219,7 @@ def test_p0_s3_ac5_missing_argument_starts_with_the_error_line(bot):
 def test_p0_s3_ac5_invalid_variable_starts_with_the_error_line(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_THRESHOLD", "urgent")
 
-    run = bot.review(write_diff("+x\n"))
+    run = bot.review(write_diff(MINIMAL_DIFF))
 
     assert run.exit_code == 2, run.stderr
     assert_error_line_first_usage_may_follow(run.stderr)
@@ -229,7 +231,7 @@ def test_p0_s3_ac5_stdout_failure_leaves_only_the_error_line_in_process(
 ):
     break_stdout()
 
-    run = bot.review(write_diff("+x\n"), *flags)
+    run = bot.review(write_diff(MINIMAL_DIFF), *flags)
 
     assert run.exit_code == 14, run.stderr
     assert_only_the_error_line(run.stderr)
@@ -239,7 +241,7 @@ def test_p0_s3_ac5_stdout_failure_leaves_only_the_error_line_in_process(
 def test_p0_s3_ac6_hostile_provider_message_is_one_clean_line(bot, write_diff, category):
     provider = bot.mock(error=ProviderError(category, HOSTILE))
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert 7 <= run.exit_code <= 13, run.stderr
     assert_only_the_error_line(run.stderr)
@@ -253,7 +255,7 @@ def test_p0_s3_ac6_hostile_provider_message_is_one_clean_line(bot, write_diff, c
 def test_p0_s3_ac6_other_controls_in_a_provider_message_are_not_raw(bot, write_diff, control):
     provider = bot.mock(error=ProviderError(ErrorCategory.TRANSIENT, f"before{control}after"))
 
-    run = bot.review(write_diff("+x\n"), provider=provider)
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
 
     assert run.exit_code == 11, run.stderr
     assert_only_the_error_line(run.stderr)
@@ -291,7 +293,7 @@ def test_p0_s3_ac6_hostile_missing_path_is_one_clean_line(bot, tmp_path):
     ],
 )
 def test_p0_s3_ac6_hostile_flag_gives_one_clean_error_line(bot, write_diff, flags):
-    run = bot.run(str(write_diff("+x\n")), *flags)
+    run = bot.run(str(write_diff(MINIMAL_DIFF)), *flags)
 
     assert run.exit_code == 2, run.stderr
     assert_error_line_first_usage_may_follow(run.stderr)
@@ -300,7 +302,7 @@ def test_p0_s3_ac6_hostile_flag_gives_one_clean_error_line(bot, write_diff, flag
 def test_p0_s3_ac6_hostile_variable_gives_one_clean_error_line(bot, write_diff, monkeypatch):
     monkeypatch.setenv("REVIEW_BOT_THRESHOLD", HOSTILE)
 
-    run = bot.review(write_diff("+x\n"))
+    run = bot.review(write_diff(MINIMAL_DIFF))
 
     assert run.exit_code == 2, run.stderr
     assert_error_line_first_usage_may_follow(run.stderr)
@@ -333,7 +335,8 @@ def test_p0_s3_ac6_bad_usage_counts_as_0_and_the_review_is_delivered(
     assert len(run.stderr.splitlines()) == 1, repr(run.stderr)
     assert raw_controls(run.stderr.removesuffix("\n")) == [], repr(run.stderr)
     assert f"input_tokens={input_tokens} " in run.stderr
-    assert run.stderr.endswith(f"output_tokens={output_tokens}\n")
+    # Phase 1 appends fields after this one (phase-1 design, Compatibility), so it ends a field.
+    assert re.search(rf" output_tokens={output_tokens}( |\n$)", run.stderr), repr(run.stderr)
     assert "CLI" not in run.stderr
     assert "forged" not in run.stderr
 
@@ -361,7 +364,7 @@ AC7_OUTPUT = AC7_INVALID_JSON | AC7_FAILS_THE_SCHEMA
 
 @pytest.mark.parametrize("raw", AC7_OUTPUT.values(), ids=AC7_OUTPUT.keys())
 def test_p0_s3_ac7_model_text_never_reaches_stderr(bot, write_diff, raw):
-    run = bot.review(write_diff("+x\n"), provider=bot.mock(raw_output=raw))
+    run = bot.review(write_diff(MINIMAL_DIFF), provider=bot.mock(raw_output=raw))
 
     assert run.exit_code == 13, run.stderr
     assert run.stdout == ""

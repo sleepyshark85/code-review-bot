@@ -13,6 +13,7 @@ import sys
 import time
 
 import pytest
+from diff_support import MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, findings_json
 from p0_s4_support import PREFIX
 from real_sdk_support import FAKE_CLI, FINDING_LINE_START, assert_failed_cleanly
@@ -76,7 +77,7 @@ def run_real_query(tmp_path, monkeypatch):
         fake_cli.write_text(FAKE_CLI, encoding="utf-8")
         marker = tmp_path / "fake_cli_ran"
         diff = tmp_path / "change.diff"
-        diff.write_text("+x\n", encoding="utf-8")
+        diff.write_text(MINIMAL_DIFF, encoding="utf-8")
         target = tmp_path / "no_such_claude.exe" if mode == "cli_missing" else fake_cli
         completed = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
             [
