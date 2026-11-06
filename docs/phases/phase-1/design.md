@@ -32,7 +32,7 @@ New or changed modules under `src/review_bot/`; the rest of [Phase 0's map](../p
 
 ### Data flow
 
-load → **secret scan on raw text** → parse → rules → agent → verify → policy → triage (with `--triage`) → output. A secret hit exits 16 and nothing later runs. The agent isn't called when every file is skipped. The scan precedes the parser, so a parser bug or an unattributed line can't carry a secret past it; otherwise the README's order stands.
+load → **secret scan on raw text** → parse → **secret scan on decoded header paths** (before any parse record) → rules → agent → verify → policy → triage (with `--triage`) → output. A secret hit exits 16 and nothing later runs. The agent isn't called when every file is skipped. The raw scan precedes the parser, so a parser bug or an unattributed line can't carry a secret past it; the decoded scan follows it, so a path the parser decodes from escapes can't either ([P1-S19](slices/p1-s19-decoded-path-secret.md)). Otherwise the README's order stands.
 
 ### Interfaces
 
@@ -109,7 +109,8 @@ Decision: [ADR 0003](../../adr/0003-finding-fingerprints.md).
 ### Secrets
 
 Seven kinds, scanned on raw text and detected by vendor format plus one assignment pattern, with no entropy check. Unlisted formats do reach the model. Forms, boundaries and near misses are in [P1-S3](slices/p1-s3-secret-block.md).
-A hit exits 16 with no provider call and one stderr line of kinds and diff lines. It isn't a `Finding`, so no path or value is reported, and every path written anywhere passes `redact`.
+If the raw text has no hit, the decoded header paths are scanned too: every path and old path the parser yields, quoted or not, each scanned on its own, and every other quoted string in a file's header lines, so a secret spelt in octal escapes is caught ([P1-S19](slices/p1-s19-decoded-path-secret.md)). `diff_parser` decodes them; `review` runs the scan.
+A hit exits 16 with no provider call and one stderr line of kinds and diff lines. It isn't a `Finding`, so no path or value is reported, and every path written to the log or stderr passes `redact`.
 
 ### Audit log
 
@@ -179,6 +180,7 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 - [P1-S2: Skip docs, lock and generated files, and reject text that isn't a diff](slices/p1-s2-parse-and-skip.md)
 - [P1-S3: Stop a diff with a detected secret from reaching the model](slices/p1-s3-secret-block.md)
 - [P1-S4: Trace every run in a JSONL audit log](slices/p1-s4-audit-log.md)
+- [P1-S19: Stop a secret spelt in a quoted path's escapes from reaching stderr or the model](slices/p1-s19-decoded-path-secret.md) (fixes issue #24)
 - [P1-S5: See provider warnings and failure diagnostics in the audit log](slices/p1-s5-provider-notices.md)
 - [P1-S6: Drop model findings whose file or line isn't in the diff](slices/p1-s6-verify-anchors.md)
 - [P1-S7: Catch swallowed exceptions with no model, with stable fingerprints](slices/p1-s7-swallowed-exception-rule.md)
