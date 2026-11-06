@@ -680,3 +680,22 @@ def test_main_with_json_format_and_stdout_failing_returns_14(
     monkeypatch.setattr("sys.stdout", failing_stream)
 
     assert main([str(diff_path), "--format", "json"], provider=finding_provider()) == 14
+
+
+def test_main_with_markdown_format_writes_the_markdown_report(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(diff_path), "--format", "markdown"], provider=finding_provider()) == 1
+
+    out = capsys.readouterr().out
+    assert out.startswith("## Review\n\n1 reported, ")
+    assert "`src/app.py:7`" in out
+    assert out.endswith("(confidence 0.90, source: ai)\n")
+
+
+def test_main_with_markdown_format_and_no_findings_exits_0(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(diff_path), "--format", "markdown"], provider=MockProvider(findings=[])) == 0
+
+    assert capsys.readouterr().out == "## Review\n\nNo findings at or above low.\n"

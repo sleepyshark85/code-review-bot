@@ -141,6 +141,10 @@ def test_load_settings_with_no_format_set_uses_text() -> None:
     assert load_settings({"format": None}).format == "text"
 
 
+def test_load_settings_accepts_the_markdown_format() -> None:
+    assert load_settings({"format": "markdown"}).format == "markdown"
+
+
 def test_load_settings_reads_the_format_from_the_environment_unless_flagged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

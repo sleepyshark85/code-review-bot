@@ -30,7 +30,7 @@ from review_bot.findings import Severity, Source
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
-from review_bot.render import render_findings, render_json
+from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult
 from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact
@@ -124,7 +124,9 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
         "--audit-log",
         help="the JSONL file each run appends its records to (default: .review-bot/audit.jsonl)",
     )
-    parser.add_argument("--format", help="the report's format on stdout: text (default), json")
+    parser.add_argument(
+        "--format", help="the report's format on stdout: text (default), json, markdown"
+    )
     args = vars(parser.parse_args(argv))
     return Path(args.pop("diff_path")), load_settings(args)
 
@@ -243,6 +245,8 @@ def _review(
 def _render_report(result: PipelineResult, settings: Settings, run_id: str) -> str:
     if settings.format == "json":
         return render_json(result, settings, run_id)
+    if settings.format == "markdown":
+        return render_markdown(result, settings.threshold)
     findings = [reviewed.finding for reviewed in result.decision.reported]
     return render_findings(findings, settings.threshold)
 
