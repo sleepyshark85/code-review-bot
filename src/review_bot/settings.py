@@ -31,6 +31,7 @@ class Settings(BaseModel):
     # Finite, because an infinite deadline would remove the only wall-clock bound.
     deadline_s: float = Field(default=300, gt=0, allow_inf_nan=False)
     audit_log: Path = DEFAULT_AUDIT_LOG_PATH
+    format: Literal["text", "json"] = "text"
 
 
 def load_settings(flags: Mapping[str, str | None]) -> Settings:

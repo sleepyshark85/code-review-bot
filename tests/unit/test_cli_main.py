@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import runpy
 import sys
@@ -632,3 +633,50 @@ def test_main_counts_rule_findings_and_duplicates_in_the_summary(
         FINDING_LINE,
     ]
     assert " rule_findings=1 dropped=0 deduped=1 skipped_files=0 " in err
+
+
+def test_main_with_json_format_writes_one_report_line_whose_run_id_matches_summary_and_log(
+    diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(diff_path), "--format", "json"], provider=finding_provider()) == 1
+
+    out, err = capsys.readouterr()
+    [line] = out.splitlines()
+    report = json.loads(line)
+    [finding] = report["findings"]
+    run_id = read_records(audit_log_in_tmp_path)[0]["run_id"]
+    assert report["schema"] == "report/v1"
+    assert (finding["file"], finding["line"], finding["source"]) == ("src/app.py", 7, "ai")
+    assert report["run_id"] == run_id
+    assert err.endswith(f" run_id={run_id}\n")
+
+
+def test_main_with_json_format_and_no_findings_exits_0_with_an_empty_list(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(diff_path), "--format", "json"], provider=MockProvider(findings=[])) == 0
+
+    assert json.loads(capsys.readouterr().out)["findings"] == []
+
+
+def test_main_with_json_format_and_a_provider_error_writes_nothing_to_stdout(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FailingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            raise ProviderError(ErrorCategory.AUTH, "Not logged in.")
+
+    assert main([str(diff_path), "--format", "json"], provider=FailingProvider()) == 8
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "review-bot: error: auth: Not logged in.\n"
+
+
+def test_main_with_json_format_and_stdout_failing_returns_14(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, failing_stream: TextIO
+) -> None:
+    monkeypatch.setattr("sys.stdout", failing_stream)
+
+    assert main([str(diff_path), "--format", "json"], provider=finding_provider()) == 14

@@ -1,8 +1,11 @@
 # P1-S10: Get the review as JSON
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S9
-- **Touches:** `render`, `settings`, `cli`
+- **Touches:** `render`, `settings`, `cli`; changed in build, main session, 2026-11-06:
+  - `review`: writes `format` in `run.start`; `PipelineResult` moves to `report`.
+  - `audit`: quoting a path is split from redacting it.
+  - `report` (new): `PipelineResult` and git C-quoting of paths ([module map](../design.md#module-map)).
 
 ## Value
 A script or later pipeline can consume findings, with fingerprints and source, while existing text users see no change.
@@ -25,6 +28,12 @@ With a scripted `MockProvider`. Schema in Interfaces.
 `render_json`: [module map](../design.md#module-map); `--format`: [settings](../design.md#settings).
 
 `report/v1`, escaped to ASCII: `schema`, `run_id`, `provider`, `model`, `prompt_version`, `threshold`, `findings`, `counts` (`reported`, `below_threshold`, `dropped`, `deduped`, `rejected`, `undecided`), `skipped_files`, `usage`. `triage` values are in [P1-S12](p1-s12-triage.md#interfaces). `reported` excludes rejected findings.
+
+Changed in build, main session, 2026-11-06:
+- `usage` holds `input_tokens` and `output_tokens`.
+- Each finding object has exactly AC1's 11 keys, plus `path_quoted: true` only when its path isn't valid UTF-8. Only rule findings and skipped files can carry `path_quoted`, as an AI `Finding` rejects a lone surrogate.
+- The document is one line followed by a single `\n`.
+- It holds no timestamp, so AC6's "fixed clock" is moot.
 
 ## Out of scope
 - Markdown (P1-S11); triage values (P1-S12) stay null here.

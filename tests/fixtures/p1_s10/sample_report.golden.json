@@ -1,0 +1,44 @@
+{
+  "schema": "report/v1",
+  "provider": "mock",
+  "model": "claude-opus-5-5",
+  "prompt_version": "p1-v1",
+  "threshold": "low",
+  "findings": [
+    {
+      "fingerprint": "7b7508acb73b5e4b",
+      "source": "rule",
+      "rule": "swallowed-exception",
+      "file": "billing/invoice.py",
+      "line": 35,
+      "severity": "medium",
+      "category": "reliability",
+      "rationale": "Exception swallowed: the handler discards it, so failures pass silently. Handle it, log it or re-raise it.",
+      "confidence": 1.0,
+      "triage": null,
+      "original_rationale": null
+    },
+    {
+      "fingerprint": "c9af0c94fdf8af0d",
+      "source": "rule",
+      "rule": "open-without-encoding",
+      "file": "billing/invoice.py",
+      "line": 39,
+      "severity": "low",
+      "category": "reliability",
+      "rationale": "open() without encoding uses the platform default. Pass encoding=\"utf-8\", or open in binary mode.",
+      "confidence": 1.0,
+      "triage": null,
+      "original_rationale": null
+    }
+  ],
+  "counts": {
+    "reported": 2,
+    "below_threshold": 0,
+    "dropped": 0,
+    "deduped": 0,
+    "rejected": 0,
+    "undecided": 0
+  },
+  "skipped_files": []
+}
