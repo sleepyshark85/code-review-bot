@@ -4,8 +4,9 @@ P0-S4 AC13 replaced AC6 and the "neither" case of AC4 for `--provider`: see
 `test_p0_s4_messages.py`. P1-S6 AC11 replaced AC1's exit 1 and canned stdout: the canned finding's
 anchor isn't in any diff, so it's dropped (`test_p1_s6_verify_anchors.py`). Since P1-S6, a test
 that needs a finding to print injects one over a diff holding its anchor. P1-S7 AC1 then made the
-command exit 1 again, with the sample's swallowed exception as the only line
-(`test_p1_s7_swallowed_exception_rule.py`). AC2's `--threshold critical` still exits 0.
+command exit 1 again, with the sample's swallowed exception as its line
+(`test_p1_s7_swallowed_exception_rule.py`), and P1-S8 AC1 added its `open()` without an encoding
+as a second (`test_p1_s8_open_encoding_rule.py`). AC2's `--threshold critical` still exits 0.
 """
 
 import itertools
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from diff_support import FINDING_DIFF, FINDING_LINE, MINIMAL_DIFF, SAMPLE_RULE_LINE, section
+from diff_support import FINDING_DIFF, FINDING_LINE, MINIMAL_DIFF, SAMPLE_RULE_LINES, section
 from repo_paths import REPO_ROOT
 
 pytestmark = pytest.mark.integration
@@ -66,8 +67,8 @@ def test_p0_s1_ac1_replaced_by_p1_s7_ac1_command_exits_1(real_command):
 
 
 def test_p0_s1_ac1_replaced_by_p1_s6_ac11_canned_finding_is_dropped(real_command):
-    # Only the sample's rule finding prints (P1-S7 AC1); the canned finding doesn't.
-    assert real_command.stdout_body == SAMPLE_RULE_LINE
+    # Only the sample's rule findings print (P1-S7 AC1, P1-S8 AC1); the canned finding doesn't.
+    assert real_command.stdout_body.splitlines() == list(SAMPLE_RULE_LINES)
 
 
 def test_p0_s1_ac1_stderr_warns_mock_output_is_canned_and_not_a_real_review(real_command):
