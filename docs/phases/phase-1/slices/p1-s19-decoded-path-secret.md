@@ -1,6 +1,6 @@
 # P1-S19: Stop a secret spelt in a quoted path's escapes from reaching stderr or the model
 
-- **Status:** Draft
+- **Status:** Approved (main session, under the user's lead authority, 2026-11-06; defaults AC6 and paths-only kept)
 - **Depends on:** P1-S4
 - **Touches:** `diff_parser`, `review`, `cli`
 
