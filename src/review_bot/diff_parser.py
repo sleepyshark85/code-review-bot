@@ -74,6 +74,9 @@ class ParsedDiff:
     reviewable_text: str
 
 
+# Git starts each file with one of these; a combined diff (merge conflicts) names a single path.
+_COMBINED_FILE_STARTS: Final = ("diff --cc ", "diff --combined ")
+_GIT_FILE_STARTS: Final = ("diff --git ", *_COMBINED_FILE_STARTS)
 _UNIFIED_FILE_OPENING: Final = ("--- ", "+++ ", "@@")
 # Capped digits keep each number under Python's int-length limit; a longer one is unreadable.
 _HUNK_HEADER: Final = re.compile(r"@@ -(\d{1,9})(?:,(\d{1,9}))? \+(\d{1,9})(?:,(\d{1,9}))? @@")
@@ -124,7 +127,9 @@ _GENERATED_ANY_DEPTH_DIRS: Final = frozenset({"vendor", "node_modules"})
 
 
 def parse_diff(text: str) -> ParsedDiff:
-    """Parse a unified diff, with or without ``diff --git`` headers.
+    """Parse a unified diff, with or without git's file headers.
+
+    Git's file headers are ``diff --git``, ``diff --cc`` and ``diff --combined`` lines.
 
     Text before the first file, such as a commit message, is kept in ``reviewable_text``.
 
@@ -133,7 +138,7 @@ def parse_diff(text: str) -> ParsedDiff:
     """
     raw_lines = _split_lines(text)
     lines = [line.removesuffix("\n").removesuffix("\r") for line in raw_lines]
-    git_starts = [index for index, line in enumerate(lines) if line.startswith("diff --git ")]
+    git_starts = [index for index, line in enumerate(lines) if line.startswith(_GIT_FILE_STARTS)]
     starts = git_starts or _unified_file_starts(lines)
     if not starts:
         raise DiffNotParsableError(
@@ -144,7 +149,7 @@ def parse_diff(text: str) -> ParsedDiff:
     bounds = list(itertools.pairwise([*starts, len(lines)]))
     files = tuple(_parse_file(lines[start:end]) for start, end in bounds)
     if not git_starts:
-        # Without ``diff --git``, a file header faked inside a hunk looks like a real one, so
+        # Without git's file headers, a file header faked inside a hunk looks like a real one, so
         # nothing is skipped: a faked "file" is still sent for review instead of being hidden.
         files = tuple(replace(file, skip_reason=None) for file in files)
     kept_sections = [
@@ -165,10 +170,11 @@ def _split_lines(text: str) -> list[str]:
 
 
 def _unified_file_starts(lines: list[str]) -> list[int]:
-    """Return where each file starts in a diff with no ``diff --git`` lines.
+    """Return where each file starts in a diff with no git file header lines.
 
-    In a git diff only ``diff --git`` starts a file, so hunk lines such as a removed ``-- a``
-    and an added ``++ b`` can't pose as a file header there.
+    In a git diff only a ``diff --git``, ``diff --cc`` or ``diff --combined`` line starts a file,
+    and no hunk line can start with ``diff``, so hunk lines such as a removed ``-- a`` and an
+    added ``++ b`` can't pose as a file header there.
     """
     return [index for index in range(len(lines)) if _opens_unified_file(lines, index)]
 
@@ -209,6 +215,9 @@ def _read_file_header(lines: list[str]) -> _FileHeader:
     for line in lines:
         if line.startswith("diff --git "):
             git_path = _path_from(_last_path_token(line.removeprefix("diff --git ")))
+        elif line.startswith(_COMBINED_FILE_STARTS):
+            # ``diff --cc <path>``: one path, with no ``a/`` or ``b/`` prefix to strip.
+            git_path = _unquote(line.split(" ", 2)[2])
         elif line.startswith("--- "):
             minus_path = _path_from(_first_path_token(line.removeprefix("--- ")))
         elif line.startswith("+++ "):

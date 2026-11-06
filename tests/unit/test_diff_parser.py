@@ -246,6 +246,42 @@ def test_parse_diff_starts_a_file_at_each_git_header() -> None:
     assert [file.path for file in parsed.files] == ["a.py", "b.py"]
 
 
+def combined_section(start: str, path: str) -> str:
+    """A minimal merge-conflict section: only the header line names the path."""
+    return (
+        f"{start} {path}\nindex 1111111,2222222..0000000\n"
+        "@@@ -1,1 -1,1 +1,3 @@@\n++<<<<<<< HEAD\n +x = 1\n+ x = 2\n"
+    )
+
+
+@pytest.mark.parametrize("start", ["diff --cc", "diff --combined"])
+def test_parse_diff_starts_a_file_at_a_combined_diff_header(start: str) -> None:
+    code = combined_section(start, "app.py")
+
+    parsed = parse_diff(section("README.md") + code)
+
+    assert [(file.path, file.skip_reason) for file in parsed.files] == [
+        ("README.md", SkipReason.DOCS),
+        ("app.py", None),
+    ]
+    assert parsed.reviewable_text == code
+
+
+@pytest.mark.parametrize(
+    ("path_token", "path"),
+    [("README.md", "README.md"), ('"caf\\303\\251.md"', "café.md")],
+    ids=["plain", "quoted"],
+)
+def test_parse_diff_classifies_a_combined_diff_section_by_its_header_path(
+    path_token: str, path: str
+) -> None:
+    parsed = parse_diff(combined_section("diff --cc", path_token))
+
+    [file] = parsed.files
+    assert (file.path, file.skip_reason) == (path, SkipReason.DOCS)
+    assert parsed.reviewable_text == ""
+
+
 def test_parse_diff_drops_a_skipped_last_section_with_no_final_newline() -> None:
     text = section("app.py") + section("README.md", "+# Title")
 
