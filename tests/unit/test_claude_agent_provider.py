@@ -24,11 +24,12 @@ from review_bot.settings import Settings
 
 REQUEST = ReviewRequest(system_prompt="S", user_prompt="U", model="M")
 
+# Its file and line are in `MINIMAL_DIFF`, so `main` reports it rather than dropping it.
 VALID_RESULT = json.dumps(
     {
         "findings": [
             {
-                "file": "a.py",
+                "file": "app.py",
                 "line": 1,
                 "severity": "high",
                 "category": "logic",

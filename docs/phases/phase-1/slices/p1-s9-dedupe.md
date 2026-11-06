@@ -30,5 +30,5 @@ Over `Assignment/sample_diff.txt`, whose rule hits are line 35 (`medium`) and li
 - Passing rule findings into the prompt, or telling the model to avoid those classes: the evals need its independent view.
 
 ## Notes
-- **Handover:** P0-S1 AC3's `prompt=p0-v1` becomes `p1-v1`. P0-S1 AC15's schema check now requires `rule` in the prompt. P0-S3 AC2's "an extra field" must not use the name `rule`.
+- **Handover:** P0-S1 AC3's `prompt=p0-v1` becomes `p1-v1`. P0-S1 AC15's schema check now requires `rule` in the prompt. P0-S3 AC2's "an extra field" must not use the name `rule`. P0-S3's `many_findings` child process (`tests/integration/test_p0_s3_stream_failures.py:63`) repeats one identical finding 5,000 times, which AI-vs-AI dedup collapses to one, so its output would no longer outgrow the stream buffers: give each finding a distinct anchored line or rationale (changed before build, main session, 2026-11-06).
 - **README (main session):** line 110 says fingerprints dedupe rule and AI findings; dedup actually compares file, rule, proximity and severity.

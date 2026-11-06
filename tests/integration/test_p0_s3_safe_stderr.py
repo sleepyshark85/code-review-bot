@@ -7,7 +7,7 @@ import sys
 import unicodedata
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF, MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 
 from review_bot.errors import ErrorCategory, ProviderError
@@ -101,7 +101,7 @@ def test_p0_s3_ac4_unavailable_stderr_review_returns_its_own_code(
 ):
     lose_stderr()
 
-    run = bot.review(write_diff(MINIMAL_DIFF), *flags)
+    run = bot.review(write_diff(FINDING_DIFF), *flags, provider=bot.mock(findings=[bot.finding()]))
 
     assert run.exit_code == code
     assert bool(run.stdout) == (code != 2)
@@ -231,7 +231,7 @@ def test_p0_s3_ac5_stdout_failure_leaves_only_the_error_line_in_process(
 ):
     break_stdout()
 
-    run = bot.review(write_diff(MINIMAL_DIFF), *flags)
+    run = bot.review(write_diff(FINDING_DIFF), *flags, provider=bot.mock(findings=[bot.finding()]))
 
     assert run.exit_code == 14, run.stderr
     assert_only_the_error_line(run.stderr)

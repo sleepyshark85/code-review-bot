@@ -11,7 +11,7 @@ Install the [latest release](https://github.com/sleepyshark85/code-review-bot/re
 ```
 uv tool install https://github.com/sleepyshark85/code-review-bot/releases/download/v0.1.0/review_bot-0.1.0-py3-none-any.whl
 review-bot <diff>                    # a real review with Claude
-review-bot <diff> --provider mock    # offline; canned output, not a real review
+review-bot <diff> --provider mock    # offline smoke test: no model call; its canned finding is dropped (not in the diff), so it exits 0
 ```
 
 From a clone, run `uv sync`, then `uv run python -m review_bot <diff>`. The usage below describes `main` and may be ahead of the latest release.

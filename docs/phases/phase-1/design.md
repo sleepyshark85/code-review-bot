@@ -55,7 +55,7 @@ class ReviewedFinding:  # set by code, so the model can't forge them
     finding: Finding
     source: Source  # RULE or AI
     rule: RuleId | None  # from P1-S7, the rule's identity; from P1-S9, also the model's tag
-    fingerprint: str
+    fingerprint: str  # from P1-S7
 
 def run_rules(parsed: ParsedDiff) -> RuleResult: ...  # findings; unanchored_hits: int
 def fingerprint_for(*, file: str, rule: str, anchor_text: str, ordinal: int) -> str: ...
@@ -122,8 +122,8 @@ One JSON object per line: `schema` (`audit/v1`), `run_id`, `ts` (UTC), `stage`, 
 | `static` | `secrets`: kinds and diff lines. `rules`: fingerprint, rule, file, line, severity; unanchored hit count |
 | `parse` | `parsed`: `files` and `hunks` counts; `skipped_files` (each `file`, `reason`) and `flagged_hunks` (each `file`, `index`, `new_start`), for mismatched or unreadable headers, at most 50 each, with `skipped_files_total` and `flagged_hunks_total` |
 | `agent` | `called`: tokens, duration. `skipped`: reason. `warning`: scrubbed text. `failed`: category, scrubbed diagnostics |
-| `verify` | For each proposal: fingerprint or none, `file` if it matches a diff path, otherwise its SHA-256 and length; line, severity, outcome, reason, rationale SHA-256 |
-| `policy` | For each kept finding: reported or below threshold |
+| `verify` | `checked`, for each proposal: `fingerprint` or null, `file` (the diff path it matched) if it matches one, otherwise `file_sha256` and `file_length`; `line`, `severity`, `outcome` (`kept` or `dropped`), `reason`, `rationale_sha256` |
+| `policy` | `decided`, for each kept finding: `file`, `line`, `outcome` (`reported` or `below_threshold`) |
 | `triage` | [Labels](slices/p1-s12-triage.md#interfaces) |
 
 **Paths in `audit/v1`** (decided by the user, 2026-11-06). A diff path in a record's `file` is written so every line is pure ASCII JSON, with no lone surrogates, readable in any language:

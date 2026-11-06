@@ -12,15 +12,10 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
 )
+from unit.diff_samples import FINDING_FIELDS
 
-HIGH_FINDING = {
-    "file": "src/app.py",
-    "line": 7,
-    "severity": "high",
-    "category": "logic",
-    "rationale": "Rationale text.",
-    "confidence": 0.9,
-}
+# The shared default finding; `claude_argv`'s diff holds its anchor, so it prints (P1-S6).
+HIGH_FINDING = dict(FINDING_FIELDS)
 
 
 def findings_json(*findings: dict[str, Any]) -> str:

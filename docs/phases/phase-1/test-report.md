@@ -752,3 +752,86 @@ On `main` (`a0759ca`), this returns 1 and prints the finding. On the branch's fi
 3. **The 1,000-line memory bound** is shown by the size of `ProviderError.diagnostics` and a time bound, not by measuring memory.
 4. **Cost is shown by time bounds only**, with wide headroom. Growth isn't measured.
 5. **Run on Windows only** by the tester. CI on Linux hasn't been checked.
+
+## P1-S6: Drop model findings whose file or line isn't in the diff
+
+Spec: [p1-s6-verify-anchors.md](slices/p1-s6-verify-anchors.md). Tests: [`tests/integration/test_p1_s6_verify_anchors.py`](../../../tests/integration/test_p1_s6_verify_anchors.py), 96 cases. Every run goes through `main` with an injected `MockProvider`. The exception is AC11, which uses `--provider mock`'s own provider, once in process and once in a child interpreter. Two AC10 cases are Hypothesis properties with a fixed seed. The fixtures are in [`tests/fixtures/p1_s6/`](../../../tests/fixtures/p1_s6/). `anchors.diff` is the sample diff with its exact hunk headers and bodies, but with `except ValueError:` then `raise`, and `open(path, "w", encoding="utf-8")`, as the spec's preamble asks, so later rule slices don't change these results. `kept_findings.golden.txt` holds the five AC1 lines in Phase 0's format.
+
+**Status: every criterion passes, 96 of 96 after review round 1, on the developer's finished code, and the full suite is green after the handover edits (see Gate).** The tests were written from the spec, design.md's [line anchors](design.md#line-anchors) and its Interfaces, not from the code.
+
+### Gate
+
+The tester ran the gate once, with nothing else running, on the developer's finished tree plus the handover edits below: `ruff format --check .` clean (120 files), `ruff check .` clean, `mypy` (strict) clean on 22 files. `pytest --cov`: 2053 passed, 12 skipped (no `/dev/full` on Windows), 0 failed, 100% of statements and branches, in 194 s. `pre-commit` and `pip-audit` weren't run by the tester. Before the handover edits, 294 integration and conformance cases failed. After the shared-helper changes (items 1 and 2 below), 143 were left.
+
+### Handover edits (spec Notes)
+
+The slice's own tests were left alone. Each earlier test keeps what it protects: a test that needs a finding to print now injects one over a diff holding its anchor, and a test that only needs a run to succeed expects exit 0 and `No findings at or above low.`.
+
+1. **Shared helpers.** `tests/integration/diff_support.py` re-exports `FINDING_FIELDS`, `FINDING_DIFF` and `FINDING_LINE` from the developer's `tests/unit/diff_samples.py`. `Bot.finding` and `fake_sdk.HIGH_FINDING` take their fields from `FINDING_FIELDS`. `claude_argv` writes `FINDING_DIFF`. `Bot.request_for` uses `mock(findings=[])` and asserts exit 0.
+2. **P0-S1 AC1** (`test_p0_s1_cli.py`): replaced by P1-S6 AC11. The two cases are renamed `ac1_replaced_by_p1_s6_ac11_…` and expect exit 0 and `No findings at or above low.`. The module docstring says so. `tests/fixtures/p0_s1/canned_finding.golden.txt` had no users left, so it was deleted.
+3. **P0-S1 AC4** (`:259` and the provider-variable case): the canned finding is dropped, so they expect exit 0, no findings and the canned notice, which shows the mock ran. The threshold, overridden-variable and `--max-diff-bytes` cases inject `bot.finding()` over `FINDING_DIFF`, so the threshold still changes the outcome. The flag `--max-diff-bytes 100` becomes `1000`, which fits that diff.
+4. **P0-S1 AC2, AC3 and the Interface line format** inject over diffs holding their anchors: `FINDING_DIFF`, seven-line sections for `low.py` and `critical.py`, a 17-line `billing/invoice.py`, and a high finding on line 14 of the sample diff for the `--threshold critical` cases. AC3's "findings printed" case now prints a finding again, instead of passing on an empty run.
+5. **P0-S1 AC19 and AC20** (`test_p0_s1_safe_output.py`): each hostile `file` is a real diff path. A new `anchored_diff` writes it git-quoted, with octal escapes, in the `diff --git`, `---` and `+++` lines, so the parser decodes it back to the exact value. All 34 cases print and pass. AC20's `docs/→.md` became `docs/→.py`, because a `.md` file is skipped.
+6. **P0-S1 AC5 (upper-bound flag), AC10, AC11, AC12 and AC16; P1-S2 AC7 and AC9**: these runs need only to complete, so they use `mock(findings=[])` and exit 0. AC16's offline run keeps the CLI-built mock and checks its canned notice.
+7. **P0-S2 AC17** (`test_p0_s2_failures.py`): the ids `would_exit_0_otherwise` and `would_exit_1_otherwise` were no longer true. They're renamed by threshold, with a comment pointing to P0-S3's `closed_with_findings` for the case with a finding.
+8. **P0-S3** (`exit_codes`, `safe_stderr`, `stream_failures`): AC2's control, AC4's `findings_1` and AC5's in-process "findings" case inject the default finding over `FINDING_DIFF`. In the child-process cases, the injected `FINDING` moves to `billing/invoice.py:14` on the sample diff. A new `one_finding` provider backs `closed_with_findings`, `findings_1` and AC5's merged-stream case, which now expects the rendered finding instead of the canned golden.
+9. **P0-S4** (`messages` AC13, `real_sdk` AC6): the Claude runs review `FINDING_DIFF`. The overridden-signal child, which reviews the sample diff, uses `SAMPLE_FINDING`, the default finding moved to `billing/invoice.py:14`.
+10. **P1-S1 AC3 and P1-S18**: the fake-CLI runs write `FINDING_DIFF`. P1-S18's mock routes expect exit 0, because the canned finding is dropped. The Claude route still expects 1.
+11. **P1-S3**: the `assert_reviewed` docstring no longer says exit 1. **P1-S19**: no edit. Its two failures went away with the shared helpers.
+12. **P1-S4** (`test_p1_s4_audit_log.py`): the 27 failing tests ran on the canned mock and asserted exit 1 only to show that the run completed. They now expect 0, and the module docstring says why. The three AC8 stderr goldens in `tests/fixtures/p1_s4/` gain `dropped=0` before `skipped_files=`, the field design.md's compatibility rule appends.
+13. **P1-S5** (`test_p1_s5_provider_notices.py`): `claude_logged` reviews `FINDING_DIFF` by default. AC3's mock case injects `Finding(**FINDING_FIELDS)` over `FINDING_DIFF` and expects `src/app.py:7`, instead of the canned `mock/example.py`.
+
+No failure looked like a code bug. Each one came from the canned finding being dropped, from a finding with no anchor in its diff, or from the new `dropped=` field.
+
+**Before the developer's code.** In a worktree of `main` (`035607c`), 84 of the 95 fail. They include the AC10 CLI property, which printed `app.py:1000000000` for a deleted file. The 11 that pass there are controls that keep a valid finding (AC1's golden and design-rule lines, AC4's exact `b/x.py` and `x.py`, and the AC8 control), plus the AC9 rationale case, which now also asserts that 3 `verify` records exist. On the developer's first tree, one case failed: `verify_findings` took `(proposed, parsed)`, not design.md's `(proposed, rule_findings, parsed)`, and `kept` held `Finding`, not `ReviewedFinding`. The developer has since matched design.md, and the case passes.
+
+**How the tests read the log.** They reuse P1-S4's `read_records`, so every read checks that the file is pure ASCII, holds one record per line and has no lone surrogates. The spec doesn't name the keys in `verify` and `policy` records, so most values are looked for wherever they sit in `data`. A digest is matched as a substring, so a `sha256:` prefix would also pass. Once the code was done, the AC9 cases were pinned to the developer's choices, which the spec leaves open: events `verify.checked` and `policy.decided`; `outcome` values `kept` and `dropped`, and `reported` and `below_threshold`; and a kept finding logged under the diff path it matched.
+
+### Criteria
+
+| AC | Tests (`test_p1_s6_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_finding_on_a_diff_line_prints_in_the_unchanged_format_and_exits_1` ×5 (12, 14, 30, 37, 41): stdout is the golden line, and the summary has `dropped=0`. `ac1_all_five_findings_print_as_the_golden_file`. Design rule: `ac1_design_rule_every_other_added_or_context_line_is_kept` ×5 (13, 31, 32, 36, 38) | pass (11) |
+| AC2 | `ac2_finding_off_the_bodys_lines_is_dropped_and_exits_0` ×7 (1, 11, 15, 18, 29, 42, 44): exit 0, `No findings at or above low.`, `dropped=1`, reason `line_not_in_diff`. Limits: lines `2**63 + 1` and `10**18` are dropped the same way (×2) | pass (9) |
+| AC3 | `ac3_file_not_in_the_diff_is_dropped_as_unknown_file` ×5: `other.py`, `../billing/invoice.py`, `BILLING/INVOICE.PY`, and `\x1b` after or before the path. Design rule (exact, then one leading `./`, `a/` or `b/`): `ac3_design_rule_only_one_known_prefix_is_ever_stripped` ×10: `a/b/…`, `./b/…`, `.//…`, `c/…`, `/…`, backslashes, a trailing space or newline, `invoice.py`, and `billing/invoice` | pass (15) |
+| AC4 | `ac4_prefixed_file_is_kept_and_reported_as_the_diff_path` ×3: `./`, `a/` and `b/` each print the golden line for `billing/invoice.py`. `ac4_real_path_starting_with_b_stays_as_it_is`. `ac4_exact_match_wins_over_the_stripped_one` ×4, over a diff holding both `x.py` and `b/x.py`: `b/x.py` and `x.py` stay as they are, `a/b/x.py` reports `b/x.py`, and `./x.py` reports `x.py` | pass (8) |
+| AC5 | `ac5_finding_on_a_skipped_file_is_dropped` ×3 (`README.md`, `uv.lock` and `src/pb/x_pb2.py`, each beside `app.py`): reason `skipped_file`, `dropped=1`. `ac5_reviewed_file_beside_it_still_prints` | pass (4) |
+| AC6 | A deleted file's old path at lines 1 and 2: `unknown_file` (×2). `@@ garbage @@` over `+a`, `+b`, ` c`, with the parse checked to give no line numbers, at lines 1 to 3: `line_not_in_diff` (×3). A removed-only hunk at lines 1 to 3: `line_not_in_diff` (×3) | pass (8) |
+| AC7 | `ac7_one_valid_of_three_prints_alone_with_dropped_2_and_no_warning`. `ac7_every_finding_dropped_exits_0_with_the_warning`: the exact warning line appears once, and `dropped=3`. `ac7_one_finding_dropped_warns_in_the_singular`: one dropped finding gives exactly the singular warning. Beyond the criterion: `ac7_beyond_kept_findings_keep_the_order_proposed` (findings on 41, 12 and 30, among two drops, print in that order, per design.md's "AI as proposed"), and `ac7_beyond_no_findings_at_all_gives_no_dropped_warning` | pass (5) |
+| AC8 | `ac8_invalid_critical_doesnt_count_toward_the_threshold`: exit 0, `No findings at or above high.`, `dropped=1`. Control: the same `critical` on line 14 exits 1 | pass (2) |
+| AC9 | `ac9_each_proposal_has_a_verify_record_in_order`: three records, each with its line, severity and rationale SHA-256. `ac9_verify_records_hold_the_reason_and_an_outcome`: reasons none, `line_not_in_diff` and `unknown_file`, and outcomes `kept`, `dropped` and `dropped`. `ac9_no_rationale_text_reaches_the_log`: no sentinel in the raw or decoded log. `ac9_policy_record_for_each_kept_finding_only`, with `--threshold high`: two records, none for the dropped line 15, with line 12 `below_threshold` and line 14 `reported`. `ac9_a_file_matching_a_diff_path_is_in_the_record` ×2: for both `billing/invoice.py` and `./billing/invoice.py`, `file` is `billing/invoice.py`. `ac9_any_other_file_is_only_its_sha256_and_length` ×3 (`SENTINEL-FILE.py`, 10,000 characters, a path with `\x1b`): the digest and length are present, and no piece of the name is, either raw or as `\u001b` | pass (9) |
+| AC10 | `ac10_property_every_printed_finding_is_on_an_added_or_context_line`: 300 examples through `main`, seed `20261106`. Every printed line parses. Its file and line are an added or context line of a reviewed path in `parse_diff`'s result, and its line equals the proposed line, so nothing moved. Beyond the CLI: `ac10_property_verify_findings_keeps_exactly_the_valid_anchors`, 500 examples. `kept` equals the proposals with valid anchors, in order, with the file resolved by design.md's rule, and `dropped` holds the rest | pass (2) |
+| AC11 | `ac11_canned_mock_finding_is_dropped_and_exits_0`: exit 0, `No findings at or above low.`, the canned warning, `dropped=1`, reason `unknown_file`. `ac11_canned_finding_is_dropped_in_a_child_process` (`python -m review_bot`) | pass (2) |
+| AC12 | `ac12_finding_in_a_combined_hunk_is_line_not_in_diff` ×12: `diff --cc` and `diff --combined`, with and without `index`/`---`/`+++` lines, at lines 1 to 3. The parse is checked to list `src/app.py`, so `unknown_file` would be wrong. `ac12_added_line_of_the_normal_file_still_prints_and_none_moves` ×8 (the combined section first or last): only `app.py:1` prints, with `dropped=3`, and the reasons are `line_not_in_diff` ×3, then none | pass (20) |
+| Limits | `limits_many_findings_over_a_large_diff_finish_in_bounded_time`: 4,000 findings over a 10,000-line diff, half of them valid, finish within 30 s (3.2 s here). The printed count and `dropped=2000` are exact | pass (1) |
+
+### AC10's generator and its guards
+
+- **Diffs:** one to four distinct paths among `app.py`, `src/app.py`, `x.py`, `b/x.py`, `pkg/mod.py` and `README.md` (skipped). Each section is unified, combined (`diff --cc` or `diff --combined`, with `@@@` headers and two-column markers, with or without file lines) or deleted. A third of unified hunk headers are hostile: no new start, a sign or a letter, 20 digits, an Arabic-Indic digit (U+0663, which `\d` and `int` accept), `@@@` in a normal section, a missing closing `@@`, or no spaces. Bodies hold unmarked lines, bare blanks, `\ No newline`, and lines that become `--- a/evil.py`, `+++ b/evil.py` or `@@ -1 +1 @@` once they have their marker.
+- **Findings:** up to eight per example. Files are each diff path, that path with `./`, `a/` or `b/`, or an unknown name. Lines are random (1 to 45, or `10**9`), a real numbered line of any file with or without a prefix, or the line beside one: the near miss a snap would take.
+- **Guards** are counted from the oracle rather than the output, so a wrong `verify` can't starve them. CLI property (300 examples): at least 250 reach the assertion (300 here), 50 have a valid proposal (77), 100 have an invalid one (202), 30 propose on a combined section's path (69), and 50 hold a hostile header and a finding (148). Direct property (500 examples): 80 with a valid proposal (133) and 250 with an invalid one (315).
+
+### Readings of this slice's criteria
+
+1. **Event names, outcome values and the logged path** aren't named in the spec or design.md. Before the code was done, the tests required only that a kept and a dropped proposal's records differ. They're now pinned to the developer's choices (see "How the tests read the log"). The designer may want to write them into the spec.
+2. **The drop reason** is found as the one `DropReason` value among a record's scalars. A kept proposal's record holds none.
+3. **"A `verify` record for it"** is read as one record per finding, in proposal order, and the tests count them. The AC5 and AC12 cases also rely on that order.
+4. **AC9's "a `file` matching a diff path"**, for `./billing/invoice.py`, is pinned to the matched diff path, `billing/invoice.py`, as the developer chose.
+5. **`dropped=0`** is required in AC1's runs, from design.md's compatibility rule that the summary always appends the field.
+6. **AC7's warning** isn't required for zero findings: "every finding invalid" is read as needing at least one finding. A beyond-criterion case pins that no warning appears then. With a single finding, the developer writes the singular, `the 1 model finding was dropped: its file or line isn't in the diff.`, which `ac7_one_finding_dropped_warns_in_the_singular` pins (review round 1). AC7 states the singular too (changed in build). The no-warning checks match either form.
+7. **"Printed" in AC10** is checked with design.md's rule that a skipped file isn't a valid anchor, so the oracle is stricter than "an added or context line of `parse_diff`'s result" alone. AC5 needs this anyway.
+
+### Observation outside this slice
+
+`parse_diff` numbers a hunk from 0 when its header's new start is 0 but its body has lines (`@@ -1 +0 @@` then `+x` gives `new_line` 0). Git never writes that. No finding can name line 0 (`line ≥ 1`), so verify isn't affected, and the generator clamps its lines to 1. It isn't reported as a bug.
+
+### Coverage
+
+This file alone covers `verify.py`, `policy.py` and `render.py` fully, statements and branches. The whole suite covers 100% of `review_bot`.
+
+### Limits
+
+1. **`pre-commit` and `pip-audit`** weren't run by the tester. CI runs them.
+2. **A future dedup slice** may collapse P0-S3's `many_findings` child, which repeats one identical finding 5,000 times. Today nothing dedups AI findings, so the case still outgrows the stream buffers.
+3. **Cost is shown by one time bound**, with wide headroom. Growth isn't measured.
+4. **Run on Windows only** by the tester. CI on Linux hasn't been checked.

@@ -72,9 +72,7 @@ def test_p0_s1_ac16_external_lookup_is_refused_in_tests():
         socket.getaddrinfo("example.invalid", 80)
 
 
-def test_p0_s1_ac16_review_runs_with_no_subprocess_and_no_network(
-    bot, sample_diff, monkeypatch, golden
-):
+def test_p0_s1_ac16_review_runs_with_no_subprocess_and_no_network(bot, sample_diff, monkeypatch):
     def refuse_process(*args, **kwargs):
         raise AssertionError("a review must not start a process")
 
@@ -83,5 +81,7 @@ def test_p0_s1_ac16_review_runs_with_no_subprocess_and_no_network(
     # No injected provider: this is the path a real run takes through `build_provider`.
     run = bot.review(sample_diff)
 
-    assert run.exit_code == 1, run.stderr
-    assert run.stdout_body == golden("canned_finding.golden.txt")
+    # The canned finding is dropped since P1-S6 (AC11); its notice shows the mock answered.
+    assert run.exit_code == 0, run.stderr
+    assert run.stdout_body == "No findings at or above low."
+    assert "MockProvider output is canned" in run.stderr

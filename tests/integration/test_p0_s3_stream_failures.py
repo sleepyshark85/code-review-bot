@@ -22,6 +22,8 @@ pytestmark = pytest.mark.integration
 PREFIX = "review-bot: error:"
 SAMPLE_DIFF = "Assignment/sample_diff.txt"
 ABSENT_DIFF = "tests/fixtures/p0_s3_no_such_file.diff"
+# How INJECTED_CHILD's FINDING renders.
+FINDING_LINE = "billing/invoice.py:14 [high/logic] " + "x" * 100 + " (confidence 0.90)"
 
 ANY_BROKEN_STREAM = [CLOSED, READER_GONE, pytest.param(DEV_FULL, marks=needs_dev_full)]
 
@@ -43,8 +45,9 @@ class Raises:
 class CustomBaseException(BaseException):
     pass
 
+# Anchored on an added line of the sample diff, so it prints (P1-S6).
 FINDING = Finding(
-    file="src/app.py", line=7, severity="high", category="logic",
+    file="billing/invoice.py", line=14, severity="high", category="logic",
     rationale="x" * 100, confidence=0.9,
 )
 PROVIDERS = {
@@ -56,6 +59,7 @@ PROVIDERS = {
         BaseExceptionGroup("MODEL-SENTINEL\\x1b[31m", [CustomBaseException("MODEL-SENTINEL")])
     ),
     "rate_limited": MockProvider(error=ProviderError(ErrorCategory.RATE_LIMIT, "detail")),
+    "one_finding": MockProvider(findings=[FINDING]),
     "many_findings": MockProvider(findings=[FINDING] * 5000),
 }
 sys.exit(cli.main(sys.argv[2:], provider=PROVIDERS[sys.argv[1]]))
@@ -125,7 +129,7 @@ def test_p0_s3_ac4_control_many_findings_outgrow_the_stream_buffers():
     ("kind", "command"),
     [
         pytest.param(CLOSED, bot_command("--threshold", "critical"), id="closed"),
-        pytest.param(CLOSED, bot_command(), id="closed_with_findings"),
+        pytest.param(CLOSED, injected_command("one_finding"), id="closed_with_findings"),
         pytest.param(READER_GONE, bot_command("--threshold", "critical"), id="reader_gone"),
         pytest.param(
             DEV_FULL, bot_command("--threshold", "critical"), marks=needs_dev_full, id="dev_full"
@@ -220,7 +224,7 @@ def test_p0_s3_ac4_help_still_exits_0():
 
 STDERR_OUTCOMES = {
     "no_findings_0": (bot_command("--threshold", "critical"), 0),
-    "findings_1": (bot_command(), 1),
+    "findings_1": (injected_command("one_finding"), 1),
     "missing_diff_3": (bot_command(diff=ABSENT_DIFF), 3),
     "unexpected_14": (injected_command("raises"), 14),
 }
@@ -256,19 +260,19 @@ def test_p0_s3_ac4_stdout_and_stderr_both_failing_exits_14(kind):
 
 
 @pytest.mark.parametrize(
-    ("flags", "code", "golden_name"),
+    ("command", "code", "first_line"),
     [
-        ((), 1, "canned_finding.golden.txt"),
-        (("--threshold", "critical"), 0, "no_findings_critical.golden.txt"),
+        (injected_command("one_finding"), 1, FINDING_LINE),
+        (bot_command("--threshold", "critical"), 0, "No findings at or above critical."),
     ],
     ids=["findings", "no_findings"],
 )
-def test_p0_s3_ac5_success_lines_come_after_stdout_is_flushed(golden, flags, code, golden_name):
+def test_p0_s3_ac5_success_lines_come_after_stdout_is_flushed(command, code, first_line):
     # Both streams share one pipe, so a summary written before stdout's flush would come first.
-    completed = run_process(bot_command(*flags), stderr=MERGED)
+    completed = run_process(command, stderr=MERGED)
 
     assert completed.returncode == code, completed.stdout
     lines = completed.stdout.splitlines()
-    assert lines[0] == golden(golden_name)
+    assert lines[0] == first_line
     assert any("canned" in line.lower() for line in lines[1:]), lines
     assert any("input_tokens=" in line for line in lines[1:]), lines

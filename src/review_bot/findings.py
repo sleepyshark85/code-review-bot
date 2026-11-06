@@ -1,5 +1,6 @@
-"""The review finding schema, and parsing of raw model text into findings."""
+"""The review finding schema, parsing raw model text into findings, and the kept-finding wrapper."""
 
+from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import Final
 
@@ -7,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from review_bot.errors import ErrorCategory, ProviderError
 
-__all__ = ["Category", "Finding", "Severity", "parse_findings"]
+__all__ = ["Category", "Finding", "ReviewedFinding", "Severity", "Source", "parse_findings"]
 
 # Fixed, because pydantic's own message quotes the input and model text must never reach stderr.
 _INVALID_OUTPUT_MESSAGE: Final = (
@@ -46,6 +47,21 @@ class Finding(BaseModel):
     category: Category
     rationale: str = Field(pattern=r"\S")
     confidence: float = Field(ge=0.0, le=1.0)
+
+
+class Source(StrEnum):
+    """Where a finding came from."""
+
+    RULE = auto()
+    AI = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedFinding:
+    """A finding the pipeline kept, with fields set by code, so the model can't forge them."""
+
+    finding: Finding
+    source: Source
 
 
 class _FindingsEnvelope(BaseModel):

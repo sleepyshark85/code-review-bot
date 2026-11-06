@@ -5,7 +5,7 @@ import sys
 import unicodedata
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF
 
 pytestmark = pytest.mark.integration
 
@@ -33,6 +33,30 @@ OTHER_CONTROLS = {
     "delete": "\x7f",
 }
 LINE_END = "(confidence 0.90)"
+# Not a docs path: since P1-S2 a `.md` file is skipped, and since P1-S6 its findings are dropped.
+NON_ASCII_FILE = f"docs/{RIGHTWARDS_ARROW}.py"
+
+
+def git_quoted(path: str) -> str:
+    """`path` as git writes it in a header: quoted, with each byte outside printable ASCII octal."""
+    escaped = "".join(
+        chr(byte) if 0x20 <= byte < 0x7F and chr(byte) not in '"\\' else f"\\{byte:03o}"
+        for byte in path.encode("utf-8")
+    )
+    return f'"{escaped}"'
+
+
+def anchored_diff(*paths: str) -> str:
+    """A diff adding lines 1 to 7 to each path, so findings there print (P1-S6 handover).
+
+    Each path is written git-quoted, so a hostile `file` can still be a real diff path.
+    """
+    return "".join(
+        f"diff --git {git_quoted('a/' + path)} {git_quoted('b/' + path)}\n"
+        f"--- {git_quoted('a/' + path)}\n+++ {git_quoted('b/' + path)}\n"
+        "@@ -0,0 +1,7 @@\n" + "+x\n" * 7
+        for path in paths
+    )
 
 
 def raw_control_characters(text: str) -> list[str]:
@@ -57,7 +81,7 @@ def test_p0_s1_ac19_hostile_file_renders_on_one_clean_line(bot, write_diff, valu
     provider = bot.mock(findings=[bot.finding(file=value)])
     first_word, last_word = first_and_last_words(value)
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(anchored_diff(value)), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert_one_clean_line(run.stdout_body)
@@ -70,7 +94,7 @@ def test_p0_s1_ac19_hostile_rationale_renders_on_one_clean_line(bot, write_diff,
     provider = bot.mock(findings=[bot.finding(rationale=value)])
     first_word, last_word = first_and_last_words(value)
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(FINDING_DIFF), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert_one_clean_line(run.stdout_body)
@@ -81,7 +105,7 @@ def test_p0_s1_ac19_hostile_rationale_renders_on_one_clean_line(bot, write_diff,
 def test_p0_s1_ac19_forged_file_produces_no_second_finding_line(bot, write_diff):
     provider = bot.mock(findings=[bot.finding(file=FORGED_LINES)])
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(anchored_diff(FORGED_LINES)), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     lines = run.stdout_body.split("\n")
@@ -90,15 +114,17 @@ def test_p0_s1_ac19_forged_file_produces_no_second_finding_line(bot, write_diff)
 
 
 def test_p0_s1_ac19_two_hostile_findings_render_on_two_lines(bot, write_diff):
+    files = ("first\nfile", "second\x1b[31mfile")
     provider = bot.mock(
         findings=[
-            bot.finding(file="first\nfile", rationale=f"one{LINE_SEPARATOR}two"),
-            bot.finding(file="second\x1b[31mfile", rationale="three\nfour"),
+            bot.finding(file=files[0], rationale=f"one{LINE_SEPARATOR}two"),
+            bot.finding(file=files[1], rationale="three\nfour"),
         ]
     )
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(anchored_diff(*files)), provider=provider)
 
+    assert run.exit_code == 1, run.stderr
     lines = run.stdout_body.split("\n")
     assert len(lines) == 2, repr(run.stdout)
     for line in lines:
@@ -108,9 +134,10 @@ def test_p0_s1_ac19_two_hostile_findings_render_on_two_lines(bot, write_diff):
 @pytest.mark.parametrize("field", ["file", "rationale"])
 @pytest.mark.parametrize("control", OTHER_CONTROLS.values(), ids=OTHER_CONTROLS.keys())
 def test_p0_s1_ac19_other_control_characters_are_not_rendered_raw(bot, write_diff, field, control):
-    provider = bot.mock(findings=[bot.finding(**{field: f"before{control}after"})])
+    finding = bot.finding(**{field: f"before{control}after"})
+    provider = bot.mock(findings=[finding])
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(anchored_diff(finding.file)), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert_one_clean_line(run.stdout_body)
@@ -146,7 +173,7 @@ def test_p0_s1_ac20_arrow_in_rationale_on_ascii_stdout_exits_1(bot, write_diff, 
     provider = bot.mock(findings=[bot.finding(rationale=f"before {RIGHTWARDS_ARROW} after")])
     stream = stdout_encoded_as("ascii")
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(FINDING_DIFF), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     rendered = written_bytes(stream).decode("ascii")
@@ -159,17 +186,17 @@ def test_p0_s1_ac20_arrow_on_a_legacy_windows_stdout_exits_1(bot, write_diff, st
     provider = bot.mock(findings=[bot.finding(rationale=f"before {RIGHTWARDS_ARROW} after")])
     stream = stdout_encoded_as("cp1252")
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(FINDING_DIFF), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert b"before" in written_bytes(stream)
 
 
 def test_p0_s1_ac20_non_ascii_file_on_ascii_stdout_exits_1(bot, write_diff, stdout_encoded_as):
-    provider = bot.mock(findings=[bot.finding(file=f"docs/{RIGHTWARDS_ARROW}.md")])
+    provider = bot.mock(findings=[bot.finding(file=NON_ASCII_FILE)])
     stream = stdout_encoded_as("ascii")
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(anchored_diff(NON_ASCII_FILE)), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert written_bytes(stream).startswith(b"docs/")

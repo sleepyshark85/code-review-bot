@@ -13,7 +13,7 @@ import sys
 import time
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF
 from fake_sdk import HIGH_FINDING, findings_json
 from p0_s4_support import PREFIX
 from real_sdk_support import FAKE_CLI, FINDING_LINE_START, assert_failed_cleanly
@@ -77,7 +77,7 @@ def run_real_query(tmp_path, monkeypatch):
         fake_cli.write_text(FAKE_CLI, encoding="utf-8")
         marker = tmp_path / "fake_cli_ran"
         diff = tmp_path / "change.diff"
-        diff.write_text(MINIMAL_DIFF, encoding="utf-8")
+        diff.write_text(FINDING_DIFF, encoding="utf-8")
         target = tmp_path / "no_such_claude.exe" if mode == "cli_missing" else fake_cli
         completed = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
             [
@@ -200,6 +200,10 @@ def test_p0_s4_ac8_cli_that_never_exits_hits_the_deadline_with_one_line(run_real
 # --- AC6's note: stderr closed or failing, in a real process -------------------------------------
 
 
+# The sample diff is reviewed here, so the finding sits on one of its added lines (P1-S6).
+SAMPLE_FINDING = HIGH_FINDING | {"file": "billing/invoice.py", "line": 14}
+
+
 def overridden_signal_command(result, *flags):
     return [
         sys.executable,
@@ -215,7 +219,7 @@ def overridden_signal_command(result, *flags):
 
 @pytest.mark.parametrize(
     ("result", "code"),
-    [(findings_json(HIGH_FINDING), 1), (findings_json(), 0)],
+    [(findings_json(SAMPLE_FINDING), 1), (findings_json(), 0)],
     ids=["found", "none"],
 )
 def test_p0_s4_ac6_note_control_the_child_warns_when_stderr_works(result, code):
@@ -231,7 +235,7 @@ def test_p0_s4_ac6_note_control_the_child_warns_when_stderr_works(result, code):
 )
 @pytest.mark.parametrize(
     ("result", "code"),
-    [(findings_json(HIGH_FINDING), 1), (findings_json(), 0)],
+    [(findings_json(SAMPLE_FINDING), 1), (findings_json(), 0)],
     ids=["found", "none"],
 )
 def test_p0_s4_ac6_note_warning_with_stderr_lost_exits_by_findings_in_a_real_process(
@@ -240,4 +244,4 @@ def test_p0_s4_ac6_note_warning_with_stderr_lost_exits_by_findings_in_a_real_pro
     completed = run_process(overridden_signal_command(result), stderr=kind)
 
     assert completed.returncode == code, "not 14 or 120: losing the warning changes nothing"
-    assert ("src/app.py" in completed.stdout) == (code == 1)
+    assert ("billing/invoice.py:14" in completed.stdout) == (code == 1)

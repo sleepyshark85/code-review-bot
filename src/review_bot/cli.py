@@ -30,7 +30,7 @@ from review_bot.findings import Severity
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
-from review_bot.render import at_or_above, render_findings
+from review_bot.render import render_findings
 from review_bot.review import PipelineResult, run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings
@@ -217,18 +217,21 @@ def _review(
         # ``--help`` exits through ``SystemExit`` too.
         raise _ReviewAbortedError(exc) from exc
 
-    # A malformed response fails here, before anything is written. Stdout then goes first, so a
-    # failure writing it leaves only the error line on stderr.
-    findings = at_or_above(result.findings, settings.threshold)
-    output = render_findings(findings, settings.threshold)
-    summary = _summarise(result, settings, audit.run_id)
-    exit_code = 1 if findings else 0
+    # Stdout goes first, so a failure writing it leaves only the error line on stderr.
+    reported = result.decision.reported
+    output = render_findings([reviewed.finding for reviewed in reported], settings.threshold)
+    dropped_count = len(result.verification.dropped)
+    summary = _summarise(result, settings, audit.run_id, dropped_count)
+    exit_code = 1 if reported else 0
 
     write_output(output)
     if not result.model_called:
         write_diagnostic(_nothing_reviewed_warning(result.skipped_files))
     elif settings.provider == "mock":
         write_diagnostic(_CANNED_WARNING)
+    if dropped_count and dropped_count == len(result.verification.checks):
+        # Otherwise the run would look clean (ADR 0006).
+        write_diagnostic(_all_dropped_warning(dropped_count))
     write_diagnostic(summary)
     # After stdout, so a failure here exits 17 with the report already delivered.
     audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": None})
@@ -268,11 +271,24 @@ def _nothing_reviewed_warning(skipped_files: Sequence[FileDiff]) -> str:
     return f"{_NOTHING_REVIEWED_WARNING}{named} ({len(paths)} in total)"
 
 
-def _summarise(result: PipelineResult, settings: Settings, run_id: str) -> str:
+def _all_dropped_warning(dropped_count: int) -> str:
+    if dropped_count == 1:
+        return (
+            "review-bot: warning: the 1 model finding was dropped: its file or line isn't in "
+            "the diff."
+        )
+    return (
+        f"review-bot: warning: all {dropped_count} model findings were dropped: their file or "
+        "line isn't in the diff."
+    )
+
+
+def _summarise(result: PipelineResult, settings: Settings, run_id: str, dropped_count: int) -> str:
     # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility).
     return (
         f"provider={settings.provider} model={settings.model} prompt={PROMPT_VERSION} "
         f"input_tokens={result.usage.input_tokens} output_tokens={result.usage.output_tokens} "
+        f"dropped={dropped_count} "
         f"skipped_files={len(result.skipped_files)} "
         f"model_called={str(result.model_called).lower()} run_id={run_id}"
     )

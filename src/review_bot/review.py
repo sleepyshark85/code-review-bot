@@ -1,4 +1,7 @@
-"""Orchestrate one review: load, scan and parse the diff, call the provider, record each stage."""
+"""Orchestrate one review: scan and parse the diff, call the provider, verify, apply the threshold.
+
+Each stage's decision is recorded in the audit log.
+"""
 
 import asyncio
 import hashlib
@@ -16,11 +19,12 @@ from review_bot.console import write_diagnostic
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import DecodedPath, FileDiff, ParsedDiff, parse_diff
 from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetectedError
-from review_bot.findings import Finding
+from review_bot.policy import Decision, decide
 from review_bot.prompt import PROMPT_VERSION, build_request
-from review_bot.providers.base import LLMProvider, TokenUsage
+from review_bot.providers.base import LLMProvider, ReviewResponse, TokenUsage
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
+from review_bot.verify import AnchorCheck, VerifyResult, verify_findings
 
 __all__ = ["PipelineResult", "run_pipeline"]
 
@@ -38,15 +42,27 @@ class _AgentSkipReason(StrEnum):
     NOTHING_TO_REVIEW = "nothing_to_review"
 
 
+class _VerifyOutcome(StrEnum):
+    KEPT = "kept"
+    DROPPED = "dropped"
+
+
+class _PolicyOutcome(StrEnum):
+    REPORTED = "reported"
+    BELOW_THRESHOLD = "below_threshold"
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineResult:
-    """A review's findings, and what it skipped.
+    """A review's verified and decided findings, and what it skipped.
 
-    ``model_called`` is False when every file was skipped; the findings and warnings are then
-    empty. ``warnings`` are the provider's, already written to stderr and the audit log.
+    ``model_called`` is False when every file was skipped; ``verification`` and ``decision`` are
+    then empty, as are ``warnings``. ``warnings`` are the provider's, already written to stderr
+    and the audit log.
     """
 
-    findings: tuple[Finding, ...]
+    verification: VerifyResult
+    decision: Decision
     usage: TokenUsage
     skipped_files: tuple[FileDiff, ...]
     model_called: bool
@@ -58,8 +74,9 @@ async def run_pipeline(
 ) -> PipelineResult:
     """Review the diff at ``diff_path`` with ``provider``, sending only the files not skipped.
 
-    Each stage's decision goes to ``audit``; the run's end is the caller's to record. The
-    provider's warnings go to stderr too, before the caller writes the review.
+    A finding is reported only if its file and line are in the diff and its severity meets the
+    threshold. Each stage's decision goes to ``audit``; the run's end is the caller's to record.
+    The provider's warnings go to stderr too, before the caller writes the review.
 
     Raises:
         InputError: If the diff can't be reviewed, or holds a possible secret; the provider is
@@ -84,8 +101,40 @@ async def run_pipeline(
     skipped = tuple(file for file in parsed.files if file.skip_reason is not None)
     if len(skipped) == len(parsed.files):
         audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.NOTHING_TO_REVIEW})
-        return PipelineResult((), TokenUsage(0, 0), skipped, model_called=False)
+        return PipelineResult(
+            VerifyResult(kept=(), checks=()),
+            decide((), settings.threshold),
+            TokenUsage(0, 0),
+            skipped,
+            model_called=False,
+        )
 
+    response = await _call_provider(provider, parsed, settings, diff, audit)
+    # The model proposes, code disposes: nothing it returns is reported before both checks.
+    # No rule findings yet: the rules arrive in P1-S7.
+    verification = verify_findings(response.findings, (), parsed)
+    _record_verification(verification, audit)
+    decision = decide(verification.kept, settings.threshold)
+    _record_decision(decision, audit)
+    return PipelineResult(
+        verification,
+        decision,
+        response.usage,
+        skipped,
+        model_called=True,
+        warnings=response.warnings,
+    )
+
+
+async def _call_provider(
+    provider: LLMProvider, parsed: ParsedDiff, settings: Settings, diff: str, audit: AuditLog
+) -> ReviewResponse:
+    """Send the reviewable text, record the call, and write and record its warnings.
+
+    Raises:
+        ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
+        AuditError: If a record can't be written.
+    """
     started = time.perf_counter()
     try:
         response = await provider.review(
@@ -107,9 +156,7 @@ async def run_pipeline(
     for warning in response.warnings:
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
-    return PipelineResult(
-        response.findings, response.usage, skipped, model_called=True, warnings=response.warnings
-    )
+    return response
 
 
 def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
@@ -192,6 +239,52 @@ def _logged_path_fields(file: FileDiff) -> dict[str, JsonValue]:
     if file.path is not None:
         return file_fields(file.path)
     return file_fields(_NO_PATH if file.old_path is None else file.old_path)
+
+
+def _record_verification(verification: VerifyResult, audit: AuditLog) -> None:
+    for check in verification.checks:
+        audit.record(Stage.VERIFY, "checked", _verify_data(check))
+
+
+def _verify_data(check: AnchorCheck) -> dict[str, JsonValue]:
+    """A proposal's anchor and outcome, with hashes in place of the model's text.
+
+    A ``file`` that names no diff path is the model's own text, so only its hash and length are
+    kept. There is no fingerprint until P1-S7.
+    """
+    finding = check.proposed
+    if check.diff_path is None:
+        file_data: dict[str, JsonValue] = {
+            "file_sha256": _sha256(finding.file),
+            "file_length": len(finding.file),
+        }
+    else:
+        file_data = file_fields(check.diff_path)
+    return {
+        "fingerprint": None,
+        **file_data,
+        "line": finding.line,
+        "severity": finding.severity,
+        "outcome": _VerifyOutcome.KEPT if check.drop_reason is None else _VerifyOutcome.DROPPED,
+        "reason": check.drop_reason,
+        "rationale_sha256": _sha256(finding.rationale),
+    }
+
+
+def _record_decision(decision: Decision, audit: AuditLog) -> None:
+    """Record each kept finding's outcome: the reported ones, then those below the threshold."""
+    outcomes = [(reviewed, _PolicyOutcome.REPORTED) for reviewed in decision.reported] + [
+        (reviewed, _PolicyOutcome.BELOW_THRESHOLD) for reviewed in decision.below_threshold
+    ]
+    for reviewed, outcome in outcomes:
+        finding = reviewed.finding
+        data = {**file_fields(finding.file), "line": finding.line, "outcome": outcome}
+        audit.record(Stage.POLICY, "decided", data)
+
+
+def _sha256(text: str) -> str:
+    # Model text is valid UTF-8: ``Finding`` rejects a lone surrogate.
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _secrets_message(hits: Sequence[SecretHit]) -> str:

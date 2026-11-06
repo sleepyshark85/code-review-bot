@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from diff_support import MINIMAL_DIFF
+from diff_support import FINDING_DIFF, MINIMAL_DIFF
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 
 from review_bot.errors import ErrorCategory, ProviderError
@@ -92,7 +92,7 @@ def test_p0_s3_ac2_empty_findings_exit_0(bot, write_diff):
 def test_p0_s3_ac2_control_the_finding_the_cases_derive_from_is_valid(bot, write_diff):
     provider = bot.mock(raw_output=findings_json(HIGH_FINDING))
 
-    run = bot.review(write_diff(MINIMAL_DIFF), provider=provider)
+    run = bot.review(write_diff(FINDING_DIFF), provider=provider)
 
     assert run.exit_code == 1, run.stderr
     assert run.stdout_body.startswith("src/app.py:7 ")

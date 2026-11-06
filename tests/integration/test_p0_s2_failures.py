@@ -169,8 +169,10 @@ def test_p0_s2_ac17_control_the_child_really_starts_with_stdout_closed():
     assert completed.returncode == 3, completed.stderr
 
 
+# Since P1-S6 the mock's canned finding is dropped, so both write the no-findings line. A closed
+# stdout with a finding to print is `closed_with_findings` in `test_p0_s3_stream_failures.py`.
 @pytest.mark.parametrize(
-    "threshold", ["critical", "low"], ids=["would_exit_0_otherwise", "would_exit_1_otherwise"]
+    "threshold", ["critical", "low"], ids=["threshold_critical", "threshold_low"]
 )
 def test_p0_s2_ac17_stdout_closed_exits_14(threshold):
     completed = run_with_stdout_closed([*BOT_COMMAND, "mock", "--threshold", threshold])

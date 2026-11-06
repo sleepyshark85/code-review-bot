@@ -77,6 +77,8 @@ class Stage(StrEnum):
     STATIC = "static"
     PARSE = "parse"
     AGENT = "agent"
+    VERIFY = "verify"
+    POLICY = "policy"
 
 
 class AuditLog:

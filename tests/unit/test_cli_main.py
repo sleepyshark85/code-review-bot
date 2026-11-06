@@ -9,27 +9,29 @@ from typing import TextIO, cast, override
 
 import pytest
 from audit_records import data_of, events, read_records
-from diff_samples import MINIMAL_DIFF, section
+from diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIFF, section
 
 from review_bot.cli import build_provider, main, parse_args
 from review_bot.errors import ConfigError, ErrorCategory, InputError, ProviderError
-from review_bot.findings import Severity
+from review_bot.findings import Finding, Severity
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
 
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
-CANNED_LINE = (
-    "mock/example.py:1 [high/logic] Canned MockProvider finding, not a real review. "
-    "(confidence 1.00)\n"
-)
+NO_FINDINGS = "No findings at or above low.\n"
 
 
 @pytest.fixture
 def diff_path(tmp_path: Path) -> Path:
+    """A diff that `FINDING_FIELDS` anchors to, so a provider returning it exits 1."""
     path = tmp_path / "change.diff"
-    path.write_text(MINIMAL_DIFF, encoding="utf-8")
+    path.write_text(FINDING_DIFF, encoding="utf-8")
     return path
+
+
+def finding_provider() -> MockProvider:
+    return MockProvider(findings=[Finding(**FINDING_FIELDS)])
 
 
 class FailingRawStream(io.RawIOBase):
@@ -75,7 +77,7 @@ def test_main_with_injected_provider_bypasses_build_provider(
     # A None entry makes any import of the module raise ImportError, so building Claude would fail.
     monkeypatch.setitem(sys.modules, "review_bot.providers.claude_agent", None)
 
-    exit_code = main([str(diff_path), "--provider", "claude"], provider=MockProvider())
+    exit_code = main([str(diff_path), "--provider", "claude"], provider=finding_provider())
 
     assert exit_code == 1
 
@@ -85,8 +87,9 @@ def test_main_without_argv_reads_process_arguments(
 ) -> None:
     monkeypatch.setattr("sys.argv", ["review-bot", str(diff_path), "--provider", "mock"])
 
-    assert main() == 1
-    assert capsys.readouterr().out == CANNED_LINE
+    # The mock's canned finding names no file in the diff, so it is dropped (P1-S6).
+    assert main() == 0
+    assert capsys.readouterr().out == NO_FINDINGS
 
 
 def test_python_m_review_bot_exits_with_mains_code(
@@ -97,7 +100,7 @@ def test_python_m_review_bot_exits_with_mains_code(
     with pytest.raises(SystemExit) as caught:
         runpy.run_module("review_bot", run_name="__main__")
 
-    assert caught.value.code == 1
+    assert caught.value.code == 0
 
 
 @pytest.mark.parametrize(
@@ -207,7 +210,7 @@ def test_main_with_stdout_failing_on_flush_returns_14_and_drops_the_stream(
 ) -> None:
     monkeypatch.setattr("sys.stdout", failing_stream)
 
-    assert main([str(diff_path), "--provider", "mock"]) == 14
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 14
     # Left in place, the stream would fail again at shutdown and CPython would exit 120.
     assert sys.stdout is None
 
@@ -260,9 +263,9 @@ def test_main_with_streams_that_have_no_encoding_still_writes_to_them(
     monkeypatch.setattr("sys.stdout", stdout)
     monkeypatch.setattr("sys.stderr", stderr)
 
-    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 1
 
-    assert stdout.getvalue() == CANNED_LINE
+    assert stdout.getvalue() == f"{FINDING_LINE}\n"
     assert "provider=mock" in stderr.getvalue()
 
 
@@ -271,7 +274,7 @@ def test_main_with_stderr_raising_an_unforeseen_error_still_exits_by_findings(
 ) -> None:
     monkeypatch.setattr("sys.stderr", SimpleNamespace(encoding="no-such-codec"))
 
-    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 1
     assert sys.stderr is None
 
 
@@ -280,7 +283,7 @@ def test_main_with_stderr_failing_still_exits_by_findings_and_drops_the_stream(
 ) -> None:
     monkeypatch.setattr("sys.stderr", failing_stream)
 
-    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 1
     assert sys.stderr is None
 
 
@@ -396,7 +399,7 @@ def make_unwritable(path: Path) -> None:
 def test_main_ends_the_summary_with_the_logs_run_id_and_records_the_end(
     diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main([str(diff_path), "--provider", "mock"]) == 1
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 1
 
     records = read_records(audit_log_in_tmp_path)
     assert capsys.readouterr().err.endswith(f" run_id={records[0]['run_id']}\n")
@@ -508,8 +511,8 @@ def test_main_with_the_end_failing_after_stdout_returns_17_with_stdout_intact(
     stdout = SabotagingStdout()
     monkeypatch.setattr("sys.stdout", stdout)
 
-    assert main([str(diff_path), "--provider", "mock"]) == 17
-    assert stdout.getvalue() == CANNED_LINE
+    assert main([str(diff_path), "--provider", "mock"], provider=finding_provider()) == 17
+    assert stdout.getvalue() == f"{FINDING_LINE}\n"
 
 
 def test_main_with_a_failed_review_whose_end_cannot_be_recorded_keeps_its_code_and_warns(
@@ -573,3 +576,41 @@ def test_main_with_a_missing_diff_named_by_a_key_marker_keeps_the_whole_message(
     assert capsys.readouterr().err == (
         "review-bot: error: Diff not found: [REDACTED].diff. Check the path.\n"
     )
+
+
+def stderr_lines_of_review(
+    diff_path: Path, capsys: pytest.CaptureFixture[str], *findings: Finding
+) -> list[str]:
+    main([str(diff_path)], provider=MockProvider(findings=findings))
+    return capsys.readouterr().err.splitlines()
+
+
+def test_main_with_its_one_finding_dropped_warns_in_the_singular(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lines = stderr_lines_of_review(diff_path, capsys, Finding(**FINDING_FIELDS | {"line": 8}))
+
+    assert lines[0] == (
+        "review-bot: warning: the 1 model finding was dropped: its file or line isn't in the diff."
+    )
+    assert " dropped=1 skipped_files=0 " in lines[1]
+
+
+def test_main_with_some_findings_kept_does_not_warn_about_dropping(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dropped = Finding(**FINDING_FIELDS | {"file": "elsewhere.py"})
+
+    lines = stderr_lines_of_review(diff_path, capsys, dropped, Finding(**FINDING_FIELDS))
+
+    assert len(lines) == 1
+    assert " dropped=1 skipped_files=0 " in lines[0]
+
+
+def test_main_with_no_findings_proposed_does_not_warn_about_dropping(
+    diff_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lines = stderr_lines_of_review(diff_path, capsys)
+
+    assert len(lines) == 1
+    assert " dropped=0 skipped_files=0 " in lines[0]
