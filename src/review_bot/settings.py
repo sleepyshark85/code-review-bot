@@ -2,10 +2,12 @@
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
 
@@ -28,6 +30,7 @@ class Settings(BaseModel):
     api_timeout_ms: int = Field(default=90_000, gt=0)
     # Finite, because an infinite deadline would remove the only wall-clock bound.
     deadline_s: float = Field(default=300, gt=0, allow_inf_nan=False)
+    audit_log: Path = DEFAULT_AUDIT_LOG_PATH
 
 
 def load_settings(flags: Mapping[str, str | None]) -> Settings:

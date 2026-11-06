@@ -3,6 +3,7 @@
 from enum import StrEnum, auto
 
 __all__ = [
+    "AuditError",
     "ConfigError",
     "DiffEmptyError",
     "DiffNotFoundError",
@@ -51,6 +52,10 @@ class DiffNotParsableError(InputError):
 
 class SecretDetectedError(InputError):
     """The diff file's text holds a possible secret, so it must not be sent to the model."""
+
+
+class AuditError(ReviewBotError):
+    """The audit log can't be written, so the run can't be traced (ADR 0005)."""
 
 
 class ErrorCategory(StrEnum):

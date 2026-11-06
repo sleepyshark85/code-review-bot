@@ -17,9 +17,10 @@ review-bot <diff> --provider mock    # offline; canned output, not a real review
 From a clone, run `uv sync`, then `uv run python -m review_bot <diff>`. The usage below describes `main` and may be ahead of the latest release.
 
 - **Authentication:** your Claude Code login, or `ANTHROPIC_API_KEY` if set. The model runs with no tools.
-- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error, `15` input that isn't a diff, `16` a possible secret in the diff. See the exit codes for [Phase 0](docs/phases/phase-0/design.md#exit-codes) and [Phase 1](docs/phases/phase-1/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
+- **Exit codes:** `0` no findings at or above the threshold, `1` findings, `2` to `6` usage or input errors, `7` to `13` provider failures such as `8` for authentication, `14` internal error, `15` input that isn't a diff, `16` a possible secret in the diff, `17` an audit log that can't be written. See the exit codes for [Phase 0](docs/phases/phase-0/design.md#exit-codes) and [Phase 1](docs/phases/phase-1/design.md#exit-codes) and [settings](docs/phases/phase-0/design.md#settings) tables.
 - **Only real diffs are reviewed.** Text that isn't a unified diff exits `15`. In a git diff, docs, lock, generated and binary files are skipped and not sent to the model; a plain unified diff is reviewed whole.
 - **A diff with a detected secret is never sent.** Before anything is parsed, the whole diff text is scanned for known key and token formats, private keys and quoted credentials. A hit exits `16` with the kind and diff line of each, never the value. Secrets in other formats aren't detected.
+- **Every run is traced** in a JSONL audit log, `.review-bot/audit.jsonl` under the working directory by default (that directory gets its own `.gitignore`). Set another path with `--audit-log PATH` or `REVIEW_BOT_AUDIT_LOG`. It records what each stage decided, never diff lines, model text or secret values, and stderr's summary ends with the run's `run_id=` to find it.
 - **The diff must be UTF-8.** Windows PowerShell 5 `>` writes UTF-16, which exits `4`, so use `git diff --output=change.diff`.
 
 ## 1. Current state

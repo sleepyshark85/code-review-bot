@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from review_bot.errors import ConfigError
@@ -5,10 +7,25 @@ from review_bot.findings import Severity
 from review_bot.settings import Settings, load_settings
 
 
-def test_load_settings_with_nothing_set_uses_defaults() -> None:
+def test_load_settings_with_nothing_set_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REVIEW_BOT_AUDIT_LOG")
+
     assert load_settings({}) == Settings(
-        provider="claude", model="claude-opus-5-5", threshold=Severity.LOW, max_diff_bytes=400_000
+        provider="claude",
+        model="claude-opus-5-5",
+        threshold=Severity.LOW,
+        max_diff_bytes=400_000,
+        audit_log=Path(".review-bot/audit.jsonl"),
     )
+
+
+def test_load_settings_reads_the_audit_log_from_the_environment_unless_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_AUDIT_LOG", "from-env.jsonl")
+
+    assert load_settings({"audit_log": None}).audit_log == Path("from-env.jsonl")
+    assert load_settings({"audit_log": "from-flag.jsonl"}).audit_log == Path("from-flag.jsonl")
 
 
 def test_load_settings_with_flag_set_to_none_falls_back_to_environment(

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TextIO, cast, override
 
 import pytest
+from audit_records import data_of, events, read_records
 from diff_samples import MINIMAL_DIFF, section
 
 from review_bot.cli import build_provider, main, parse_args
@@ -316,7 +317,7 @@ def test_main_with_every_file_skipped_names_ten_paths_then_the_total(
         "review-bot: warning: nothing was reviewed: every changed file was skipped: "
         f"{', '.join(paths[:10])} (12 in total)"
     )
-    assert summary.endswith(" skipped_files=12 model_called=false")
+    assert " skipped_files=12 model_called=false run_id=" in summary
     assert provider.requests == []
 
 
@@ -354,7 +355,7 @@ def test_main_with_a_reviewed_file_reports_the_skipped_count_and_the_call(
 
     assert main([str(diff)], provider=MockProvider(findings=[])) == 0
 
-    assert capsys.readouterr().err.endswith(" skipped_files=1 model_called=true\n")
+    assert " skipped_files=1 model_called=true run_id=" in capsys.readouterr().err
 
 
 def test_main_with_text_that_is_not_a_diff_returns_15_naming_the_path(
@@ -384,3 +385,143 @@ def test_main_with_a_secret_in_the_diff_returns_16_with_one_error_line(
     assert captured.out == ""
     assert captured.err.startswith("review-bot: error: secret: 1 possible secret in the diff (")
     assert captured.err.count("\n") == 1
+
+
+def make_unwritable(path: Path) -> None:
+    path.unlink()
+    path.mkdir()
+
+
+def test_main_ends_the_summary_with_the_logs_run_id_and_records_the_end(
+    diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(diff_path), "--provider", "mock"]) == 1
+
+    records = read_records(audit_log_in_tmp_path)
+    assert capsys.readouterr().err.endswith(f" run_id={records[0]['run_id']}\n")
+    assert records[-1]["data"] == {"exit_code": 1, "error": None}
+
+
+def test_main_with_a_missing_diff_records_only_the_end_with_its_code(
+    tmp_path: Path, audit_log_in_tmp_path: Path
+) -> None:
+    assert main([str(tmp_path / "missing.diff"), "--provider", "mock"]) == 3
+
+    assert events(audit_log_in_tmp_path) == ["run.end"]
+    assert data_of(audit_log_in_tmp_path, "run.end") == {
+        "exit_code": 3,
+        "error": "DiffNotFoundError",
+    }
+
+
+def test_main_with_a_provider_error_records_its_category_at_the_end(
+    diff_path: Path, audit_log_in_tmp_path: Path
+) -> None:
+    provider = MockProvider(error=ProviderError(ErrorCategory.AUTH, "SENTINEL"))
+
+    assert main([str(diff_path)], provider=provider) == 8
+
+    assert data_of(audit_log_in_tmp_path, "run.end") == {"exit_code": 8, "error": "auth"}
+
+
+def test_main_with_an_unexpected_error_records_its_class_but_not_its_text(
+    diff_path: Path, audit_log_in_tmp_path: Path
+) -> None:
+    class RaisingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            raise RuntimeError("SENTINEL")
+
+    assert main([str(diff_path)], provider=RaisingProvider()) == 14
+
+    assert data_of(audit_log_in_tmp_path, "run.end") == {
+        "exit_code": 14,
+        "error": "RuntimeError",
+    }
+    assert "SENTINEL" not in audit_log_in_tmp_path.read_text(encoding="ascii")
+
+
+@pytest.mark.parametrize(
+    "error", [SystemExit("SENTINEL"), KeyboardInterrupt("SENTINEL")], ids=["exit", "interrupt"]
+)
+def test_main_with_a_review_aborted_by_a_base_exception_records_its_class(
+    diff_path: Path, audit_log_in_tmp_path: Path, error: BaseException
+) -> None:
+    class RaisingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            raise error
+
+    assert main([str(diff_path)], provider=RaisingProvider()) == 14
+
+    assert data_of(audit_log_in_tmp_path, "run.end") == {
+        "exit_code": 14,
+        "error": type(error).__name__,
+    }
+    assert "SENTINEL" not in audit_log_in_tmp_path.read_text(encoding="ascii")
+
+
+def test_main_with_an_unwritable_log_returns_17_before_reading_the_diff_or_calling_the_provider(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = MockProvider()
+
+    exit_code = main(
+        [str(tmp_path / "missing.diff"), "--audit-log", str(tmp_path)], provider=provider
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 17
+    assert captured.out == ""
+    [error] = captured.err.splitlines()
+    assert error.startswith(f"review-bot: error: Can't write the audit log {tmp_path}: ")
+    assert "--audit-log" in error
+    assert provider.requests == []
+
+
+def test_main_with_the_log_failing_before_stdout_returns_17_with_stdout_empty(
+    diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class SabotagingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            make_unwritable(audit_log_in_tmp_path)
+            return await super().review(request)
+
+    assert main([str(diff_path)], provider=SabotagingProvider()) == 17
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
+
+
+def test_main_with_the_end_failing_after_stdout_returns_17_with_stdout_intact(
+    diff_path: Path, audit_log_in_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class SabotagingStdout(io.StringIO):
+        @override
+        def write(self, text: str) -> int:
+            make_unwritable(audit_log_in_tmp_path)
+            return super().write(text)
+
+    stdout = SabotagingStdout()
+    monkeypatch.setattr("sys.stdout", stdout)
+
+    assert main([str(diff_path), "--provider", "mock"]) == 17
+    assert stdout.getvalue() == CANNED_LINE
+
+
+def test_main_with_a_failed_review_whose_end_cannot_be_recorded_keeps_its_code_and_warns(
+    diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class SabotagingProvider(MockProvider):
+        @override
+        async def review(self, request: ReviewRequest) -> ReviewResponse:
+            make_unwritable(audit_log_in_tmp_path)
+            raise RuntimeError("SENTINEL")
+
+    assert main([str(diff_path)], provider=SabotagingProvider()) == 14
+
+    error, warning = capsys.readouterr().err.splitlines()
+    assert error.startswith("review-bot: error: ")
+    assert warning.startswith("review-bot: warning: Can't write the audit log ")
