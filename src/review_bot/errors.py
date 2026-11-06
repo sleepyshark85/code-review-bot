@@ -1,5 +1,6 @@
 """Domain errors. The CLI maps them to exit codes and messages."""
 
+from collections.abc import Sequence
 from enum import StrEnum, auto
 
 __all__ = [
@@ -71,9 +72,17 @@ class ErrorCategory(StrEnum):
 
 
 class ProviderError(ReviewBotError):
-    """A provider failed in a known way."""
+    """A provider failed in a known way.
 
-    def __init__(self, category: ErrorCategory, message: str) -> None:
-        """Record the failure's category alongside its message."""
+    ``diagnostics`` are raw, untrusted text, such as the CLI's stderr: only ``scrub_diagnostics``
+    may turn them into output (ADR 0004). The message is shown to the user, so they never go in
+    it.
+    """
+
+    def __init__(
+        self, category: ErrorCategory, message: str, *, diagnostics: Sequence[str] = ()
+    ) -> None:
+        """Record the failure's category and diagnostics alongside its message."""
         super().__init__(message)
         self.category = category
+        self.diagnostics = tuple(diagnostics)

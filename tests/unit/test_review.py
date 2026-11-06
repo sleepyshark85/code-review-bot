@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from audit_records import data_of, events
+from audit_records import data_of, events, read_records
 from diff_samples import MINIMAL_DIFF, section
 
 from review_bot.audit import AuditLog
@@ -185,7 +185,7 @@ def test_run_pipeline_with_a_provider_error_records_its_category(tmp_path: Path)
         run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
 
     assert events(log) == ["run.start", "parse.parsed", "agent.failed"]
-    assert data_of(log, "agent.failed") == {"category": "rate_limit"}
+    assert data_of(log, "agent.failed") == {"category": "rate_limit", "diagnostics": []}
     assert "SENTINEL" not in log.read_text(encoding="ascii")
 
 
@@ -297,3 +297,67 @@ def test_run_pipeline_with_text_that_is_not_a_diff_redacts_only_the_path_in_its_
         run(diff, tmp_path / "audit.jsonl", MockProvider())
 
     assert str(caught.value).startswith("Diff [REDACTED].diff can't be parsed. It has no file")
+
+
+def test_run_pipeline_with_provider_warnings_writes_and_records_each_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    provider = MockProvider(warnings=["W1", "W2"])
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
+
+    assert result.warnings == ("W1", "W2")
+    assert capsys.readouterr().err == "W1\nW2\n"
+    assert events(log) == [
+        "run.start",
+        "parse.parsed",
+        "agent.called",
+        "agent.warning",
+        "agent.warning",
+    ]
+    assert [record["data"] for record in read_records(log)[-2:]] == [{"text": "W1"}, {"text": "W2"}]
+
+
+def test_run_pipeline_with_no_provider_warnings_writes_and_records_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider())
+
+    assert result.warnings == ()
+    assert capsys.readouterr().err == ""
+    assert "agent.warning" not in events(log)
+
+
+def test_run_pipeline_records_a_warning_quoting_the_diff_scrubbed_but_shows_it_whole(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    warning = "the CLI said: total = compute(items)"
+    diff = section("app.py", "+total = compute(items)\n")
+
+    run(write_diff(tmp_path, diff), log, MockProvider(warnings=[warning]))
+
+    assert capsys.readouterr().err == f"{warning}\n"
+    assert data_of(log, "agent.warning") == {"text": "[removed: quotes the diff]"}
+
+
+def test_run_pipeline_with_provider_diagnostics_records_them_scrubbed_and_shows_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-sentinel")
+    diagnostics = ["d", "auth failed for test-key-sentinel", "echo: total = compute(items)"]
+    error = ProviderError(ErrorCategory.AUTH, "m", diagnostics=diagnostics)
+    diff = section("app.py", "+total = compute(items)\n")
+
+    with pytest.raises(ProviderError):
+        run(write_diff(tmp_path, diff), log, MockProvider(error=error))
+
+    assert data_of(log, "agent.failed") == {
+        "category": "auth",
+        "diagnostics": ["d", "auth failed for [REDACTED]", "[removed: quotes the diff]"],
+    }
+    assert capsys.readouterr() == ("", "")

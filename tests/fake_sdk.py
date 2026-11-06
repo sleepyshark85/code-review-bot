@@ -76,6 +76,17 @@ def assistant_error(error: Any, text: str = "Assistant text.") -> AssistantMessa
     return AssistantMessage(content=[TextBlock(text=text)], model="m", error=error)
 
 
+def cli_stderr(*lines: str) -> Any:
+    """A script step in which the CLI writes `lines` to its stderr, through `options.stderr`."""
+
+    async def step(options: ClaudeAgentOptions) -> None:
+        assert options.stderr is not None, "the provider set no stderr callback"
+        for line in lines:
+            options.stderr(line)
+
+    return step
+
+
 async def hang(_options: ClaudeAgentOptions) -> None:
     await asyncio.Event().wait()
 

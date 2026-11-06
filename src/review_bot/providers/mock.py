@@ -31,6 +31,7 @@ class MockProvider:
         findings: Sequence[Finding] | None = None,
         raw_output: str | None = None,
         error: ProviderError | None = None,
+        warnings: Sequence[str] = (),
     ) -> None:
         """Script the answer.
 
@@ -38,11 +39,13 @@ class MockProvider:
             findings: Findings to return instead of the canned one.
             raw_output: Model text to pass through ``parse_findings``; wins over ``findings``.
             error: An error to raise; wins over both.
+            warnings: Warnings to return with the findings.
         """
         self.requests: list[ReviewRequest] = []
         self._findings = (_CANNED_FINDING,) if findings is None else tuple(findings)
         self._raw_output = raw_output
         self._error = error
+        self._warnings = tuple(warnings)
 
     async def review(self, request: ReviewRequest) -> ReviewResponse:
         """Record the request and return or raise what was scripted."""
@@ -50,4 +53,4 @@ class MockProvider:
         if self._error is not None:
             raise self._error
         findings = self._findings if self._raw_output is None else parse_findings(self._raw_output)
-        return ReviewResponse(findings=findings, usage=TokenUsage(0, 0))
+        return ReviewResponse(findings=findings, usage=TokenUsage(0, 0), warnings=self._warnings)

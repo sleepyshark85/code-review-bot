@@ -68,3 +68,23 @@ async def test_review_with_error_raises_it_and_still_records_the_request() -> No
 
     assert caught.value.category is ErrorCategory.AUTH
     assert provider.requests == [REQUEST]
+
+
+async def test_review_with_warnings_returns_them_with_the_findings() -> None:
+    response = await MockProvider(findings=[], warnings=["W1", "W2"]).review(REQUEST)
+
+    assert response.warnings == ("W1", "W2")
+
+
+async def test_review_with_no_warnings_returns_none() -> None:
+    response = await MockProvider().review(REQUEST)
+
+    assert response.warnings == ()
+
+
+def test_provider_error_holds_its_diagnostics_as_a_tuple() -> None:
+    error = ProviderError(ErrorCategory.AUTH, "m", diagnostics=["d"])
+
+    assert error.diagnostics == ("d",)
+    assert str(error) == "m"
+    assert ProviderError(ErrorCategory.AUTH, "m").diagnostics == ()

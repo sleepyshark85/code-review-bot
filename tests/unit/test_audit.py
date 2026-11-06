@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,7 +11,14 @@ from audit_records import read_records
 from hypothesis import given
 from hypothesis import strategies as st
 
-from review_bot.audit import DEFAULT_AUDIT_LOG_PATH, AuditLog, JsonValue, Stage, file_fields
+from review_bot.audit import (
+    DEFAULT_AUDIT_LOG_PATH,
+    AuditLog,
+    JsonValue,
+    Stage,
+    file_fields,
+    scrub_diagnostics,
+)
 from review_bot.diff_parser import parse_diff
 from review_bot.errors import AuditError
 
@@ -250,3 +258,174 @@ def test_open_failure_redacts_a_secret_in_the_path(tmp_path: Path) -> None:
 
     assert AWS_KEY not in str(caught.value)
     assert "[REDACTED]" in str(caught.value)
+
+
+# `scrub_diagnostics`. Every secret is assembled here, so no literal reaches the repository.
+PEM_BEGIN = "-----BEGIN " + "RSA PRIVATE KEY-----"
+PEM_END = "-----END " + "RSA PRIVATE KEY-----"
+PEM_BODY = "MIIEowIBAAKCAQEA" + "q7Lm" * 15
+CREDENTIAL_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+DIFF_LINE = 'message = "say \\"hi\\""'
+QUOTES_THE_DIFF = "[removed: quotes the diff]"
+
+
+def scrub(lines: list[str], *, diff_text: str = "", **environ: str) -> tuple[str, ...]:
+    return scrub_diagnostics(lines, diff_text=diff_text, environ=environ)
+
+
+def test_scrub_diagnostics_with_no_lines_keeps_none() -> None:
+    assert scrub([]) == ()
+
+
+def test_scrub_diagnostics_keeps_ordinary_lines_unchanged() -> None:
+    assert scrub(["CLI-SENTINEL", "", "exit 1"]) == ("CLI-SENTINEL", "", "exit 1")
+
+
+def test_scrub_diagnostics_keeps_only_the_last_20_lines() -> None:
+    lines = [f"line {number}" for number in range(50)]
+
+    assert scrub(lines) == tuple(lines[-20:])
+
+
+def test_scrub_diagnostics_keeps_only_the_last_2000_characters() -> None:
+    lines = ["first", "x" * 9_000 + "y" * 1_000, "last"]
+
+    kept = scrub(lines)
+
+    assert kept == ("x" * 996 + "y" * 1_000, "last")
+
+
+@given(st.lists(st.text(alphabet="ab \n", max_size=300), max_size=60))
+def test_scrub_diagnostics_never_keeps_more_than_its_caps(lines: list[str]) -> None:
+    kept = scrub(lines)
+
+    assert len(kept) <= 20
+    assert sum(len(line) for line in kept) <= 2_000
+
+
+def test_scrub_diagnostics_redacts_a_secret_spanning_the_cap_before_cutting() -> None:
+    # The 20-character key starts 2,005 characters from the end, so cutting first would keep its
+    # last 15, which no pattern matches.
+    line = " " * 50 + AWS_KEY + "y" * 1_985
+
+    assert scrub([line]) == (" " * 5 + "[REDACTED]" + "y" * 1_985,)
+
+
+def test_scrub_diagnostics_redacts_a_private_key_block_longer_than_the_caps() -> None:
+    lines = ["before", PEM_BEGIN, *[PEM_BODY] * 40, PEM_END, "after"]
+
+    assert scrub(lines) == ("before", "[REDACTED]", "after")
+
+
+def test_scrub_diagnostics_redacts_a_private_key_block_with_no_end() -> None:
+    lines = [PEM_BEGIN, *[PEM_BODY] * 30]
+
+    assert scrub(lines) == ("[REDACTED]",)
+
+
+def test_scrub_diagnostics_redacts_a_tail_holding_only_a_private_keys_end_and_body() -> None:
+    assert scrub([PEM_BODY, PEM_BODY, PEM_END, "after"]) == ("[REDACTED]", "after")
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_VARIABLES)
+def test_scrub_diagnostics_redacts_a_credential_variables_value(name: str) -> None:
+    kept = scrub(["auth failed for test-key-sentinel."], **{name: "test-key-sentinel"})
+
+    assert kept == ("auth failed for [REDACTED].",)
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_VARIABLES)
+def test_scrub_diagnostics_with_an_empty_credential_variable_changes_nothing(name: str) -> None:
+    assert scrub(["unchanged"], **{name: ""}) == ("unchanged",)
+
+
+def test_scrub_diagnostics_ignores_other_variables() -> None:
+    assert scrub(["value sentinel-of-home"], HOME="sentinel-of-home") == ("value sentinel-of-home",)
+
+
+def test_scrub_diagnostics_redacts_a_secret_redact_finds() -> None:
+    assert scrub([f"key {AWS_KEY}"]) == ("key [REDACTED]",)
+
+
+@pytest.mark.parametrize(
+    ("diff_line", "cli_line"),
+    [
+        (f"+{DIFF_LINE}", f"echo: {DIFF_LINE} (no marker)"),
+        (f"-{DIFF_LINE}", f"echo: {DIFF_LINE} (no marker)"),
+        (f" {DIFF_LINE}", f"echo: {DIFF_LINE} (no marker)"),
+        (f"+        {DIFF_LINE}", f"echo:{DIFF_LINE}"),
+        (f"+    {DIFF_LINE}  ", f'{{"prompt": "{json.dumps(DIFF_LINE)[1:-1]}"}}'),
+        ("+path = 'C:\\temp'", r"""{"text": "path = 'C:\\temp'\n+next"}"""),
+        ("+12345678", "count 12345678"),
+    ],
+    ids=["added", "removed", "context", "indented", "json-quotes", "json-backslash", "8-chars"],
+)
+def test_scrub_diagnostics_removes_a_line_quoting_a_diff_line(
+    diff_line: str, cli_line: str
+) -> None:
+    diff_text = f"diff --git a/a.py b/a.py\n@@ -1 +1 @@\n{diff_line}\n"
+
+    assert scrub(["kept", cli_line], diff_text=diff_text) == ("kept", QUOTES_THE_DIFF)
+
+
+def test_scrub_diagnostics_keeps_a_line_holding_a_diff_line_under_8_characters() -> None:
+    diff_text = "@@ -1 +1 @@\n+1234567\n-  else:\n"
+
+    assert scrub(["got 1234567 else:"], diff_text=diff_text) == ("got 1234567 else:",)
+
+
+def test_scrub_diagnostics_escapes_a_lone_surrogate_so_the_line_can_be_recorded(
+    tmp_path: Path,
+) -> None:
+    [kept] = scrub(["bad" + chr(0xDCFF) + "byte"])
+
+    assert kept == r"bad\udcffbyte"
+    open_log(tmp_path / "audit.jsonl").record(Stage.AGENT, "failed", {"diagnostics": [kept]})
+
+
+@pytest.mark.parametrize("quote_starts", [100, 995], ids=["before-the-cut", "across-the-cut"])
+def test_scrub_diagnostics_removes_a_quoting_line_before_cutting_it(quote_starts: int) -> None:
+    # The kept tail is the line's last 2,000 characters, which starts at 1,000.
+    quote = "total = compute(items)"
+    line = "q" * quote_starts + quote + "q" * (3_000 - quote_starts - len(quote))
+
+    kept = scrub([line], diff_text=f"+{quote}\n")
+
+    assert kept == (QUOTES_THE_DIFF,)
+
+
+def test_scrub_diagnostics_with_a_large_diff_and_long_lines_stays_fast() -> None:
+    # A plain substring search per diff line took about 10 s here.
+    diff_text = "".join(f"+line_{number:08d}_of_the_diff\n" for number in range(15_000))
+    lines = ["z" * 20_000] * 20
+
+    started = time.perf_counter()
+    kept = scrub(lines, diff_text=diff_text)
+
+    assert time.perf_counter() - started < 5
+    assert kept == ("z" * 2_000,)
+
+
+@pytest.mark.parametrize(
+    ("cli_line", "expected"),
+    [
+        ("value_0002 = 9, then value_0001 = 1", QUOTES_THE_DIFF),
+        ("value_0002 = 9, then value_0001 = 2", "value_0002 = 9, then value_0001 = 2"),
+    ],
+    ids=["quote-after-a-near-miss", "only-near-misses"],
+)
+def test_scrub_diagnostics_checks_every_place_a_diff_lines_start_occurs(
+    cli_line: str, expected: str
+) -> None:
+    assert scrub([cli_line], diff_text="+value_0001 = 1\n") == (expected,)
+
+
+@pytest.mark.parametrize("quote_starts", [65_528, 65_530, 65_535, 65_536, 65_537])
+def test_scrub_diagnostics_finds_a_quote_at_any_window_near_a_chunk_boundary(
+    quote_starts: int,
+) -> None:
+    # Windows are read in chunks of 65,536 starting positions.
+    quote = "total = compute(items)"
+    line = "q" * quote_starts + quote + "q" * 10
+
+    assert scrub([line], diff_text=f"+{quote}\n") == (QUOTES_THE_DIFF,)

@@ -1,6 +1,6 @@
 # P1-S5: See provider warnings and failure diagnostics in the audit log
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S4
 - **Touches:** `providers/base`, `providers/mock`, `providers/claude_agent`, `errors`, `review`, `audit`
 
@@ -36,3 +36,4 @@ Over a fake `sdk_call` that also invokes `options.stderr` with the given lines. 
 - **Limit:** a fragment shorter than a diff line, a reworded diff line, or an unlisted secret format can pass.
 - **Handover:** P0-S3 AC5's "a provider writes it during the review" now means the orchestrator writes it, still before the output. P0-S2 AC8 still holds: the callback is set, and CLI text reaches neither stream.
 - Scrubbing reads the credential variables and never stores or logs them. This makes Phase 0's "never reads" untrue: see the [closing task](../design.md#3-slices).
+- **Implementation (developer):** records are `agent.warning` `{"text"}` and `agent.failed` `{"category", "diagnostics": [...]}`; AC9's 8 characters are counted without the marker and outer whitespace; the orchestrator (`review`) writes each warning to stderr whole, so it carries its own `review-bot: warning:` prefix.

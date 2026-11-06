@@ -1,7 +1,7 @@
 import asyncio
 import json
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +11,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ProcessError,
+    ResultError,
     ResultMessage,
 )
 from diff_samples import MINIMAL_DIFF
@@ -128,6 +129,11 @@ def scripted(*script: object) -> SdkCall:
     return sdk_call
 
 
+def raised_result_error(status: int, terminal_reason: str) -> ResultError:
+    data = {"is_error": True, "api_error_status": status, "terminal_reason": terminal_reason}
+    return ResultError("Claude Code returned an error result.", data=data, exit_code=1)
+
+
 def assistant_error(error: Any) -> AssistantMessage:
     return AssistantMessage(content=[], model="M", error=error)
 
@@ -194,7 +200,7 @@ async def test_review_with_failed_result_then_unexpected_exception_keeps_the_sig
     assert category is ErrorCategory.RATE_LIMIT
 
 
-async def test_review_with_failed_result_then_success_returns_findings_and_warns(
+async def test_review_with_failed_result_then_success_returns_findings_with_a_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     sdk_call = scripted(failed_result(status=503), result_message(result=VALID_RESULT))
@@ -202,7 +208,90 @@ async def test_review_with_failed_result_then_success_returns_findings_and_warns
     response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
 
     assert len(response.findings) == 1
-    assert "warning: Claude signalled transient" in capsys.readouterr().err
+    assert response.warnings == (
+        "review-bot: warning: Claude signalled transient during the call, but a valid result "
+        "followed, so that result stands.",
+    )
+    assert capsys.readouterr() == ("", "")
+
+
+async def test_review_with_only_a_success_returns_no_warnings() -> None:
+    sdk_call = scripted(result_message(result=VALID_RESULT))
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert response.warnings == ()
+
+
+def writing_cli_stderr(lines: Sequence[str], *script: object) -> SdkCall:
+    """An ``sdk_call`` whose CLI writes ``lines`` to its stderr, then plays ``script``."""
+    play = scripted(*script)
+
+    async def sdk_call(prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+        assert options.stderr is not None
+        for line in lines:
+            options.stderr(line)
+        async for message in play(prompt, options):
+            yield message
+
+    return sdk_call
+
+
+async def review_diagnostics(
+    sdk_call: SdkCall, settings: Settings | None = None
+) -> tuple[str, ...]:
+    provider = ClaudeAgentProvider(settings or Settings(), sdk_call=sdk_call)
+    with pytest.raises(ProviderError) as caught:
+        await provider.review(REQUEST)
+    return caught.value.diagnostics
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        failed_result(status=401),
+        raised_result_error(401, "api_error"),
+        assistant_error("rate_limit"),
+        result_message(result="not json"),
+        ProcessError("Command failed"),
+    ],
+    ids=["error-result", "result-error", "assistant-error", "invalid-output", "sdk-error"],
+)
+async def test_review_that_fails_holds_the_cli_stderr_as_diagnostics(failure: object) -> None:
+    diagnostics = await review_diagnostics(writing_cli_stderr(["one", "two"], failure))
+
+    assert diagnostics == ("one", "two")
+
+
+async def test_review_past_the_deadline_holds_the_cli_stderr_as_diagnostics() -> None:
+    async def sdk_call(_prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+        assert options.stderr is not None
+        options.stderr("before the hang")
+        await asyncio.Event().wait()
+        yield result_message()
+
+    diagnostics = await review_diagnostics(sdk_call, Settings(deadline_s=0.01))
+
+    assert diagnostics == ("before the hang",)
+
+
+async def test_review_that_fails_holds_only_the_last_1000_cli_stderr_lines() -> None:
+    lines = [f"line {number}" for number in range(1005)]
+
+    diagnostics = await review_diagnostics(writing_cli_stderr(lines, failed_result(status=401)))
+
+    assert diagnostics == tuple(lines[-1000:])
+
+
+async def test_review_that_succeeds_with_cli_stderr_writes_it_nowhere(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sdk_call = writing_cli_stderr(["CLI-SENTINEL"], result_message(result=VALID_RESULT))
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert "CLI-SENTINEL" not in repr(response)
+    assert capsys.readouterr() == ("", "")
 
 
 async def test_review_with_success_then_failure_closing_the_stream_keeps_the_findings() -> None:

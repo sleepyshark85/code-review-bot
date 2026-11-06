@@ -675,3 +675,80 @@ The run before the fix is the main check: 58 failures cover every criterion exce
 1. **Escaped secrets in hunk lines and the preamble** are out of scope and aren't tested.
 2. **Cost is shown by time bounds only**, with wide headroom. Growth isn't measured.
 3. **Run on Windows only** by the tester. CI on Linux hasn't been checked.
+
+## P1-S5: See provider warnings and failure diagnostics in the audit log
+
+Spec: [p1-s5-provider-notices.md](slices/p1-s5-provider-notices.md). Tests: [`tests/integration/test_p1_s5_provider_notices.py`](../../../tests/integration/test_p1_s5_provider_notices.py), 122 cases, and [`tests/conformance/test_p1_s5_notices_conformance.py`](../../../tests/conformance/test_p1_s5_notices_conformance.py), 26 cases. All run in process: `main` with an injected `MockProvider`, or `ClaudeAgentProvider` over a fake `sdk_call`. The fake plays the CLI's stderr through `options.stderr`, using the new `cli_stderr` step in [`tests/fake_sdk.py`](../../../tests/fake_sdk.py). AC1's warning text is a golden file in [`tests/fixtures/p1_s5/`](../../../tests/fixtures/p1_s5/), taken from `main`'s code (`a0759ca`). One case starts a child interpreter. Every secret is assembled at run time.
+
+**Status: every criterion passes, 148 of 148, and review round 1 is resolved.** During review, the new AC9 Limits case failed until the developer made diff matching near-linear (see Review round 1). The first run had 143 of 145: two cases failed from one regression in the developer's code, found by a Limits test (see below), and later changes fixed it. The tests were written from the spec, ADR 0004 and design.md, not from the code.
+
+**How the tests read the log.** They reuse P1-S4's `read_records`, so every read checks that the file is pure ASCII, holds one record per line and has no lone surrogates. The spec doesn't name the keys inside `agent.failed.data`, so the kept diagnostics are taken as the one list of strings in that record. `scrub_diagnostics` has no module in design.md. The tests import it from `review_bot.audit`, because ADR 0004 says only `audit` reads diagnostics.
+
+### Gate
+
+The tester's run on the developer's final tree after review round 1, with nothing else running: `ruff format --check` and `ruff check` are clean, `mypy` (strict) is clean on 20 files, and `pre-commit run --all-files` is clean. `pytest --cov`: 1908 passed, 12 skipped, 0 failed, 100% of statements and branches, in 154.7 s. This slice's two files: 148 passed. An earlier run by the main session, before the round-1 cases were added, gave 1900 passed. After review round 2 the developer's full run gave 1913 passed, 12 skipped, 0 failed (five new unit cases for the chunk boundary and the memory fix); CI re-runs the suite on the PR.
+
+### Criteria
+
+| AC | Tests (`test_p1_s5_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_overridden_signal_warns_on_stderr_as_in_phase_0` ×2 (found, none): exits 1 or 0, and the golden line appears exactly once. `ac1_overridden_signal_is_logged_as_agent_warning` ×2. `ac1_response_warnings_hold_the_warning` checks that `warnings` is exactly the golden text. `ac1_no_signal_gives_no_response_warning`. Limits: `ac1_limits_signal_with_a_lone_surrogate_still_exits_by_the_findings` | pass (7); failed on the first run |
+| AC2 | `W` is a stderr line and an `agent.warning`. Two warnings are written in order. With no warnings, there's no extra line and no record. A warning never goes to stdout. Beyond the criterion: a hostile warning (ESC, `\n`, a forged `review-bot: error:`, U+2028) stays one escaped line. A warning holding a key is scrubbed in the log, as design.md's "scrubbed text" says | pass (6) |
+| AC3 | `ac3_claude_warning_with_stderr_lost_stays_in_the_log` ×8 (found or none, with stderr `None`, closed, failing on write or failing on flush): exit by the findings, stderr empty, record kept. `ac3_mock_warning_with_stderr_lost_stays_in_the_log` ×4 | pass (12) |
+| AC4 | An AST scan of each `providers/*.py` finds no import of `console`, no `print()` and no `sys.stdout` or `sys.stderr` (×3). Importing the three provider modules in a child process doesn't load `review_bot.console`. With `capfd`, `ClaudeAgentProvider.review` writes nothing at file-descriptor level for a warned success, an error result or a raised `ResultError`, all with CLI stderr. `MockProvider` with warnings writes nothing either | pass (9) |
+| AC5 | Over a raised `ResultError`, an error result and the deadline (`--deadline-s 0.1` on a hung stream, inside a 30 s bound): `CLI-SENTINEL`'s line is in `agent.failed` (×3). The line is on neither stream, stdout is empty and stderr is one error line (×3). The code and the stderr bytes equal a run without CLI output (×3). The `ProviderError` carries the raw lines. Lines are kept in the order written | pass (11) |
+| AC6 | CLI text before a successful result, before a warned success, and after the result: none of it is in the log, and there's no `agent.failed` | pass (3) |
+| AC7 | 50 lines keep exactly the last 20, and none of the first 30. Exactly 20 are all kept. The total is 2,000 characters or fewer for one 10,000-character line, 50 of them, and 20 lines of 302. A key straddling the cut, placed for a cut 2,000 characters from the end, 2,000 from the start, or 100 from the end of a line: no 8-character piece of it is kept (×3). A 42-line private-key block of about 2,700 characters, longer than both caps, leaves no `PRIVATE` and no 8-character piece of its body. Limits: 200,000 CLI lines finish within 30 s (0.15 s here), and the last line is kept | pass (10) |
+| Interfaces | `interfaces_provider_holds_at_most_the_last_1000_lines`: after 5,000 lines, `diagnostics` holds between 20 and 1,000 lines, and they are the input's tail | pass (1) |
+| AC8 | In the log and through `scrub_diagnostics`: an AWS key, a GitHub token, an Anthropic key, a private-key block split over lines, and a tail holding only the body and the `END` line all give `[REDACTED]` and leave no value (×10). Each of the three credential variables set to `test-key-sentinel` is redacted in the log and by the function (×6). Each set to an empty value leaves the line exactly unchanged, in the log and by the function (×6). Notes: with all three set, no value is in the log | pass (23) |
+| AC9 | `ac9_cli_line_quoting_the_diff_is_replaced_whole` ×11, by the function and ×11 in the log, where the line next to it is kept. The cases: an added, removed or context line without its marker, with its marker, without leading whitespace (added and removed), and JSON-escaped with `\"` (with and without whitespace), `\\` and `\n`, plus a line of exactly 8 characters. In the log, no word of the diff survives. Lines under 8 characters aren't matched, by the function (×6) and in the log. Among them, `total=1` is 7 characters, 8 with its marker and 10 with its outer whitespace. It isn't matched alone or quoted with its marker and whitespace, as the spec Notes count without both. Limits: whitespace-only diff lines (12 spaces, 8 tabs) match nothing. Only the quoting line of three is replaced. Scrubbing 1,000 lines against an 8,000-line diff, and 200 KB lines of `\`, `\"`, `-----` and `a`, each finish within 30 s (0.3 s at most here). Review round 1: `ac9_limits_large_diff_and_long_cli_lines_add_bounded_time_to_a_failed_call` | pass (34) |
+| AC10 | The `d` sentinel is in `agent.failed`, and not on stderr or stdout. Stderr is one error line. The spec's literal `d` is kept as `["d"]`. The orchestrator scrubs a mock's diagnostics: a key becomes `[REDACTED]`, and a line quoting the diff is removed. Hostile diagnostics (`\n`, ESC, U+2028, `\x85`) keep the log valid. The message is byte-for-byte the same as without diagnostics. Beyond the criterion: `ac10_beyond_criterion_lone_surrogate_in_diagnostics_is_escaped` | pass (6); failed on the first run |
+| AC11 | The P0-S3 suite still passes for both providers (55 conformance cases in all). New cases, each for both providers: a plain success has no warnings (×2), a warned success holds one `str` warning, every failure category's `diagnostics` holds only `str` (×7), a failure with CLI output carries it as `str`, and invalid output holds only `str`. Also: both fields default to empty, and a list of diagnostics keeps its order. The conformance `conftest.py` gains a `warned` and a `diagnosed` scenario for each provider | pass (26) |
+
+### Review round 1 (resolved)
+
+Two reviewer items changed the tests:
+
+- **Nit:** the conformance case no longer copies the `diagnosed` scenario's CLI line. It takes it from a new `diagnostic_line` fixture in `tests/conformance/conftest.py`.
+- **New Limits case, which stays red until the developer's fix lands:** `test_p1_s5_ac9_limits_large_diff_and_long_cli_lines_add_bounded_time_to_a_failed_call`. The earlier bounded-time cases paired long lines with a small diff, or a big diff with short lines. This one has both, end to end, on a failing call. The diff is about 390 KB of 9,000 distinct added lines, under the default `--max-diff-bytes`. The CLI writes 20 lines of 20,000 characters, each full of near misses that share a prefix with many diff lines. The bound is 5 s on the time the CLI lines add, measured against the same run with one short line, so parsing the diff doesn't count.
+- **Result:** before the fix, the long lines added 15.8 s (16.0 s against 0.2 s), and the case failed. The developer made diff matching near-linear, and the case now passes, taking about 0.4 s in all. Its first version also had a bug of its own: both runs wrote to one log, but the helper expects exactly one `agent.failed` record. The log is now deleted between the two runs.
+
+After the fix, this slice's files give 148 passed, and the full suite is green (see Gate).
+
+### First-run failure, since fixed: a lone surrogate in a warning or a diagnostic turned the run into exit 14
+
+**Severity `major` when found: a regression against AC1 and AC5, reachable from real CLI output.** It passes on the latest tree, and these notes stay so a reviewer can check the fix is deliberate. Before this slice, a warning went only to stderr through `write_diagnostic`, which escapes it. Now it's also written to the audit log, and writing that record failed on a lone surrogate. The run then exited 14 with the generic "did not complete" line. It should exit by the findings (AC1), or with the call's own code (AC5, AC10).
+
+The signal's name in the warning comes from the CLI's JSON `error` field, passed through unchecked (P0-S4 notes). JSON can spell a lone surrogate as `"\udcff"`, so `AssistantMessage.error` can hold one. The CLI's stderr itself can't, because the SDK decodes it strictly. So the diagnostics route is reachable only from a provider that builds diagnostics itself, such as the mock or Phase 4's provider.
+
+**Minimal reproduction.** With `diff` holding `MINIMAL_DIFF`:
+
+```python
+fake = FakeSdk(
+    assistant_error("rate_limit" + chr(0xDCFF)), result_message(findings_json(HIGH_FINDING))
+)
+argv = [diff, "--provider", "claude", "--audit-log", log]
+cli.main(argv, provider=ClaudeAgentProvider(cli.parse_args(argv)[1], sdk_call=fake))
+```
+
+On `main` (`a0759ca`), this returns 1 and prints the finding. On the branch's first run, it returned 14 with empty stdout. Two more cases failed the same way. Passing `MockProvider(error=ProviderError(AUTH, "m", diagnostics=("bad" + chr(0xDCFF) + "byte",)))` to `main` returned 14, not 8. `MockProvider(findings=[], warnings=(that text,))` returned 14, not 0.
+
+**Tests that pin it:** `ac1_limits_signal_with_a_lone_surrogate_still_exits_by_the_findings` and `ac10_beyond_criterion_lone_surrogate_in_diagnostics_is_escaped`. The AC1 case is a plain regression. The AC10 case goes beyond the criterion's text: P1-S4 fixed "no lone surrogates" for paths only, The developer escapes lone surrogates inside `scrub_diagnostics`, so the case is now pinned there. The designer may still want to say in design.md that the rule covers diagnostics and warnings too.
+
+### Readings of this slice's criteria
+
+1. **`scrub_diagnostics`'s module**, which design.md's Interfaces don't name, is `review_bot.audit`. The developer confirmed this, and the direct-call cases import it from there.
+2. **AC7's caps:** "the last 20" is checked as an exact tail. "At most 2,000 characters" is the sum of the lengths of the kept strings. Where the cut falls inside a long line isn't specified, so the straddling key is placed for three plausible cuts. The tests don't require a 10,000-character line to keep anything. The developer applies the cap inside `scrub_diagnostics`, after scrubbing, and the tests allow that.
+3. **AC9's "8 or more characters"** is counted without the marker and the outer whitespace, as the developer recorded in the spec Notes. The tests pin both sides of the boundary: content of exactly 8 characters is matched, and `total=1` (7 characters, 8 with its marker) isn't, even when the CLI line quotes it with its marker and whitespace.
+4. **AC9's `\n` form** can't hide a single diff line, because a diff line holds no newline. It's read as a JSON string joining diff lines with `\n`.
+5. **AC8's private-key tail:** the body lines must be gone, and `[REDACTED]` must be present. Whether the `END` line survives isn't asserted in AC8. AC7's longer block asserts that no part survives, markers included.
+6. **AC2's "neither"** allows Phase 0's own canned-mock notice and the summary line. Any other line fails the test.
+7. **AC10's `d`** is checked both as the literal `d` (kept as `["d"]`, and not a stderr line) and as a sentinel, because the letter `d` appears in every error message.
+
+### Limits
+
+1. **The final full gate was run by the tester** after review round 1 (see Gate).
+2. **The SDK's real stderr reader** isn't exercised: the fake calls `options.stderr` directly. P0-S4's real-process tests cover the callback being set.
+3. **The 1,000-line memory bound** is shown by the size of `ProviderError.diagnostics` and a time bound, not by measuring memory.
+4. **Cost is shown by time bounds only**, with wide headroom. Growth isn't measured.
+5. **Run on Windows only** by the tester. CI on Linux hasn't been checked.
