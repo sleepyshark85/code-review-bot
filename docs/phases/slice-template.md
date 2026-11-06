@@ -11,6 +11,9 @@
 <!-- The contract. Observable behaviour only, not implementation. Concrete inputs and expected outputs, including failures and edge cases. IDs are stable: never renumber; a removed criterion is marked "Removed". -->
 - **AC1:** Given <state>, when <action>, then <observable result>.
 
+## Limits
+<!-- Required when the slice reads untrusted text (diffs, model output, files): the largest input it must handle, its expected cost on hostile input (e.g. linear time), and what happens on malformed input. Otherwise write "None". -->
+
 ## Interfaces
 <!-- Only what the tester needs to write tests without reading the code. Link to design.md rather than restating it. -->
 

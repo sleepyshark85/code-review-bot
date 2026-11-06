@@ -25,6 +25,7 @@ Use `docs/phases/slice-template.md`, with `Status: Draft`. Order the slices so e
 
 The spec is the contract the developer, tester and reviewer work from, so it must be enough on its own:
 - **Acceptance criteria:** numbered and testable, in Given / When / Then form, with concrete inputs and expected outputs. Include the failure and edge cases.
+- **Limits:** if the slice reads untrusted text, fill the template's Limits section: the largest input, the expected cost on hostile input, and the behaviour on malformed input. Reviewers find what a spec leaves unstated only late.
 - **What, not how:** state observable behaviour. Implementation choices belong to the developer, and shared architecture belongs in `design.md`.
 - **Concise:** aim for about 30 lines and stay under 60. Link to `design.md` and ADRs instead of restating them. If a spec won't fit, the slice is too big: split it.
 - **Stable IDs:** never renumber criteria once a spec is `Approved`, because test names refer to them.

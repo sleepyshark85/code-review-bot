@@ -43,6 +43,7 @@ designer ──► USER approves design.md + slice specs + ADRs   (docs PR: docs
 - Subagents don't commit or push. The main session does, and opens the PR once the work meets its definition of done. The user reviews and merges.
 - `main` is protected: every change reaches it through a pull request from a feature branch. Direct pushes to `main` are rejected.
 - If a slice's acceptance criteria are unclear or wrong, stop and send it back to the designer. Don't guess.
+- **Doc-only minors after round 2:** a `minor` finding that is purely documentation (comment, docstring, spec or report wording) and is still open after two review rounds becomes a follow-up GitHub issue, and the PR may merge. Code findings of any severity still block.
 
 ## Quality bar
 
@@ -61,7 +62,7 @@ A green gate doesn't meet this bar on its own. "It works" is never a reason to l
 - [ ] Every acceptance criterion has a passing test that names it.
 - [ ] CI `gate` is green: `ruff format --check`, `ruff check`, `mypy --strict`, `pytest --cov` (≥ 90%), pre-commit, `pip-audit`.
 - [ ] Follows `CONVENTIONS.md`; any deviation is justified in the slice notes.
-- [ ] The reviewer's verdict is `approve`: no finding of severity `blocker`, `major` or `minor` is open, and the code meets the quality bar above.
+- [ ] The reviewer's verdict is `approve`: no finding of severity `blocker`, `major` or `minor` is open (except a doc-only minor deferred to an issue under the round-2 rule above), and the code meets the quality bar above.
 - [ ] No secrets, no live model calls in tests (use `MockProvider`).
 - [ ] The README is updated if behaviour or usage changed.
 
