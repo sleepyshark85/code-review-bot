@@ -119,11 +119,16 @@ One JSON object per line: `schema` (`audit/v1`), `run_id`, `ts` (UTC), `stage`, 
 |---|---|
 | `run` | `start`: version, provider, model, prompt version, threshold, format, diff SHA-256, size. `end`: exit code, plus an error category or exception class name, never exception text |
 | `static` | `secrets`: kinds and diff lines. `rules`: fingerprint, rule, file, line, severity; unanchored hit count |
-| `parse` | `parsed`: file and hunk counts, skipped files with reasons, hunks with mismatched or unreadable headers |
+| `parse` | `parsed`: `files` and `hunks` counts; `skipped_files` (each `file`, `reason`) and `flagged_hunks` (each `file`, `index`, `new_start`), for mismatched or unreadable headers, at most 50 each, with `skipped_files_total` and `flagged_hunks_total` |
 | `agent` | `called`: tokens, duration. `skipped`: reason. `warning`: scrubbed text. `failed`: category, scrubbed diagnostics |
 | `verify` | For each proposal: fingerprint or none, `file` if it matches a diff path, otherwise its SHA-256 and length; line, severity, outcome, reason, rationale SHA-256 |
 | `policy` | For each kept finding: reported or below threshold |
 | `triage` | [Labels](slices/p1-s12-triage.md#interfaces) |
+
+**Paths in `audit/v1`** (decided by the user, 2026-11-06). A diff path in a record's `file` is written so every line is pure ASCII JSON, with no lone surrogates, readable in any language:
+- **Valid UTF-8:** the plain path, JSON-escaped to ASCII, with no flag.
+- **Not valid UTF-8:** git's C-quoted form, as git shows it with its default `core.quotePath`: wrapped in double quotes; `"` and `\` escaped with a backslash; `\a`, `\b`, `\t`, `\n`, `\v`, `\f`, `\r` for those control characters; every other byte below 0x20, 0x7F, or above 0x7F as a three-digit octal escape. The object holding that `file` gets `path_quoted: true`. Byte 0xFF in `docs/caf…md` gives the 17-character value `"docs/caf\377.md"`, quotes included.
+- **Deleted file:** its old path, from `--- a/`, never `null`.
 
 ### Compatibility
 

@@ -50,18 +50,28 @@ class DiffLine:
 
 @dataclass(frozen=True, slots=True)
 class Hunk:
-    """One ``@@`` hunk. ``has_count_mismatch`` means its declared counts are wrong or unreadable."""
+    """One ``@@`` hunk. ``has_count_mismatch`` means its declared counts are wrong or unreadable.
+
+    ``new_start`` is the header's declared new start, or None if the header can't be read.
+    """
 
     header: str
+    new_start: int | None
     lines: tuple[DiffLine, ...]
     has_count_mismatch: bool
 
 
 @dataclass(frozen=True, slots=True)
 class FileDiff:
-    """One file's section. ``path`` is the new path, or None for a deleted file."""
+    """One file's section.
+
+    ``path`` is the new path, or None for a deleted file; ``old_path`` is the old path, or None
+    for a new file. A quoted path's bytes that aren't valid UTF-8 are kept as lone surrogates
+    (``surrogateescape``), so ``path.encode("utf-8", "surrogateescape")`` gives back its bytes.
+    """
 
     path: str | None
+    old_path: str | None
     hunks: tuple[Hunk, ...]
     skip_reason: SkipReason | None
 
@@ -94,6 +104,9 @@ _ESCAPED_BYTES: Final = {
     b"t": b"\t",
     b"v": b"\v",
 }
+# The headers that name a renamed or copied file's old and new paths.
+_SOURCE_PATH_HEADERS: Final = ("rename from ", "copy from ")
+_TARGET_PATH_HEADERS: Final = ("rename to ", "copy to ")
 _DEV_NULL: Final = "/dev/null"
 _MARKERS: Final = {"+": LineKind.ADDED, "-": LineKind.REMOVED, " ": LineKind.CONTEXT}
 
@@ -197,6 +210,7 @@ def _parse_file(lines: list[str]) -> FileDiff:
     path_reason = _skip_reason_for(header.path or header.old_path or "")
     return FileDiff(
         path=header.path,
+        old_path=header.old_path,
         hunks=_parse_hunks(lines[first_hunk:]),
         skip_reason=SkipReason.BINARY if header.is_binary else path_reason,
     )
@@ -205,13 +219,13 @@ def _parse_file(lines: list[str]) -> FileDiff:
 @dataclass(frozen=True, slots=True)
 class _FileHeader:
     path: str | None  # None if deleted
-    old_path: str | None
+    old_path: str | None  # None if new
     is_binary: bool
 
 
 def _read_file_header(lines: list[str]) -> _FileHeader:
-    plus_path = minus_path = rename_path = git_path = None
-    is_deleted = is_binary = False
+    plus_path = minus_path = source_path = target_path = git_path = None
+    is_new = is_deleted = is_binary = False
     for line in lines:
         if line.startswith("diff --git "):
             git_path = _path_from(_last_path_token(line.removeprefix("diff --git ")))
@@ -220,22 +234,26 @@ def _read_file_header(lines: list[str]) -> _FileHeader:
             git_path = _unquote(line.split(" ", 2)[2])
         elif line.startswith("--- "):
             minus_path = _path_from(_first_path_token(line.removeprefix("--- ")))
+            is_new = is_new or minus_path == _DEV_NULL
         elif line.startswith("+++ "):
             plus_path = _path_from(_first_path_token(line.removeprefix("+++ ")))
             is_deleted = is_deleted or plus_path == _DEV_NULL
-        elif line.startswith("rename to "):
-            rename_path = _unquote(line.removeprefix("rename to "))
+        elif line.startswith(_SOURCE_PATH_HEADERS):
+            source_path = _unquote(line.split(" ", 2)[2])
+        elif line.startswith(_TARGET_PATH_HEADERS):
+            target_path = _unquote(line.split(" ", 2)[2])
+        elif line.startswith("new file mode"):
+            is_new = True
         elif line.startswith("deleted file mode"):
             is_deleted = True
         elif line == _GIT_BINARY_PATCH or (
             line.startswith(_BINARY_PREFIX) and line.endswith(_BINARY_SUFFIX)
         ):
             is_binary = True
-    # A deletion's ``diff --git`` line names the old path twice.
-    old_path = minus_path or git_path
-    if is_deleted:
-        return _FileHeader(path=None, old_path=old_path, is_binary=is_binary)
-    path = plus_path or rename_path or git_path
+    # Git names a renamed or copied file's paths in its own headers. Any other file keeps its
+    # path, so ``diff --git``'s new path is also its old one.
+    old_path = None if is_new else minus_path or source_path or git_path
+    path = None if is_deleted else plus_path or target_path or git_path
     return _FileHeader(path=path, old_path=old_path, is_binary=is_binary)
 
 
@@ -262,7 +280,11 @@ def _last_path_token(rest: str) -> str:
 
 
 def _unquote(token: str) -> str:
-    """Undo git's C-style quoting, where octal escapes spell UTF-8 bytes."""
+    """Undo git's C-style quoting, where octal escapes spell UTF-8 bytes.
+
+    A byte that isn't valid UTF-8 is kept as a lone surrogate (``surrogateescape``), so it is
+    neither lost nor confused with a real U+FFFD, and the audit log can quote it as git does.
+    """
     if not _QUOTED_AT_START.fullmatch(token):
         return token
 
@@ -272,7 +294,7 @@ def _unquote(token: str) -> str:
             return bytes([int(octal, 8)])
         return _ESCAPED_BYTES.get(other, other)
 
-    return _ESCAPE.sub(unescape, token[1:-1].encode("utf-8")).decode("utf-8", "replace")
+    return _ESCAPE.sub(unescape, token[1:-1].encode("utf-8")).decode("utf-8", "surrogateescape")
 
 
 def _strip_prefix(path: str) -> str:
@@ -302,7 +324,8 @@ def _build_hunk(header: str, body: list[str]) -> Hunk:
         end -= 1
 
     match = _HUNK_HEADER.match(header)
-    next_new_line = int(match[3]) if match else None
+    new_start = int(match[3]) if match else None
+    next_new_line = new_start
     lines: list[DiffLine] = []
     for raw in body[:end]:
         if raw.startswith("\\"):  # "\ No newline at end of file"
@@ -315,7 +338,12 @@ def _build_hunk(header: str, body: list[str]) -> Hunk:
             next_new_line += 1
         lines.append(DiffLine(kind=kind, text=raw[1:], new_line=new_line))
 
-    return Hunk(header=header, lines=tuple(lines), has_count_mismatch=_counts_differ(match, lines))
+    return Hunk(
+        header=header,
+        new_start=new_start,
+        lines=tuple(lines),
+        has_count_mismatch=_counts_differ(match, lines),
+    )
 
 
 def _counts_differ(match: re.Match[str] | None, lines: list[DiffLine]) -> bool:

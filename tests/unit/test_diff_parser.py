@@ -112,6 +112,69 @@ def test_parse_diff_classifies_a_deleted_file_by_its_old_path(text: str) -> None
     assert parsed.reviewable_text == ""
 
 
+@pytest.mark.parametrize(
+    ("text", "paths"),
+    [
+        (
+            "diff --git a/gone.py b/gone.py\ndeleted file mode 100644\n"
+            "--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
+            (None, "gone.py"),
+        ),
+        ("diff --git a/gone.py b/gone.py\ndeleted file mode 100644\n", (None, "gone.py")),
+        ("--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n", (None, "gone.py")),
+        (
+            "diff --git a/new.py b/new.py\nnew file mode 100644\n"
+            "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+x\n",
+            ("new.py", None),
+        ),
+        ("diff --git a/new.py b/new.py\nnew file mode 100644\n", ("new.py", None)),
+        ("--- a/same.py\n+++ b/same.py\n@@ -1 +1 @@\n-a\n+b\n", ("same.py", "same.py")),
+        (
+            "diff --git a/old.py b/new.py\nsimilarity index 100%\n"
+            "rename from old.py\nrename to new.py\n",
+            ("new.py", "old.py"),
+        ),
+        (
+            "diff --git a/x.py b/y.py\nsimilarity index 100%\ncopy from x.py\ncopy to y.py\n",
+            ("y.py", "x.py"),
+        ),
+        (
+            "diff --git a/c.py b/x b/c.py\nsimilarity index 100%\n"
+            "copy from c.py\ncopy to x b/c.py\n",
+            ("x b/c.py", "c.py"),
+        ),
+    ],
+    ids=[
+        "deleted",
+        "deleted-empty",
+        "deleted-unified",
+        "new",
+        "new-empty",
+        "changed",
+        "renamed",
+        "copied",
+        "copied-to-a-path-with-b-slash",
+    ],
+)
+def test_parse_diff_reads_the_new_and_old_paths(
+    text: str, paths: tuple[str | None, str | None]
+) -> None:
+    [file] = parse_diff(text).files
+
+    assert (file.path, file.old_path) == paths
+
+
+def test_parse_diff_keeps_quoted_path_bytes_that_are_not_utf8() -> None:
+    text = '--- "a/caf\\377.py"\n+++ "b/caf\\303\\251\\377.py"\n@@ -1 +1 @@\n-a\n+b\n'
+
+    [file] = parse_diff(text).files
+
+    assert file.path is not None
+    assert file.old_path is not None
+    assert file.path.encode("utf-8", "surrogateescape") == b"caf\xc3\xa9\xff.py"
+    assert file.old_path.encode("utf-8", "surrogateescape") == b"caf\xff.py"
+
+
 def test_parse_diff_with_a_fake_file_header_inside_a_git_hunk_keeps_the_code() -> None:
     text = (
         "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1 +1 @@\n"

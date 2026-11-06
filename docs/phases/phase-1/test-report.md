@@ -530,3 +530,83 @@ None blocks the slice; each is a choice the tests make where the spec could be r
 7. **The review round 1 cases weren't run against made-up wrong code.** Their evidence is the code before the fix, which 17 of the 20 failed.
 8. **CR-only line endings** (the Notes' Known limit) aren't tested either way, as above. A `diff --cc` section with three or more parents isn't run.
 9. **A literal holding its own opening quote** isn't tested. The rule says no such literal is a match, but it only shortens the literal, so the result depends on what follows.
+
+## P1-S4: Trace every run in a JSONL audit log
+
+Spec: [p1-s4-audit-log.md](slices/p1-s4-audit-log.md). Tests: [`tests/integration/test_p1_s4_audit_log.py`](../../../tests/integration/test_p1_s4_audit_log.py), 145 cases, all in-process: `main` with an injected `MockProvider` or a raising provider. Two of them use `git` or a child interpreter. Golden output is in [`tests/fixtures/p1_s4/`](../../../tests/fixtures/p1_s4/).
+
+**Status: every criterion passes.** The run was against the uncommitted working tree on base `707afb8`, so a later `src/` change needs a re-run. The tests were written from the spec, its Limits and design.md before the developer's code was wired in. On the first full run, 124 passed and one failed: an unwritable `--audit-log` whose path held a secret echoed that secret on stderr (see below). The developer's next change put the path through `redact`, and then all 125 passed.
+
+**How the tests read records.** The spec fixes the envelope but not the key names inside `data`. The tests look for the values a criterion names, wherever they sit in `data`: a path with its reason, a file with its hunk index and start, `51` twice outside the lists. So they don't depend on key names, except where design.md fixes them: the [paths in `audit/v1`](design.md#audit-log) tests read `skipped_files` and `flagged_hunks` and compare whole entries. Every read checks the whole file: it is pure ASCII, and each line is one `\n`-terminated JSON object holding the envelope. The file must also split into as many `str.splitlines()` lines as records, which catches a raw U+2028 or `\x85`. And no decoded string may hold a surrogate code point, which only a lone `\ud800`-`\udfff` escape produces.
+
+**The suite's own log.** `tests/conftest.py` now points `REVIEW_BOT_AUDIT_LOG` at a session temp file for the whole run, including child processes (spec Notes). The default-path tests unset it and `chdir` into `tmp_path`. `ac4_child_process_default_is_redirected_by_the_suite` checks that a child process gets a path outside the repository.
+
+### Gate
+
+`ruff format --check`, `ruff check` and `mypy` (strict) are all clean. `pytest --cov`: 1571 passed, 12 skipped, 100% of statements and branches. The pre-commit gitleaks hook passes on the new files, because every secret is assembled at run time, as in P1-S3.
+
+### Criteria
+
+| AC | Tests (`test_p1_s4_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_every_line_is_an_audit_v1_record_of_one_run`, `ac1_start_parsed_called_end_appear_in_that_order`, `ac1_timestamps_never_go_backwards`. Limits: `ac1_limits_hostile_skipped_path_keeps_one_record_per_line` ×10 (newline, CR, ESC and BEL, quotes, backslash, NUL, U+2028, `\x85`, `\x1c`, a forged record) and `ac1_limits_hostile_mismatched_hunk_path_…` | pass (14) |
+| AC2 | `ac2_run_start_holds_the_settings_and_the_diffs_hash_and_size` (CRLF and non-ASCII, so bytes ≠ characters), `ac2_run_start_hash_changes_with_one_byte_of_the_diff` | pass (2) |
+| AC3 | `ac3_second_run_appends_with_its_own_run_id`, `ac3_appends_to_a_log_that_already_holds_records` (earlier bytes kept, 4 run IDs) | pass (2) |
+| AC4 | With neither flag nor variable, the log goes under the working directory. The variable sets the path, and the flag wins over it. An overridden unwritable variable doesn't stop the run. A relative flag resolves under the working directory. The suite redirects child processes | pass (6) |
+| AC5 | A skipped file is listed with its reason, and a mismatched hunk by file, index and start. An unreadable header gives `null`, with no header text and no `@@`. The index counts within its file. Each of the 4 reasons comes from the fixed set. 51 of each lists the first 50 in order, plus totals of 51 and 51, and exactly 50 lists all. All skipped gives `nothing_to_review` and no `agent.called`. Paths: `ac5_skipped_path_decoding_byte_377_is_written_in_git_quoted_form` checks that the entry equals AC5's exact JSON, its value is 17 characters, the file is ASCII, and no line holds a `\ud8`-`\udf` escape. The same is checked for a flagged hunk and for the only file (`\377\376`). `ac5_valid_utf8_path_is_plain_with_no_path_quoted_key` ×2 (`docs/café.md` plain, and git-quoted as `\303\251`). Limits: `ac5_limits_non_utf8_path_uses_the_designs_exact_escaping` ×6 (the seven named controls; `"`, `\`, `\001`, `\037` and `\177`; a valid `é` beside `\377`, both written as octal; a truncated sequence; an encoded surrogate `\355\240\200`; an overlong `/`). Deleted files: `ac5_skipped_deleted_file_is_logged_by_its_old_path`, `ac5_flagged_hunk_in_a_deleted_file_is_logged_by_its_old_path`, `ac5_no_file_in_parse_parsed_is_null_for_deleted_files`, `ac5_skipped_deleted_file_with_a_non_utf8_old_path_is_quoted` | pass (26) |
+| AC6 | Kinds and lines for two kinds, `secret_detected`, and 16. `V` in a `+++ b/` path. `V` in the diff's own name, with a hit and without one. Limits: an octal-quoted `V` that the raw scan can't see is written as `[REDACTED]`, in a skipped path (aws, github) and in a flagged hunk's path. C-quoting writes a non-UTF-8 path's ASCII bytes as they are, so a `V` there would be readable. `ac6_limits_secret_in_a_non_utf8_skipped_path_is_redacted` ×6 covers aws and github, with `\377` after `V`, before it (so the digit `7` touches it), and beside `\"` and `\\`. The same is checked in a flagged hunk's path and in a deleted file's old path. Each entry keeps `path_quoted: true` and holds `[REDACTED]` | pass (15) |
+| AC7 | Inputs 3, 4 (directory, not UTF-8), 5, 6 and 15. Each provider category 7 to 13, with `agent.failed` and no message text. Invalid model output gives 13, with no model text. `RuntimeError("SENTINEL")` gives 14 and `RuntimeError`, and a subclass is named by its own class. A secret in a provider message isn't written | pass (17) |
+| AC8 | Findings, no-findings and all-skipped runs: no `SENTINEL-RATIONALE` or `SENTINEL-DIFF`, and stdout and stderr equal the golden output plus ` run_id=<id>`. A below-threshold rationale isn't written. No body line of `sample_diff.txt` is written | pass (5) |
+| AC9 | A directory, a parent that is a file, and a grandparent that is a file each give exit 17, one error line naming the path and `--audit-log`, empty stdout and no request. Each still gives 17 with the diff missing, a directory, too large, holding a secret, or not UTF-8. Also: the variable's path, a default `.review-bot` that is a file, a newline in the path (still one line), and a secret in the path (not echoed) | pass (24) |
+| AC10 | A record failing at `run.start`, `parse.parsed` or `agent.called` gives 17 with empty stdout. Failing before the call means no request. A failing `run.end` keeps codes 7 to 13, 14, 3, 6, 15 and 16 | pass (16) |
+| AC11 | `run.end` failing after stdout gives 17, with stdout equal to the golden output, for findings, no findings and all skipped | pass (3) |
+| AC12 | The summary ends with the log's `run_id`, both reviewed and all skipped. Three runs print three IDs, in the log's order | pass (3) |
+| AC13 | The default path creates a `.gitignore` holding `*`, and `git status` in a fresh repository shows nothing. An existing directory gets none, and an existing `.gitignore` is left alone. A custom flag path, a custom path inside `.review-bot/` and a variable path get none | pass (7) |
+| Notes | A usage error (2) and `--help` write no record | pass (2) |
+| Limits | 400 kB at the default limit, half skipped and every hunk mismatched, runs under 30 s (about 1 s here). 5 MB under a raised limit runs under 120 s. Both keep every list at 50 or fewer, and the log under 64 kB. Over the limit exits 6 with no `parse.parsed` | pass (3) |
+
+### Review round 1: the amended spec
+
+The user's decisions of 2026-11-06 changed AC5 and the Limits. A non-UTF-8 path is now written in git's C-quoted form with `path_quoted: true`, and a deleted file is logged by its old path. The tests changed to match:
+
+- The loose `kept_ff` check, which accepted five forms, is replaced by exact entries, including AC5's own JSON. A valid UTF-8 path is plain, with no `path_quoted` key. No line holds a `\ud8`-`\udf` escape.
+- New tests: the exact escaping of six hostile non-UTF-8 paths, four deleted-file cases, and eight cases of a secret in a non-UTF-8 path.
+- The unused `timed` fixture and its `Iterator` import are removed (reviewer finding).
+
+Against the developer's fixed working tree, `uv run pytest tests/integration/test_p1_s4_audit_log.py -q` gives 145 passed. As asked, this round didn't re-run the full gate or coverage. The Gate section, the coverage figures and the mutant table below come from the first round.
+
+### Checked against wrong code
+
+The slice tests were run against four mutants, applied by a throwaway pytest plugin outside the repository that monkeypatched the implementation. Each was caught:
+
+| Mutant | Failed |
+|---|---|
+| List 51 entries, not 50 | 3: AC5's 51 and 51, and both size Limits |
+| `audit` writes paths without `redact` | 4: the octal-quoted secret cases (AC6) and the secret in an unwritable path (AC9) |
+| JSON written with `ensure_ascii=False` | 5: the three `\377` cases (AC5), plus U+2028 and `\x85` (AC1) |
+| Every run gets the same `run_id` | 3: both AC3 cases and AC12's three runs |
+
+### How the tests simulate a failing log
+
+AC10 and AC11 need a log that fails partway through a run. On Windows, a file held open can't be made to fail portably. So `fail_record` wraps `AuditLog.record`: from a named `stage.event` on, it raises a genuine `AuditError`, obtained from the public constructor opened on a directory. Each test also asserts that the failing record was attempted. This proves the CLI's handling of a failing `record`, not that `record` turns a real `OSError` into `AuditError`. The developer's unit tests and the 100% branch coverage of `audit.py` cover that.
+
+### For the designer and the main session
+
+1. **Fixed during the slice: an unwritable `--audit-log` echoed a secret held in its path** in the exit-17 line. Repro: `--audit-log <file>/AKIA<16 chars>/a.jsonl`. AC9 asks the line to name the path, and design.md says every path written anywhere passes `redact`. The developer now redacts the path, and `ac9_unwritable_log_with_a_secret_in_its_path_doesnt_echo_it` pins that. If naming the path verbatim was intended, the test and the design disagree, and the designer should settle it.
+2. **Outside this slice and still open: P1-S2's "nothing was reviewed" warning prints a decoded secret path on stderr. Severity `major` for P1-S2 and P1-S3.** A skipped file whose quoted path is octal escapes (`"b/docs/\101\113\111\101….md"`) hides `V` from the raw-text scan. The parser decodes the path, and the warning prints `docs/AKIA….md`. The audit log has `[REDACTED]` there. This contradicts design.md's "every path written anywhere passes `redact`". This slice's tests check only the log, so they don't fail on it. **Repro:** that diff, alone, with `--provider mock`. It exits 0, and stderr holds `V`.
+
+### Readings of this slice's criteria
+
+1. **Non-UTF-8 paths** (AC5) were first read loosely, accepting `\udcff`, `\377` or `\xff`. The user's decision of 2026-11-06 fixed a single form, so the tests now compare whole entries against design.md's C-quoting, and a `\udcff` escape fails them.
+2. **"Totals of 51 and 51"** is checked as at least two values of `51` reachable through `data`'s mappings, outside its lists.
+3. **AC8's "as without the log"** is pinned by golden files captured from `main`'s code (`707afb8`) before this slice changed `src/`.
+4. **AC9's "missing parent that can't be created"** is a parent or grandparent that is a regular file. A read-only directory isn't used, because Windows doesn't honour that for directories.
+5. **The secret in an unwritable path** (AC9) and **the secret in a provider message** (AC7) go beyond the criteria. They rest on design.md's rule that every path passes `redact`, and on the Limits' "exception text … never written".
+
+### Limits
+
+1. **A real disk failure partway through a run** isn't produced. See "How the tests simulate a failing log".
+2. **Claude runs aren't run with the log.** Every case uses the mock or a raising provider. For `agent.called`, only the record's presence is checked, not its tokens or duration.
+3. **"No rescan of the diff per record"** (Limits, cost) is shown only by the time bounds, which have wide headroom. Linear growth isn't measured.
+4. **Concurrent runs appending to one file** aren't tested. The spec promises nothing for them.
+5. **Run on Windows only** by the tester. CI on Linux hasn't been checked, and the `\377` and hostile-path cases may behave differently there.

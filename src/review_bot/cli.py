@@ -5,12 +5,15 @@ import asyncio
 import logging
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, NoReturn, override
 
+from review_bot.audit import AuditLog, Stage
 from review_bot.console import write_diagnostic, write_output
 from review_bot.diff_parser import FileDiff
 from review_bot.errors import (
+    AuditError,
     ConfigError,
     DiffEmptyError,
     DiffNotFoundError,
@@ -28,7 +31,7 @@ from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import at_or_above, render_findings
-from review_bot.review import ReviewResult, review_diff
+from review_bot.review import PipelineResult, run_pipeline
 from review_bot.settings import Settings, load_settings
 
 __all__ = ["build_provider", "main", "parse_args"]
@@ -54,6 +57,7 @@ _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
 }
 
 _INTERNAL_ERROR_EXIT_CODE: Final = 14
+_AUDIT_ERROR_EXIT_CODE: Final = 17
 
 _INTERNAL_ERROR_MESSAGE: Final = (
     "The review did not complete, so there is no result. Check the Claude Code login and "
@@ -71,6 +75,11 @@ _MAX_NAMED_SKIPPED_FILES: Final = 10
 
 class _ReviewAbortedError(ReviewBotError):
     """The review raised a ``BaseException`` such as ``SystemExit``, so it has no result."""
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__()
+        # Its class name only, which the audit log records: its text can hold CLI output.
+        self.cause_name = type(cause).__name__
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -109,6 +118,10 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
     parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
     parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
     parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
+    parser.add_argument(
+        "--audit-log",
+        help="the JSONL file each run appends its records to (default: .review-bot/audit.jsonl)",
+    )
     args = vars(parser.parse_args(argv))
     return Path(args.pop("diff_path")), load_settings(args)
 
@@ -139,40 +152,76 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
     # stderr, and those can hold raw CLI output.
     logging.getLogger().addHandler(logging.NullHandler())
     try:
-        return _run(sys.argv[1:] if argv is None else argv, provider)
-    except InputError as exc:
+        # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
+        diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
+        # Opened before the diff is read, so an untraceable run never reaches a provider.
+        audit = AuditLog(settings.audit_log, clock=_utc_now)
+    except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
+        return _report_failure(exc)
+    try:
+        return _review(diff_path, settings, provider, audit)
+    except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
+        exit_code = _report_failure(exc)
+        _record_failed_end(audit, exit_code, exc)
+        return exit_code
+
+
+def _report_failure(exc: Exception) -> int:
+    """Write the one error line for ``exc`` and return its exit code."""
+    if isinstance(exc, InputError):
         _write_error(str(exc))
         return _INPUT_ERROR_EXIT_CODES.get(type(exc), _INTERNAL_ERROR_EXIT_CODE)
-    except ProviderError as exc:
+    if isinstance(exc, ProviderError):
         _write_error(f"{exc.category}: {exc}")
         return _PROVIDER_ERROR_EXIT_CODES.get(exc.category, _INTERNAL_ERROR_EXIT_CODE)
+    if isinstance(exc, AuditError):
+        _write_error(str(exc))
+        return _AUDIT_ERROR_EXIT_CODE
     # An escaped exception would exit 1, "findings found". The exception's text can hold untrusted
     # CLI output, so it is never shown.
-    except Exception:  # noqa: BLE001 - see above
-        _write_error(_INTERNAL_ERROR_MESSAGE)
-        return _INTERNAL_ERROR_EXIT_CODE
+    _write_error(_INTERNAL_ERROR_MESSAGE)
+    return _INTERNAL_ERROR_EXIT_CODE
 
 
-def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
-    diff_path, settings = parse_args(argv)
+def _record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
+    """Record the failed run's end. If that fails too, the run's own exit code stands."""
+    # A category or class name only: an exception's text can hold diff or CLI output.
+    if isinstance(exc, ProviderError):
+        error: str = exc.category
+    elif isinstance(exc, _ReviewAbortedError):
+        error = exc.cause_name
+    else:
+        error = type(exc).__name__
+    try:
+        audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": error})
+    except AuditError as audit_exc:
+        # Already reported when the log itself is what failed.
+        if not isinstance(exc, AuditError):
+            write_diagnostic(f"review-bot: warning: {audit_exc}")
+
+
+def _review(
+    diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
+) -> int:
     selected_provider = build_provider(settings) if provider is None else provider
     is_own_claude = provider is None and settings.provider == "claude"
-    review = _review_then_discard_unraisable if is_own_claude else review_diff
+    pipeline = _run_pipeline_then_discard_unraisable if is_own_claude else run_pipeline
     try:
-        result = asyncio.run(review(diff_path, settings, selected_provider))
+        result = asyncio.run(pipeline(diff_path, settings, selected_provider, audit))
     except Exception:
         raise
     except BaseException as exc:
         # Left alone, this skips ``main``'s handlers and can set the exit code itself, so
         # ``SystemExit(0)`` would read as a clean review. Only the review is wrapped because
         # ``--help`` exits through ``SystemExit`` too.
-        raise _ReviewAbortedError from exc
+        raise _ReviewAbortedError(exc) from exc
 
     # A malformed response fails here, before anything is written. Stdout then goes first, so a
     # failure writing it leaves only the error line on stderr.
     findings = at_or_above(result.findings, settings.threshold)
     output = render_findings(findings, settings.threshold)
-    summary = _summarise(result, settings)
+    summary = _summarise(result, settings, audit.run_id)
+    exit_code = 1 if findings else 0
 
     write_output(output)
     if not result.model_called:
@@ -180,13 +229,19 @@ def _run(argv: Sequence[str], provider: LLMProvider | None) -> int:
     elif settings.provider == "mock":
         write_diagnostic(_CANNED_WARNING)
     write_diagnostic(summary)
-    return 1 if findings else 0
+    # After stdout, so a failure here exits 17 with the report already delivered.
+    audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": None})
+    return exit_code
 
 
-async def _review_then_discard_unraisable(
-    diff_path: Path, settings: Settings, provider: LLMProvider
-) -> ReviewResult:
-    """Run ``review_diff``, then discard ``sys.unraisablehook`` reports until the process exits.
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _run_pipeline_then_discard_unraisable(
+    diff_path: Path, settings: Settings, provider: LLMProvider, audit: AuditLog
+) -> PipelineResult:
+    """Run ``run_pipeline``, then discard ``sys.unraisablehook`` reports until the process exits.
 
     The SDK's ``close()`` waits for the Claude CLI to exit, not for its pipes to close, so a
     helper that holds them open leaves a transport that raises from ``__del__`` once
@@ -195,7 +250,7 @@ async def _review_then_discard_unraisable(
     during the review still show, and it is never restored because the process is about to exit.
     """
     try:
-        return await review_diff(diff_path, settings, provider)
+        return await run_pipeline(diff_path, settings, provider, audit)
     finally:
         sys.unraisablehook = _discard_unraisable
 
@@ -211,13 +266,13 @@ def _nothing_reviewed_warning(skipped_files: Sequence[FileDiff]) -> str:
     return f"{_NOTHING_REVIEWED_WARNING}{named} ({len(paths)} in total)"
 
 
-def _summarise(result: ReviewResult, settings: Settings) -> str:
+def _summarise(result: PipelineResult, settings: Settings, run_id: str) -> str:
     # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility).
     return (
         f"provider={settings.provider} model={settings.model} prompt={PROMPT_VERSION} "
         f"input_tokens={result.usage.input_tokens} output_tokens={result.usage.output_tokens} "
         f"skipped_files={len(result.skipped_files)} "
-        f"model_called={str(result.model_called).lower()}"
+        f"model_called={str(result.model_called).lower()} run_id={run_id}"
     )
 
 

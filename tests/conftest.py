@@ -19,6 +19,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 
 CLAUDE_EXECUTABLES = ("claude", "claude.exe", "claude.cmd", "claude.bat", "claude.ps1")
 CREDENTIAL_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+AUDIT_LOG_VARIABLE = "REVIEW_BOT_AUDIT_LOG"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 _real_query_calls: list[dict[str, Any]] = []
@@ -42,7 +43,7 @@ def path_without_claude() -> Callable[[str], str]:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def offline_environment() -> Iterator[None]:
+def offline_environment(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """Apply to the whole run, including the child processes tests start."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("PATH", _path_without_claude(os.environ.get("PATH", "")))
@@ -51,6 +52,10 @@ def offline_environment() -> Iterator[None]:
         # A developer's own settings must not change what a criterion observes.
         for name in [name for name in os.environ if name.startswith("REVIEW_BOT_")]:
             patch.delenv(name)
+        # Every run appends an audit record (P1-S4); by default that lands in the working
+        # directory, which here is the repository. A test of the default unsets this itself.
+        audit_log = tmp_path_factory.mktemp("audit") / "audit.jsonl"
+        patch.setenv(AUDIT_LOG_VARIABLE, str(audit_log))
         yield
 
 

@@ -27,8 +27,8 @@ A developer's review spends no tokens on files nobody wants reviewed, survives m
 `parse_diff` raises `DiffNotParsableError` (15). Summary: [compatibility](../design.md#compatibility).
 
 - `ParsedDiff`: `files`, `reviewable_text` (the input minus skipped file sections, otherwise byte for byte).
-- `FileDiff`: `path` (new path, one `a/` or `b/` stripped; `None` if deleted), `hunks`, `skip_reason` (`SkipReason`: `docs`, `lock`, `generated`, `binary`; or `None`).
-- `Hunk`: `header`, `lines`, `has_count_mismatch` (declared counts differ from the body, or are unreadable).
+- `FileDiff`: `path` (new path, one `a/` or `b/` stripped; `None` if deleted), `old_path` (old path from `--- a/`, stripped the same way; `None` if new), `hunks`, `skip_reason` (`SkipReason`: `docs`, `lock`, `generated`, `binary`; or `None`). A path's bytes that aren't valid UTF-8 are kept, not dropped or replaced by U+FFFD, so the [audit log](../design.md#audit-log) can C-quote them.
+- `Hunk`: `header`, `lines`, `has_count_mismatch` (declared counts differ from the body, or are unreadable), `new_start` (the declared new start, or `None` when the header is unreadable).
 - `DiffLine`: `kind` (`LineKind`: `added`, `context`, `removed`), `text` (no marker or line ending), `new_line`.
 
 | Skip | Paths |
