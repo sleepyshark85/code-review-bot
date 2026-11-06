@@ -1,6 +1,6 @@
 # P1-S9: See one finding when a rule and the model report the same problem
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S8
 - **Touches:** `findings`, `prompt`, `verify`, `review`, `audit`
 
@@ -32,4 +32,5 @@ Over `Assignment/sample_diff.txt`, whose rule hits are line 35 (`medium`) and li
 ## Notes
 - **Handover:** P0-S1 AC3's `prompt=p0-v1` becomes `p1-v1`. P0-S1 AC15's schema check now requires `rule` in the prompt. P0-S3 AC2's "an extra field" must not use the name `rule`. P0-S3's `many_findings` test (`tests/integration/test_p0_s3_stream_failures.py`) already gives its 5,000 findings distinct rationales, since P1-S7, so AI-vs-AI dedup keeps them all (changed before build, main session, 2026-11-06).
 - **Ordinals across sources (changed before build, main session, 2026-11-06):** an AI finding's ordinal continues from the rule findings' counts, over all kept findings in `kept` order ([design.md](../design.md#fingerprints-and-dedup)), for example through one `Fingerprinter` seeded with the rule findings. Otherwise, at AC5, the rule finding and a model finding tagged `swallowed-exception` on line 35 would both be `(billing/invoice.py, swallowed-exception, "except Exception:", 0)`, so two reported findings would share one fingerprint.
+- **Implementation choices (developer):** `verify` seeds its `Fingerprinter` with the rule findings' fingerprints (`taken`), skipping any ordinal that would repeat one, so it needs no anchor text from `rules`. `Severity.rank` moves the severity order into `findings`, shared by `verify` and `policy`. A rule finding's `Finding.rule` stays None: `ReviewedFinding.rule` names its rule.
 - **README (main session):** line 110 says fingerprints dedupe rule and AI findings; dedup actually compares file, rule, proximity and severity.

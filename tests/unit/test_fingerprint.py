@@ -78,3 +78,27 @@ def test_fingerprinter_numbers_findings_sharing_every_other_part_in_order() -> N
         fingerprint_for(file="app.py", rule="r", anchor_text="raise", ordinal=0),
         fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=1),
     ]
+
+
+def test_fingerprinter_skips_taken_fingerprints_and_counts_on_from_them() -> None:
+    taken = [
+        fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=0),
+        fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=1),
+    ]
+    fingerprinter = Fingerprinter(taken=taken)
+
+    first = fingerprinter.fingerprint(file="app.py", rule="r", anchor_text="pass")
+    second = fingerprinter.fingerprint(file="app.py", rule="r", anchor_text="pass")
+
+    assert [first, second] == [
+        fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=2),
+        fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=3),
+    ]
+
+
+def test_fingerprinter_ignores_taken_fingerprints_of_other_parts() -> None:
+    taken = [fingerprint_for(file="app.py", rule="r", anchor_text="raise", ordinal=0)]
+
+    first = Fingerprinter(taken=taken).fingerprint(file="app.py", rule="r", anchor_text="pass")
+
+    assert first == fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=0)

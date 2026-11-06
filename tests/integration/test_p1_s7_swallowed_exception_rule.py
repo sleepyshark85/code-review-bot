@@ -891,7 +891,8 @@ def test_p1_s7_ac12_limits_one_part_differing_keeps_both(review, sample_without_
     assert summary(run.stderr)["deduped"] == "0"
 
 
-# AC13: the model can't claim `source`, `fingerprint` or `rule`.
+# AC13: the model can't claim `source` or `fingerprint`. Its `rule` case was replaced by P1-S9
+# AC7: a known rule ID is now the model's tag (`test_p1_s9_dedupe.py`).
 
 MODEL_FINDING = {
     "file": "src/app.py",
@@ -904,7 +905,6 @@ MODEL_FINDING = {
 CLAIMS = {
     "source": "rule",
     "fingerprint": "0123456789abcdef",
-    "rule": RULE_ID,
 }
 
 

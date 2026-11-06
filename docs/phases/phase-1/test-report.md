@@ -960,3 +960,56 @@ The 43,000-finding run takes 23 s on this Windows machine, and growth is linear:
 ### Coverage
 
 100% overall before round 1, so the slice's modules (`rules`, `fingerprint`, `findings`) are fully covered. Nothing in the criteria was left untested.
+
+## P1-S9: See one finding when a rule and the model report the same problem
+
+Spec: [p1-s9-dedupe.md](slices/p1-s9-dedupe.md). Tests: [`tests/integration/test_p1_s9_dedupe.py`](../../../tests/integration/test_p1_s9_dedupe.py), 72 cases. Runs go through `main` with an injected `MockProvider(findings=...)` or `MockProvider(raw_output=...)`. `verify_findings` and `build_request` are called directly where a criterion is about a finding's identity or the prompt. No fixture files: every diff other than the sample is built in the test.
+
+**Status: every criterion passes, 72 of 72, on the developer's uncommitted working tree.** The tests were written from the spec and design.md, not the code. The developer's code was already in the shared working tree at my first run, so the "before" run used `main` (0ddad14) in a scratch worktree: 52 failed and 20 passed. The 20 are cases `main` already met: unknown or malformed `rule` values exit 13 (any extra field did), an absent `rule`, untagged fingerprints, and the encoding self-checks. On the developer's code, 3 failed, all my own mistakes, now fixed:
+1. AC9's "says when to omit it" split the prompt into sentences, and "Omit it, or use null" doesn't repeat the word `rule`. It now checks the line that labels `rule:`.
+2. AC11's fixed diff held `open(path)`, a rule hit, so its review exited 1. The diff now has none.
+3. AC11's digest was a placeholder until the prompt existed. It's now recorded.
+
+**Full gate, before review round 1, and again after it (developer's run: 2491 passed, 12 skipped, 100%)** (run by the coordinator on the working tree): ruff format and check clean, mypy strict clean, pytest --cov 2491 passed, 12 skipped, 0 failed, 100% coverage, pre-commit clean; the suite took about 376 s. After round 1's test change, only this file was re-run (72 of 72); the full suite waits for the go-ahead.
+
+### Fingerprints, computed independently
+
+`expected_fingerprint` writes out design.md's Encoding: the anchored line with whitespace runs collapsed and ends stripped, UTF-8 with `surrogatepass`, SHA-256; then `json.dumps(["v1", file, rule part, anchor hash, ordinal])` with its defaults, encoded as ASCII, SHA-256, first 16 hex digits. It reproduces all 7 rows of P1-S7's golden file and the rule findings' fingerprints in `static.rules`. Every expected AI fingerprint below comes from it, with the ordinal continuing from the rule findings (spec Notes), not from `fingerprint_for`.
+
+### Criteria
+
+| AC | Tests (`test_p1_s9_…`) | Result |
+|---|---|---|
+| Encoding | `expected_fingerprint_matches_the_p1_s7_golden_file`; `rule_findings_log_the_designs_fingerprints` | pass (2) |
+| AC1 | `ac1_same_rule_line_and_severity_prints_only_the_rule`: stdout is exactly both rule lines, `deduped=1`, `dropped=0`, `rule_findings=2`; one `verify.checked` record with `outcome` `duplicate`, `duplicate_of` the rule's fingerprint, `reason` null. `ac1_verify_findings_names_the_rule_findings_fingerprint`: no AI finding kept, the rule's fingerprint in `deduped`. Design rules and Limits: another category still dedupes; `b/billing/invoice.py` dedupes as the diff path; `open-without-encoding` at 39, `low`, dedupes into that rule; two tagged findings, and two identical tagged findings, give `deduped=2` | pass (7) |
+| AC2 | `ac2_nearby_line_at_low_severity_prints_only_the_rule` ×2 (32, 36). Limits ×3: 34, 37 (the blank context line), 38 (3 below) | pass (5) |
+| AC3 | `ac3_far_or_other_hunk_line_prints_both` ×3 (31, 30, 14): rule lines then the AI line, `deduped=0`, `outcome` `kept`. Limits: in a two-hunk file, a tagged line 3 away in the previous hunk prints both, while line 2 away in the same hunk is deduped (control); the same line in another file prints both | pass (6) |
+| AC4 | `ac4_unvalidated_path_on_line_39_prints_beside_the_rule` ×2 (no `rule`, `swallowed-exception`): both rule lines, then the AI line | pass (2) |
+| AC5 | `ac5_more_serious_tagged_finding_prints_beside_the_rule` ×2 (high, critical), `deduped=0`. `ac5_threshold_high_prints_only_the_ai_line` ×2. Limits: `medium` tagged `open-without-encoding` on the `low` line 39 prints both. Spec Notes: the AI finding on 35 takes ordinal 1, from `verify_findings` and in its `verify.checked` record; two serious ones take 1 and 2; a deduped one before it takes no ordinal; with two identical handlers (ordinals 0 and 1), a tagged finding takes 2; in a mix of 18 tagged and untagged findings on 35, 36 and 39, plus 2 identical ones, every kept fingerprint is distinct | pass (11) |
+| AC6 | `ac6_invalid_line_near_the_rule_is_dropped_not_deduped`: line 42, 3 from 39, same rule: `dropped=1`, `deduped=0`, `reason` `line_not_in_diff`, `duplicate_of` null. Limits: `billing/invoices.py` on line 35 is `unknown_file`, not deduped | pass (2) |
+| AC7 | `ac7_unknown_rule_exits_13_with_empty_stdout` ×2 (`made-up`, `secret`). Limits ×8: `""`, `Swallowed-Exception`, `swallowed_exception`, a leading space, `ai:logic`, `1`, a list, an object. `made-up` on the sample, which has rule hits, still prints nothing. One bad `rule` among valid findings exits 13. `ac7_null_or_absent_rule_is_a_normal_ai_finding` ×2: `FINDING_LINE`, fingerprint `ai:logic`. `ac7_known_rule_id_is_accepted` ×2, replacing P1-S7 AC13's `rule` case | pass (16) |
+| AC8 | `ac8_tagged_finding_with_no_rule_finding_uses_the_rule_id` ×2, from the `verify.checked` record. `ac8_untagged_finding_uses_ai_and_its_category` (`ai:security`). Through `verify_findings`: tagged on line 14 uses the rule ID with ordinal 0; untagged `high` on 35 uses `ai:reliability` with ordinal 0. Limits: a tagged and an untagged twin both print; identical tagged twins print once, the duplicate naming the kept one's fingerprint | pass (7) |
+| AC9 | `ac9_system_prompt_labels_rule`; `ac9_system_prompt_names_each_rule_id` ×2; `ac9_system_prompt_says_when_to_omit_rule` (in the `rule:` line); `ac9_…_line_is_an_added_or_context_line_in_a_hunk` (one sentence with "added", "context", "hunk" and "must", "only" or "discard"; round 1 added the obligation word, since the line-counting sentence alone had satisfied it, and the test was checked to fail with the requirement sentence removed) and `ac9_…_hunk_header_counts_may_be_wrong` (one sentence). Out of scope: the system prompt is the same with and without rule hits, and no rule line reaches the user prompt | pass (7) |
+| AC10 | `ac10_summary_and_run_start_carry_p1_v1` (sample, exit 1); `ac10_no_findings_run_carries_p1_v1` (exit 0) | pass (2) |
+| AC11 | `ac11_prompt_digest_is_pinned_to_its_version`: SHA-256 of `json.dumps([system_prompt, user_prompt])` for a fixed diff, keyed by `PROMPT_VERSION`, with the comment to bump the version and re-record evals. `ac11_pinned_request_is_what_the_provider_receives`: the request through `main` has the same digest. `ac11_one_character_of_prompt_or_framing_changes_the_digest` | pass (3) |
+| Limits | Through `main`: 2,000 handlers, with 2,000 `low` tagged duplicates and 2,000 `high` tagged findings, give `deduped=2000` and 4,000 lines in 7.7 s here. Through `verify_findings`: the 2,000 `high` ones give 4,000 distinct fingerprints, the last with ordinal 3,999. Bounded at 60 s | pass (2) |
+
+### Handover edits
+
+1. **P0-S1 AC3** (`test_p0_s1_cli.py`): `SUMMARY` has `prompt=p1-v1`, and the docstring names P1-S9 AC10.
+2. **P1-S4 goldens** (`tests/fixtures/p1_s4/{all_skipped,findings,no_findings}.stderr.golden.txt`): `prompt=p1-v1`.
+3. **P0-S1 AC15** (`test_p0_s1_prompt.py`): `FINDING_FIELDS` gains `rule`, so the prompt must label it, and the schema guard matches `Finding`'s fields.
+4. **P0-S3 AC2** (`test_p0_s3_exit_codes.py`): the extra field was already named `extra`. A comment now says why it mustn't be `rule`.
+5. **P1-S7 AC13**: the `rule` claim case is removed, since AC7 replaces it, and the section comment says so. `source` and `fingerprint` claims still exit 13.
+
+The six touched files pass together: 477 cases. None of the handover failures was a code bug.
+
+### Readings for the designer
+
+1. **AC9 is tested on wording.** The checks look for `rule:`, both IDs, an "omit" or "null" phrase in the `rule:` line, a sentence with "added", "context" and "hunk", and one with "header", "count" and a word such as "wrong". A rewording that keeps the meaning could fail them. AC11 catches any change anyway.
+2. **AC11 doesn't say how the two texts are joined.** The test hashes them as a JSON array, so text moved from one to the other changes the digest. The digest was recorded from the developer's working tree, so if the prompt changes again before merge, re-record it: `p1-v1` hasn't shipped.
+3. **AC2 and AC3 leave the blank line 37 implicit.** P1-S6 counts it as a context line, so a tagged finding on it is 2 from 35 and is deduped. That case is pinned.
+
+### Coverage
+
+100% overall in the coordinator's gate before review round 1, so the slice's modules (`findings`, `fingerprint`, `policy`, `prompt`, `verify`) were fully covered. The developer's full gate after review round 1 gave 2491 passed, 12 skipped, 100% coverage again. Nothing in the criteria was left untested.

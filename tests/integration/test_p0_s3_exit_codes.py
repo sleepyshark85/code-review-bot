@@ -30,6 +30,7 @@ AC2_INVALID_OUTPUT = {
     "line_0": findings_json(HIGH_FINDING | {"line": 0}),
     "severity_urgent": findings_json(HIGH_FINDING | {"severity": "urgent"}),
     "confidence_1_5": findings_json(HIGH_FINDING | {"confidence": 1.5}),
+    # Not named `rule`: since P1-S9, that is the model's optional tag, not an extra field.
     "extra_field": findings_json(HIGH_FINDING | {"extra": "field"}),
     "valid_plus_invalid": findings_json(HIGH_FINDING, HIGH_FINDING | {"line": 0}),
     "invalid_plus_valid": findings_json(HIGH_FINDING | {"line": 0}, HIGH_FINDING),

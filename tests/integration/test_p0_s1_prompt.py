@@ -9,7 +9,8 @@ from review_bot.findings import Category, Finding, Severity
 
 pytestmark = pytest.mark.integration
 
-FINDING_FIELDS = ("file", "line", "severity", "category", "rationale", "confidence")
+# P1-S9 added the model's optional `rule` tag to the schema, so the prompt labels it too.
+FINDING_FIELDS = ("file", "line", "severity", "category", "rationale", "confidence", "rule")
 SEVERITY_VALUES = ("low", "medium", "high", "critical")
 CATEGORY_VALUES = ("logic", "security", "reliability", "maintainability", "testing")
 

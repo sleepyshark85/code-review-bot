@@ -40,6 +40,7 @@ def test_run_rules_on_the_sample_diff_finds_the_swallowed_exception_at_line_35()
         "category": Category.RELIABILITY,
         "rationale": RATIONALE,
         "confidence": 1.0,
+        "rule": None,
     }
     assert (reviewed.source, reviewed.rule) == (Source.RULE, RuleId.SWALLOWED_EXCEPTION)
     assert reviewed.fingerprint == fingerprint_for(
@@ -230,6 +231,7 @@ def test_run_rules_on_the_sample_diff_finds_the_open_call_at_line_39() -> None:
         "category": Category.RELIABILITY,
         "rationale": OPEN_RATIONALE,
         "confidence": 1.0,
+        "rule": None,
     }
     assert (reviewed.source, reviewed.rule) == (Source.RULE, RuleId.OPEN_WITHOUT_ENCODING)
     assert reviewed.fingerprint == fingerprint_for(

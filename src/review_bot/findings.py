@@ -33,6 +33,11 @@ class Severity(StrEnum):
     HIGH = auto()
     CRITICAL = auto()
 
+    @property
+    def rank(self) -> int:
+        """Its place in the ascending order, from 0 for ``low``, for comparing severities."""
+        return list(Severity).index(self)
+
 
 class Category(StrEnum):
     """What kind of problem a finding describes."""
@@ -44,8 +49,18 @@ class Category(StrEnum):
     TESTING = auto()
 
 
+class RuleId(StrEnum):
+    """A check that runs with no model."""
+
+    SWALLOWED_EXCEPTION = "swallowed-exception"
+    OPEN_WITHOUT_ENCODING = "open-without-encoding"
+
+
 class Finding(BaseModel):
-    """One problem reported against one line of a diff."""
+    """One problem reported against one line of a diff.
+
+    ``rule`` is the model's tag, naming the rule that would catch the same problem, or None.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -55,6 +70,7 @@ class Finding(BaseModel):
     category: Category
     rationale: str = Field(pattern=r"\S")
     confidence: float = Field(ge=0.0, le=1.0)
+    rule: RuleId | None = None
 
 
 class Source(StrEnum):
@@ -64,19 +80,12 @@ class Source(StrEnum):
     AI = auto()
 
 
-class RuleId(StrEnum):
-    """A check that runs with no model."""
-
-    SWALLOWED_EXCEPTION = "swallowed-exception"
-    OPEN_WITHOUT_ENCODING = "open-without-encoding"
-
-
 @dataclass(frozen=True, slots=True)
 class ReviewedFinding:
     """A finding the pipeline kept, with fields set by code, so the model can't forge them.
 
-    ``rule`` is the rule that found it, or None for a model finding. ``fingerprint`` is its
-    stable identity (``fingerprint.fingerprint_for``).
+    ``rule`` is the rule that found it, or a model finding's tag (``Finding.rule``).
+    ``fingerprint`` is its stable identity (``fingerprint.fingerprint_for``).
     """
 
     finding: Finding

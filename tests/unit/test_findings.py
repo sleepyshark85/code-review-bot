@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from review_bot.errors import ErrorCategory, ProviderError
-from review_bot.findings import Category, Finding, Severity, parse_findings
+from review_bot.findings import Category, Finding, RuleId, Severity, parse_findings
 
 
 def valid_fields(**overrides: object) -> dict[str, object]:
@@ -108,8 +108,7 @@ def test_parse_findings_with_invalid_output_rejects_it_whole(raw: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "value"),
-    [("source", "rule"), ("fingerprint", "0123456789abcdef"), ("rule", "swallowed-exception")],
+    ("name", "value"), [("source", "rule"), ("fingerprint", "0123456789abcdef")]
 )
 def test_parse_findings_rejects_a_field_only_code_may_set(name: str, value: str) -> None:
     raw = json.dumps({"findings": [valid_fields(**{name: value})]})
@@ -118,3 +117,29 @@ def test_parse_findings_rejects_a_field_only_code_may_set(name: str, value: str)
         parse_findings(raw)
 
     assert caught.value.category is ErrorCategory.INVALID_OUTPUT
+
+
+@pytest.mark.parametrize("rule", list(RuleId))
+def test_parse_findings_accepts_a_rule_id_as_the_models_tag(rule: RuleId) -> None:
+    [finding] = parse_findings(json.dumps({"findings": [valid_fields(rule=rule.value)]}))
+
+    assert finding.rule is rule
+
+
+@pytest.mark.parametrize("raw_rule", [{"rule": None}, {}], ids=["null", "absent"])
+def test_parse_findings_reads_a_null_or_absent_rule_as_untagged(raw_rule: dict[str, None]) -> None:
+    [finding] = parse_findings(json.dumps({"findings": [valid_fields(**raw_rule)]}))
+
+    assert finding.rule is None
+
+
+@pytest.mark.parametrize("rule", ["made-up", "secret", "SWALLOWED-EXCEPTION", ""])
+def test_parse_findings_rejects_a_rule_that_is_not_a_rule_id(rule: str) -> None:
+    with pytest.raises(ProviderError) as caught:
+        parse_findings(json.dumps({"findings": [valid_fields(rule=rule)]}))
+
+    assert caught.value.category is ErrorCategory.INVALID_OUTPUT
+
+
+def test_severity_rank_follows_the_ascending_order() -> None:
+    assert [severity.rank for severity in Severity] == [0, 1, 2, 3]
