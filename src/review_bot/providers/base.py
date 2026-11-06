@@ -27,10 +27,15 @@ class TokenUsage:
 
 @dataclass(frozen=True, slots=True)
 class ReviewResponse:
-    """A provider's validated answer."""
+    """A provider's validated answer.
+
+    ``warnings`` are whole stderr lines for the orchestrator to show and record, since providers
+    write to no stream themselves (ADR 0004).
+    """
 
     findings: tuple[Finding, ...]
     usage: TokenUsage
+    warnings: tuple[str, ...] = ()
 
 
 class LLMProvider(Protocol):

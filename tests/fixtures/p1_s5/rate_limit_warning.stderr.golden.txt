@@ -1,0 +1,1 @@
+review-bot: warning: Claude signalled rate_limit during the call, but a valid result followed, so that result stands.

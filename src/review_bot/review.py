@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import os
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -10,7 +11,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Final
 
-from review_bot.audit import AuditLog, JsonValue, Stage, file_fields
+from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diagnostics
+from review_bot.console import write_diagnostic
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import DecodedPath, FileDiff, ParsedDiff, parse_diff
 from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetectedError
@@ -40,13 +42,15 @@ class _AgentSkipReason(StrEnum):
 class PipelineResult:
     """A review's findings, and what it skipped.
 
-    ``model_called`` is False when every file was skipped; the findings are then empty.
+    ``model_called`` is False when every file was skipped; the findings and warnings are then
+    empty. ``warnings`` are the provider's, already written to stderr and the audit log.
     """
 
     findings: tuple[Finding, ...]
     usage: TokenUsage
     skipped_files: tuple[FileDiff, ...]
     model_called: bool
+    warnings: tuple[str, ...] = ()
 
 
 async def run_pipeline(
@@ -54,7 +58,8 @@ async def run_pipeline(
 ) -> PipelineResult:
     """Review the diff at ``diff_path`` with ``provider``, sending only the files not skipped.
 
-    Each stage's decision goes to ``audit``; the run's end is the caller's to record.
+    Each stage's decision goes to ``audit``; the run's end is the caller's to record. The
+    provider's warnings go to stderr too, before the caller writes the review.
 
     Raises:
         InputError: If the diff can't be reviewed, or holds a possible secret; the provider is
@@ -87,7 +92,8 @@ async def run_pipeline(
             build_request(parsed.reviewable_text, model=settings.model)
         )
     except ProviderError as exc:
-        audit.record(Stage.AGENT, "failed", {"category": exc.category})
+        diagnostics = _scrubbed(exc.diagnostics, diff)
+        audit.record(Stage.AGENT, "failed", {"category": exc.category, "diagnostics": diagnostics})
         raise
     audit.record(
         Stage.AGENT,
@@ -98,7 +104,12 @@ async def run_pipeline(
             "duration_s": round(time.perf_counter() - started, 3),
         },
     )
-    return PipelineResult(response.findings, response.usage, skipped, model_called=True)
+    for warning in response.warnings:
+        write_diagnostic(warning)
+        audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
+    return PipelineResult(
+        response.findings, response.usage, skipped, model_called=True, warnings=response.warnings
+    )
 
 
 def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
@@ -113,6 +124,11 @@ def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
         "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
         "diff_bytes": len(diff_bytes),
     }
+
+
+def _scrubbed(lines: Sequence[str], diff: str) -> list[str]:
+    """``lines`` as the audit log may hold them: provider text is untrusted (ADR 0004)."""
+    return list(scrub_diagnostics(lines, diff_text=diff, environ=os.environ))
 
 
 def _stop_on_secrets(hits: Sequence[SecretHit], audit: AuditLog) -> None:

@@ -1,9 +1,10 @@
 """The Claude provider: the only module that imports the Claude Agent SDK (ADR 0001)."""
 
 import asyncio
+import dataclasses
+from collections import deque
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import aclosing
-from dataclasses import dataclass
 from typing import Final, cast
 
 from claude_agent_sdk import (
@@ -18,7 +19,6 @@ from claude_agent_sdk import (
     query,
 )
 
-from review_bot.console import write_diagnostic
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import parse_findings
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
@@ -34,6 +34,9 @@ _INPUT_TOKEN_FIELDS: Final = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+
+# Bounds the memory a chatty CLI can use; ``audit`` keeps far fewer once it has scrubbed them.
+_MAX_HELD_STDERR_LINES: Final = 1000
 
 _ASSISTANT_ERROR_CATEGORIES: Final[Mapping[str, ErrorCategory]] = {
     "authentication_failed": ErrorCategory.AUTH,
@@ -84,7 +87,7 @@ _NO_RESULT_MESSAGE: Final = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class _Signal:
     """A sign that the call failed, which only a later successful result can override."""
 
@@ -112,9 +115,12 @@ class ClaudeAgentProvider:
         Without one, the earliest signal decides, then whatever ended the stream.
 
         Raises:
-            ProviderError: For every failure of a known kind.
+            ProviderError: For every failure of a known kind, with the tail of the CLI's stderr
+                as its diagnostics.
         """
-        stream = self._sdk_call(request.user_prompt, _build_options(request, self._settings))
+        cli_stderr: deque[str] = deque(maxlen=_MAX_HELD_STDERR_LINES)
+        options = _build_options(request, self._settings, on_stderr=cli_stderr.append)
+        stream = self._sdk_call(request.user_prompt, options)
         response: ReviewResponse | None = None
         signal: _Signal | None = None
         raised: Exception | None = None
@@ -130,10 +136,17 @@ class ClaudeAgentProvider:
         # stream had already given a better answer.
         except Exception as exc:  # noqa: BLE001 - see above
             raised = exc
-        return _settle(response, signal, raised)
+        try:
+            return _settle(response, signal, raised)
+        except ProviderError as exc:
+            # Only on failure: a successful call's CLI text is never kept (P1-S5).
+            exc.diagnostics = tuple(cli_stderr)
+            raise
 
 
-def _build_options(request: ReviewRequest, settings: Settings) -> ClaudeAgentOptions:
+def _build_options(
+    request: ReviewRequest, settings: Settings, *, on_stderr: Callable[[str], None]
+) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         system_prompt=request.system_prompt,
         model=request.model,
@@ -149,12 +162,10 @@ def _build_options(request: ReviewRequest, settings: Settings) -> ClaudeAgentOpt
             "CLAUDE_CODE_MAX_RETRIES": str(settings.max_retries),
             "API_TIMEOUT_MS": str(settings.api_timeout_ms),
         },
-        stderr=_discard_cli_stderr,
+        # Held as diagnostics, never written: it is untrusted, and only our own lines may reach
+        # the user.
+        stderr=on_stderr,
     )
-
-
-def _discard_cli_stderr(_line: str) -> None:
-    """Drop the CLI's stderr: it is untrusted, and only our own lines may reach the user."""
 
 
 def _read_message(message: object) -> ReviewResponse | _Signal | None:
@@ -196,12 +207,13 @@ def _settle(
     response: ReviewResponse | None, signal: _Signal | None, raised: Exception | None
 ) -> ReviewResponse:
     if response is not None:
-        if signal is not None:
-            write_diagnostic(
-                f"review-bot: warning: Claude signalled {signal.name} during the call, but a "
-                "valid result followed, so that result stands."
-            )
-        return response
+        if signal is None:
+            return response
+        warning = (
+            f"review-bot: warning: Claude signalled {signal.name} during the call, but a valid "
+            "result followed, so that result stands."
+        )
+        return dataclasses.replace(response, warnings=(warning,))
     if signal is not None:
         raise signal.error from raised
     if raised is None:
