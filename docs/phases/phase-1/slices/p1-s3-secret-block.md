@@ -17,6 +17,11 @@ Every secret here is assembled at test run time: see Notes. `V` is the assembled
 - **AC6:** Given near misses, then each is reviewed normally and doesn't exit 16: `AKIA` plus 15 characters; `password = "changeme"`; `password = "short"`; `api_key = "your-api-key-goes-here"`; `api_key = os.environ["KEY"]`; `token = get_token()`; `openai.api_key = "sk-REPLACE-ME"` (too short); a SHA-256 hex digest; `def f(token: "AccessTokenProvider")`; `token: "AccessTokenProvider"`; `token: "Optional[AccessToken]"`; `token: "auth.AccessTokenClass"`; `tokenizer_name = "bert-base-uncased-v2"`; `TOKEN_URL = "https://auth.acme.com/oauth"`; `task-queue-worker-for-billing`; `secret = "a sentence with spaces in it"`.
 - **AC7:** Given `redact` applied to text holding `V`, then each `V` becomes `[REDACTED]` and the rest is unchanged. Given a PEM block, the whole block, from `BEGIN` to `END`, or to the end of the text if `END` is missing, or from the start if only `END` is present, becomes one `[REDACTED]`. Given no secret, it returns the input unchanged.
 
+## Limits
+- **Input:** the raw diff text, before parsing, up to the size limit; a larger diff exits 6 unread (AC4). The largest case is one 400 KB line.
+- **Cost:** near-linear, `n log n` at worst, for `scan_secrets` and `redact` on hostile lines: packed candidate keys or credential names, long marker or quote runs, unclosed PEM markers, and vendor keys nested in or overlapping credential values.
+- **Malformed input:** scanned all the same. Non-diff text and unreadable hunks still exit 16 on a hit (AC2, AC4), an unclosed PEM block is redacted to the end (AC7), and CR-only line endings are a known YAML gap (Notes).
+
 ## Interfaces
 `scan_secrets`, `redact`, `SecretHit`: [design.md](../design.md#interfaces). Error line, with no path: `review-bot: error: secret: 2 possible secrets in the diff (aws-access-key at diff line 12; private-key at diff line 40), so it was not sent to the model. Remove them and rotate any that are real, then run again.` With one hit (changed in review, main session, 2026-11-06): `review-bot: error: secret: 1 possible secret in the diff (aws-access-key at diff line 12), so it was not sent to the model. Remove it and rotate it if it is real, then run again.`
 

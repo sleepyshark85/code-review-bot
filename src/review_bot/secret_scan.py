@@ -7,7 +7,7 @@ and runs in linear time, because the text is an untrusted diff of up to the size
 
 import bisect
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, NamedTuple
@@ -141,11 +141,11 @@ def redact(text: str) -> str:
 
 
 def _find_secrets(line: str) -> list[_Span]:
-    vendor_spans = sorted(
+    vendor_spans = [
         _Span(match.start("secret"), match.end("secret"), kind)
         for kind, pattern in _VENDOR_FORMATS.items()
         for match in pattern.finditer(line)
-    )
+    ]
     credential_spans = (
         _Span(match.start("value"), match.end("value"), SecretKind.ASSIGNED_CREDENTIAL)
         for pattern in _ASSIGNMENTS
@@ -153,9 +153,7 @@ def _find_secrets(line: str) -> list[_Span]:
         if _is_credential_value(match["value"])
     )
     # A value that holds a vendor-format secret is already reported under that kind.
-    unreported_credentials = [
-        span for span in credential_spans if not _overlaps_any(span, vendor_spans)
-    ]
+    unreported_credentials = _spans_clear_of(credential_spans, vendor_spans)
     return sorted(vendor_spans + unreported_credentials)
 
 
@@ -167,14 +165,32 @@ def _is_credential_value(value: str) -> bool:
     )
 
 
-def _overlaps_any(span: _Span, sorted_spans: Sequence[_Span]) -> bool:
-    """Say whether ``span`` overlaps any of ``sorted_spans``, which are sorted and disjoint.
+def _spans_clear_of(spans: Iterable[_Span], others: Iterable[_Span]) -> list[_Span]:
+    """Return the ``spans`` that overlap none of ``others``, which may nest or overlap each other.
 
-    Disjoint spans sorted by start are sorted by end too, so only the first one ending after
-    ``span`` starts can overlap it. A binary search finds it, so a line of many hits stays fast.
+    Merged, ``others`` cover disjoint ranges sorted by both start and end, so only the first range
+    ending after a span starts can overlap it. A binary search finds it, so a line of many hits
+    stays fast.
     """
-    index = bisect.bisect_right(sorted_spans, span.start, key=lambda other: other.end)
-    return index < len(sorted_spans) and sorted_spans[index].start < span.end
+    covered = _covered_ranges(others)
+    covered_ends = [end for _, end in covered]
+    clear = []
+    for span in spans:
+        index = bisect.bisect_right(covered_ends, span.start)
+        if index == len(covered) or covered[index][0] >= span.end:
+            clear.append(span)
+    return clear
+
+
+def _covered_ranges(spans: Iterable[_Span]) -> list[tuple[int, int]]:
+    """Return the ranges ``spans`` cover, merged so they are sorted and disjoint."""
+    ranges: list[tuple[int, int]] = []
+    for start, end, _ in sorted(spans):
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return ranges
 
 
 def _redact_line(line: str) -> str:
@@ -182,7 +198,8 @@ def _redact_line(line: str) -> str:
     copied_to = 0
     for span in _find_secrets(line):
         pieces += [line[copied_to : span.start], _REDACTED]
-        # Spans don't overlap today; if one ever did, no part of it would be copied out.
+        # Copy on only from where the furthest span so far ends, so no part of an overlapping
+        # span is kept.
         copied_to = max(copied_to, span.end)
     pieces.append(line[copied_to:])
     return "".join(pieces)
