@@ -1,8 +1,8 @@
 # P1-S19: Stop a secret spelt in a quoted path's escapes from reaching stderr or the model
 
-- **Status:** Approved (main session, under the user's lead authority, 2026-11-06; defaults AC6 and paths-only kept)
+- **Status:** Done
 - **Depends on:** P1-S4
-- **Touches:** `diff_parser`, `review`, `cli`
+- **Touches:** `diff_parser`, `review`, `cli`, `diff_input` (added in review, main session, 2026-11-06)
 
 ## Value
 A secret spelt in git's octal escapes in a file path is caught like a plain one: the run exits 16, the diff never reaches the model, and no stderr line shows a path's secret.
@@ -38,3 +38,4 @@ Error line: [P1-S3](p1-s3-secret-block.md#interfaces). Scan order: [design.md](.
 - **Fixes:** GitHub issue #24. Decision: the user, 2026-11-06, redact and block. Raw-clean-only scanning (AC6) and the out-of-scope hunk escapes were accepted by the main session, 2026-11-06.
 - **Changes to Phase 1 criteria:** none are renumbered or replaced. This extends P1-S3 AC2's locations with decoded paths, and P1-S2 AC9's warning now passes each path through `redact`.
 - **README (main session):** line 22: add that file paths in the headers are also scanned as decoded.
+- **Implementation (developer):** `ParsedDiff.decoded_paths` (`DecodedPath`: `text`, `diff_line`) carries the decoded paths. Each message redacts the path it names, and `cli` redacts every error line as a backstop for argparse's text. `diff_parser` is about 500 lines, past CONVENTIONS §2's 400: splitting out the skip rules is follow-up #27.

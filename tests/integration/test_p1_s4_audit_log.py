@@ -979,83 +979,94 @@ def test_p1_s4_ac6_secret_in_a_clean_diffs_own_path_is_not_written(
     assert value not in log_path.read_text(encoding="ascii")
 
 
-@pytest.mark.parametrize("make", [aws_key, github_token], ids=["aws", "github"])
-def test_p1_s4_ac6_limits_octal_quoted_secret_in_a_skipped_path_is_redacted(
-    bot, logged, write_diff, log_path, make
-):
-    """The raw text holds only octal escapes, so the raw-text scan can't see V; the decoded
-    path holds it, so it must pass `redact` before it's written (Limits, design.md#secrets)."""
-    value = make(seed=7)
-    text = quoted_section(f"docs/{octal(value)}.md") + MINIMAL_DIFF
-    assert value not in text
-
-    run = logged(write_diff(text), provider=bot.mock(findings=[]))
-
-    assert run.exit_code == 0, run.stderr
-    log = log_path.read_text(encoding="ascii")
-    assert value not in log
-    parsed = only(read_records(log_path), "parse.parsed")
-    assert any(REDACTED in str(value) for value in scalars(parsed)), parsed
-
-
-def test_p1_s4_ac6_limits_octal_quoted_secret_in_a_flagged_hunk_path_is_redacted(
-    bot, logged, write_diff, log_path
-):
-    value = aws_key(seed=8)
-    path = f"src/{octal(value)}.py"
-    text = (
-        f'diff --git "a/{path}" "b/{path}"\n--- "a/{path}"\n+++ "b/{path}"\n@@ -1,1 +6,4 @@\n+x\n'
-    )
-
-    run = logged(write_diff(text), provider=bot.mock(findings=[]))
-
-    assert run.exit_code == 0, run.stderr
-    assert value not in log_path.read_text(encoding="ascii")
-    hunks = list_holding(only(read_records(log_path), "parse.parsed"), lambda e: holds(e, 6))
-    assert any(REDACTED in str(item) for item in scalars(hunks)), hunks
-
-
-# A non-UTF-8 path is C-quoted, which writes its ASCII bytes as they are: a secret in it would be
-# readable in the log unless it passes `redact` too. `\377` right before V puts the digit 7 next
-# to it in the quoted form, so a word-boundary pattern applied after quoting would miss it.
-NON_UTF8_SECRET_PATHS = {
-    "byte_after": lambda value: f"docs/{octal(value)}\\377.md",
-    "byte_before": lambda value: f"docs/\\377{octal(value)}.md",
-    "quote_and_backslash_beside": lambda value: f'docs/\\"\\\\{octal(value)}\\377.md',
+# Since P1-S19, a path whose escapes decode to V exits 16 before any parse record (its AC2, AC4,
+# AC7), so these inputs check that the log still holds no V. The `redact` step for a path that
+# reaches `parse.parsed` is covered below with an `END` marker, which `redact` replaces but the
+# scan doesn't flag (P1-S19 AC8).
+OCTAL_SECRET_PATHS = {
+    "skipped": lambda value: quoted_section(f"docs/{octal(value)}.md") + MINIMAL_DIFF,
+    "flagged_hunk": lambda value: (
+        f'diff --git "a/src/{octal(value)}.py" "b/src/{octal(value)}.py"\n'
+        f'--- "a/src/{octal(value)}.py"\n+++ "b/src/{octal(value)}.py"\n@@ -1,1 +6,4 @@\n+x\n'
+    ),
+    # `\377` right before V puts the digit 7 next to it in the quoted form, so a word-boundary
+    # pattern applied after quoting would miss it.
+    "non_utf8_byte_after": lambda value: quoted_section(f"docs/{octal(value)}\\377.md"),
+    "non_utf8_byte_before": lambda value: quoted_section(f"docs/\\377{octal(value)}.md"),
+    "quote_and_backslash_beside": lambda value: quoted_section(
+        f'docs/\\"\\\\{octal(value)}\\377.md'
+    ),
+    "deleted_old_path": lambda value: (
+        f'diff --git "a/docs/{octal(value)}\\377.md" "b/docs/{octal(value)}\\377.md"\n'
+        f'deleted file mode 100644\n--- "a/docs/{octal(value)}\\377.md"\n+++ /dev/null\n'
+        "@@ -1,1 +0,0 @@\n-a\n" + MINIMAL_DIFF
+    ),
 }
-NON_UTF8_SECRET_CASES = {
+OCTAL_SECRET_CASES = {
     f"{kind}-{shape_name}": (make, shape)
     for kind, make in (("aws", aws_key), ("github", github_token))
-    for shape_name, shape in NON_UTF8_SECRET_PATHS.items()
+    for shape_name, shape in OCTAL_SECRET_PATHS.items()
 }
 
 
-@pytest.mark.parametrize("case", NON_UTF8_SECRET_CASES.values(), ids=NON_UTF8_SECRET_CASES.keys())
-def test_p1_s4_ac6_limits_secret_in_a_non_utf8_skipped_path_is_redacted(
+@pytest.mark.parametrize("case", OCTAL_SECRET_CASES.values(), ids=OCTAL_SECRET_CASES.keys())
+def test_p1_s4_ac6_limits_octal_quoted_secret_path_is_blocked_and_not_written(
     bot, logged, write_diff, log_path, case
 ):
+    """The raw text holds only octal escapes, so the raw-text scan can't see V; the decoded
+    path holds it, so the run stops before `parse.parsed` and V is never written."""
     make, shape = case
-    value = make(seed=11)
-    text = quoted_section(shape(value)) + MINIMAL_DIFF
+    value = make(seed=7)
+    text = shape(value)
     assert value not in text
+    provider = bot.mock(findings=[])
 
-    run = logged(write_diff(text), provider=bot.mock(findings=[]))
+    run = logged(write_diff(text), provider=provider)
+
+    assert run.exit_code == SECRET_EXIT, run.stderr
+    assert provider.requests == []
+    assert value not in log_path.read_text(encoding="ascii")
+    records = read_records(log_path)
+    assert "parse.parsed" not in events(records)
+    assert SECRET_EXIT in run_end_code(records)
+
+
+def end_marker() -> str:
+    return "-----END RSA " + "PRIVATE" + " KEY-----"
+
+
+# Each path holds an `END` marker alone: unflagged, so the run reaches `parse.parsed`, and
+# `redact` replaces it from the path's start. A `\377` after it keeps the path non-UTF-8.
+END_MARKER_PATHS = {
+    "utf8_skipped": (
+        lambda: quoted_section(f"docs/{octal(end_marker())}.md") + MINIMAL_DIFF,
+        {"file": f"{REDACTED}.md", "reason": "docs"},
+    ),
+    "non_utf8_skipped": (
+        lambda: quoted_section(f"docs/{octal(end_marker())}\\377.md") + MINIMAL_DIFF,
+        {"file": f'"{REDACTED}\\377.md"', "reason": "docs", "path_quoted": True},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", END_MARKER_PATHS.values(), ids=END_MARKER_PATHS.keys())
+def test_p1_s4_ac6_limits_end_marker_in_a_skipped_path_is_redacted(
+    bot, logged, write_diff, log_path, case
+):
+    build, expected = case
+
+    run = logged(write_diff(build()), provider=bot.mock(findings=[]))
 
     assert run.exit_code == 0, run.stderr
-    assert value not in log_path.read_text(encoding="ascii")
+    assert "END RSA" not in log_path.read_text(encoding="ascii")
     assert_no_surrogate_escape(log_path)
-    [entry] = skipped_files(log_path)
-    assert entry["path_quoted"] is True, entry
-    assert entry["reason"] == "docs", entry
-    assert REDACTED in entry["file"], entry
-    assert entry["file"].startswith('"docs/') and entry["file"].endswith('.md"'), entry
+    assert skipped_files(log_path) == [expected]
 
 
-def test_p1_s4_ac6_limits_secret_in_a_non_utf8_flagged_hunk_path_is_redacted(
+def test_p1_s4_ac6_limits_end_marker_in_a_flagged_hunk_path_is_redacted(
     bot, logged, write_diff, log_path
 ):
-    value = aws_key(seed=12)
-    path = f"src/\\377{octal(value)}.py"
+    path = f"src/{octal(end_marker())}\\377.py"
     text = (
         f'diff --git "a/{path}" "b/{path}"\n--- "a/{path}"\n+++ "b/{path}"\n@@ -1,1 +6,4 @@\n+x\n'
     )
@@ -1063,27 +1074,8 @@ def test_p1_s4_ac6_limits_secret_in_a_non_utf8_flagged_hunk_path_is_redacted(
     run = logged(write_diff(text), provider=bot.mock(findings=[]))
 
     assert run.exit_code == 0, run.stderr
-    assert value not in log_path.read_text(encoding="ascii")
+    assert "END RSA" not in log_path.read_text(encoding="ascii")
     [entry] = flagged_hunks(log_path)
-    assert entry["path_quoted"] is True, entry
-    assert REDACTED in entry["file"], entry
-
-
-def test_p1_s4_ac6_limits_secret_in_a_deleted_files_old_path_is_redacted(
-    bot, logged, write_diff, log_path
-):
-    value = aws_key(seed=13)
-    path = f"docs/{octal(value)}\\377.md"
-    text = (
-        f'diff --git "a/{path}" "b/{path}"\ndeleted file mode 100644\n'
-        f'--- "a/{path}"\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-a\n' + MINIMAL_DIFF
-    )
-
-    run = logged(write_diff(text), provider=bot.mock(findings=[]))
-
-    assert run.exit_code == 0, run.stderr
-    assert value not in log_path.read_text(encoding="ascii")
-    [entry] = skipped_files(log_path)
     assert entry["path_quoted"] is True, entry
     assert REDACTED in entry["file"], entry
 

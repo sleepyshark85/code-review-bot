@@ -109,3 +109,32 @@ def test_load_diff_over_limit_and_invalid_utf8_reports_size_first(tmp_path: Path
 
     with pytest.raises(DiffTooLargeError):
         load_diff(path, max_bytes=LIMIT)
+
+
+AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
+PEM_END = "-----END RSA " + "PRIVATE KEY-----"
+PEM_BEGIN = "-----BEGIN RSA " + "PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize("name", [f"{AWS_KEY}.diff", f"{PEM_END}.diff"], ids=["aws", "pem-end"])
+def test_load_diff_with_missing_path_redacts_only_the_secret_in_it(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(DiffNotFoundError) as caught:
+        load_diff(Path(name), max_bytes=LIMIT)
+
+    assert str(caught.value) == "Diff not found: [REDACTED].diff. Check the path."
+
+
+def test_load_diff_with_an_empty_file_keeps_the_remedy_after_a_redacted_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path(f"{PEM_BEGIN}.diff").write_bytes(b"")
+
+    with pytest.raises(DiffEmptyError) as caught:
+        load_diff(Path(f"{PEM_BEGIN}.diff"), max_bytes=LIMIT)
+
+    assert str(caught.value) == "Diff [REDACTED] is empty. Pass a diff with changes to review."

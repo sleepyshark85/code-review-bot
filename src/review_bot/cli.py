@@ -32,6 +32,7 @@ from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import at_or_above, render_findings
 from review_bot.review import PipelineResult, run_pipeline
+from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings
 
 __all__ = ["build_provider", "main", "parse_args"]
@@ -260,8 +261,9 @@ def _discard_unraisable(_report: "sys.UnraisableHookArgs") -> None:
 
 
 def _nothing_reviewed_warning(skipped_files: Sequence[FileDiff]) -> str:
-    # A deleted file has no new path.
-    paths = [file.path or "(deleted file)" for file in skipped_files]
+    # A deleted file has no new path. Each path is redacted on its own, so a private key's
+    # ``END`` marker in one can't redact the rest of the line.
+    paths = [redact(file.path) if file.path else "(deleted file)" for file in skipped_files]
     named = ", ".join(paths[:_MAX_NAMED_SKIPPED_FILES])
     return f"{_NOTHING_REVIEWED_WARNING}{named} ({len(paths)} in total)"
 
@@ -277,4 +279,6 @@ def _summarise(result: PipelineResult, settings: Settings, run_id: str) -> str:
 
 
 def _write_error(message: str) -> None:
-    write_diagnostic(f"review-bot: error: {message}")
+    # Messages redact the paths they name; this is the backstop for text they don't control,
+    # such as argparse quoting a stray argument.
+    write_diagnostic(f"review-bot: error: {redact(message)}")

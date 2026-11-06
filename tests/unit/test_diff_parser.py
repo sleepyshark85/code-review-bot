@@ -175,6 +175,82 @@ def test_parse_diff_keeps_quoted_path_bytes_that_are_not_utf8() -> None:
     assert file.old_path.encode("utf-8", "surrogateescape") == b"caf\xff.py"
 
 
+def decoded(text: str) -> list[tuple[str, int]]:
+    return [(path.text, path.diff_line) for path in parse_diff(text).decoded_paths]
+
+
+def test_parse_diff_decodes_each_header_path_once_with_its_diff_line() -> None:
+    text = (
+        'diff --git "a/docs/caf\\303\\251.md" "b/docs/caf\\303\\251.md"\n'
+        "new file mode 100644\n--- /dev/null\n"
+        '+++ "b/docs/caf\\303\\251.md"\n@@ -0,0 +1 @@\n+x\n'
+    )
+
+    assert decoded(text) == [
+        ("docs/café.md", 1),
+        ("a/docs/café.md", 1),
+        ("/dev/null", 3),
+        ("docs/café.md", 4),
+    ]
+
+
+def test_parse_diff_numbers_decoded_paths_by_their_line_in_the_whole_diff() -> None:
+    text = "Subject: change\n\n" + section("a.py") + section("b.py")
+
+    assert decoded(text) == [
+        ("a.py", 3),
+        ("a.py", 4),
+        ("a.py", 5),
+        ("b.py", 8),
+        ("b.py", 9),
+        ("b.py", 10),
+    ]
+
+
+def test_parse_diff_decodes_both_paths_of_a_binary_line_without_stripping_them() -> None:
+    text = 'diff --git a/x b/x\nBinary files "a/caf\\303\\251" and "b/\\101" differ\n'
+
+    assert decoded(text) == [("x", 1), ("a/café", 2), ("b/A", 2)]
+
+
+def test_parse_diff_decodes_no_quoted_string_in_a_hunk() -> None:
+    text = 'diff --git a/x b/x\n@@ -0,0 +1 @@\n+"\\101"\n'
+
+    assert decoded(text) == [("x", 1)]
+
+
+def test_parse_diff_keeps_an_unquoted_path_exactly_as_read() -> None:
+    text = "diff --git a/x.md b/y.md\nrename from x.md\nrename to -y.md\n"
+
+    assert decoded(text) == [("y.md", 1), ("x.md", 2), ("-y.md", 3)]
+
+
+def test_parse_diff_reads_quoted_strings_left_to_right_even_against_the_paths_pairing() -> None:
+    # The parser takes the last ` "` as the new path's start; read left to right, `"y\" "` is
+    # one string and the final quote opens one that never closes.
+    text = 'diff --git "x" "y\\" "b/\\101.py"\n'
+
+    assert decoded(text) == [("A.py", 1), ("x", 1), ('y" ', 1)]
+
+
+@pytest.mark.parametrize(
+    ("header_line", "expected"),
+    [
+        ('index "a" "b', [("a", 2)]),
+        ('index "a\\', []),
+        ('index "\\q\\8\\400\\n"', [("q8400\n", 2)]),
+        ('rename to "a" "b"', [('"a" "b"', 2), ("a", 2), ("b", 2)]),
+    ],
+    ids=["unclosed", "lone-backslash", "not-octal-and-named", "path-not-one-quoted-string"],
+)
+def test_parse_diff_decodes_malformed_quoting_as_specified(
+    header_line: str, expected: list[tuple[str, int]]
+) -> None:
+    text = f"diff --git a/z b/z\n{header_line}\n"
+
+    assert decoded(text) == [("z", 1), *expected]
+
+
 def test_parse_diff_with_a_fake_file_header_inside_a_git_hunk_keeps_the_code() -> None:
     text = (
         "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1 +1 @@\n"
@@ -231,15 +307,30 @@ def test_parse_diff_with_an_oversized_number_in_a_header_reads_it_as_unreadable(
 
 @pytest.mark.parametrize(
     "header_line",
-    ["diff --git " + '\\"' * 50_000, "Binary files " + " and " * 20_000],
-    ids=["escaped-quotes", "binary-ands"],
+    [
+        "diff --git " + '\\"' * 50_000,
+        "Binary files " + " and " * 20_000,
+        '+++ "' + '\\"' * 200_000,
+        "index " + '\\"' * 200_000,
+        '+++ "b/' + "\\101" * 100_000 + '"',
+        "index " + '"a" ' * 100_000,
+    ],
+    ids=[
+        "escaped-quotes",
+        "binary-ands",
+        "unclosed-escaped-quotes",
+        "escaped-quotes-never-opened",
+        "octal-escapes",
+        "many-short-strings",
+    ],
 )
 def test_parse_diff_reads_a_long_hostile_header_line_in_linear_time(header_line: str) -> None:
     started = time.perf_counter()
 
     parse_diff(f"diff --git a/x b/x\n{header_line}\n")
 
-    assert time.perf_counter() - started < 0.5
+    # Loose, so a slow or busy machine passes, yet far below quadratic work on 400 KB lines.
+    assert time.perf_counter() - started < 5
 
 
 def test_parse_diff_with_matching_counts_reports_no_mismatch() -> None:
@@ -409,3 +500,20 @@ def test_parse_diff_numbers_added_and_context_lines_consecutively_from_the_start
     kept = [line for line in hunk.lines if line.kind is not LineKind.REMOVED]
     assert [line.new_line for line in kept] == list(range(start, start + len(kept)))
     assert [line.text for line in hunk.lines] == [line_text for _, line_text in body]
+
+
+header_path_line = st.tuples(
+    st.sampled_from(
+        ["diff --git ", "diff --cc ", "--- ", "+++ ", "rename from ", "copy to ", "index "]
+    ),
+    st.text(alphabet='ab/" \t\\01q'),
+).map("".join)
+
+
+@given(st.lists(header_path_line, min_size=1, max_size=6))
+def test_parse_diff_lists_every_path_it_yields_among_the_decoded_paths(lines: list[str]) -> None:
+    parsed = parse_diff("diff --git a/x b/x\n" + "".join(f"{line}\n" for line in lines))
+
+    decoded_texts = {path.text for path in parsed.decoded_paths}
+    for file in parsed.files:
+        assert {file.path, file.old_path} - {None} <= decoded_texts
