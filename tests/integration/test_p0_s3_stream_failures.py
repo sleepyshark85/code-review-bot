@@ -8,6 +8,7 @@ import io
 import sys
 
 import pytest
+from diff_support import SAMPLE_RULE_LINE
 from stream_support import (
     CLOSED,
     DEV_FULL,
@@ -60,7 +61,12 @@ PROVIDERS = {
     ),
     "rate_limited": MockProvider(error=ProviderError(ErrorCategory.RATE_LIMIT, "detail")),
     "one_finding": MockProvider(findings=[FINDING]),
-    "many_findings": MockProvider(findings=[FINDING] * 5000),
+    # Distinct rationales, so none is a duplicate of another (P1-S7 AC12).
+    "many_findings": MockProvider(
+        findings=[
+            FINDING.model_copy(update={"rationale": f"{n:04d}" + "x" * 96}) for n in range(5000)
+        ]
+    ),
 }
 sys.exit(cli.main(sys.argv[2:], provider=PROVIDERS[sys.argv[1]]))
 """
@@ -260,19 +266,21 @@ def test_p0_s3_ac4_stdout_and_stderr_both_failing_exits_14(kind):
 
 
 @pytest.mark.parametrize(
-    ("command", "code", "first_line"),
+    ("command", "code", "stdout_lines"),
     [
-        (injected_command("one_finding"), 1, FINDING_LINE),
-        (bot_command("--threshold", "critical"), 0, "No findings at or above critical."),
+        # The sample's rule finding prints before the model's (P1-S7 AC1, AC8).
+        (injected_command("one_finding"), 1, [SAMPLE_RULE_LINE, FINDING_LINE]),
+        (bot_command("--threshold", "critical"), 0, ["No findings at or above critical."]),
     ],
     ids=["findings", "no_findings"],
 )
-def test_p0_s3_ac5_success_lines_come_after_stdout_is_flushed(command, code, first_line):
+def test_p0_s3_ac5_success_lines_come_after_stdout_is_flushed(command, code, stdout_lines):
     # Both streams share one pipe, so a summary written before stdout's flush would come first.
     completed = run_process(command, stderr=MERGED)
 
     assert completed.returncode == code, completed.stdout
     lines = completed.stdout.splitlines()
-    assert lines[0] == first_line
-    assert any("canned" in line.lower() for line in lines[1:]), lines
-    assert any("input_tokens=" in line for line in lines[1:]), lines
+    assert lines[: len(stdout_lines)] == stdout_lines
+    rest = lines[len(stdout_lines) :]
+    assert any("canned" in line.lower() for line in rest), lines
+    assert any("input_tokens=" in line for line in rest), lines

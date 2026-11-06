@@ -1,0 +1,9 @@
+[
+  {"file": "billing/invoice.py", "rule": "swallowed-exception", "anchor_text": "except Exception:", "ordinal": 0, "fingerprint": "7b7508acb73b5e4b"},
+  {"file": "billing/invoice.py", "rule": "swallowed-exception", "anchor_text": "        except Exception:", "ordinal": 0, "fingerprint": "7b7508acb73b5e4b"},
+  {"file": "billing/invoice.py", "rule": "swallowed-exception", "anchor_text": "except Exception:", "ordinal": 1, "fingerprint": "37768a40fed268ec"},
+  {"file": "billing/invoice.py", "rule": "ai:logic", "anchor_text": "return subtotal * (1 + self.tax_rate) if self.tax_rate else subtotal", "ordinal": 0, "fingerprint": "382bab07daf32c88"},
+  {"file": "src/caf\u00e9/\u00fcber.py", "rule": "open-without-encoding", "anchor_text": "with open(p) as f:  # \u2014 na\u00efve", "ordinal": 2, "fingerprint": "6bf5e5b0508e33bc"},
+  {"file": "caf\udcff.py", "rule": "swallowed-exception", "anchor_text": "x\udcff", "ordinal": 0, "fingerprint": "232ffbab3bbd6142"},
+  {"file": "src/\ud83d\ude00\tname\".py", "rule": "ai:security", "anchor_text": "\tx = \"\ud83d\ude00\"  ", "ordinal": 3, "fingerprint": "d627e3d68c16370f"}
+]

@@ -593,7 +593,7 @@ def test_main_with_its_one_finding_dropped_warns_in_the_singular(
     assert lines[0] == (
         "review-bot: warning: the 1 model finding was dropped: its file or line isn't in the diff."
     )
-    assert " dropped=1 skipped_files=0 " in lines[1]
+    assert " rule_findings=0 dropped=1 deduped=0 skipped_files=0 " in lines[1]
 
 
 def test_main_with_some_findings_kept_does_not_warn_about_dropping(
@@ -604,7 +604,7 @@ def test_main_with_some_findings_kept_does_not_warn_about_dropping(
     lines = stderr_lines_of_review(diff_path, capsys, dropped, Finding(**FINDING_FIELDS))
 
     assert len(lines) == 1
-    assert " dropped=1 skipped_files=0 " in lines[0]
+    assert " rule_findings=0 dropped=1 deduped=0 skipped_files=0 " in lines[0]
 
 
 def test_main_with_no_findings_proposed_does_not_warn_about_dropping(
@@ -613,4 +613,22 @@ def test_main_with_no_findings_proposed_does_not_warn_about_dropping(
     lines = stderr_lines_of_review(diff_path, capsys)
 
     assert len(lines) == 1
-    assert " dropped=0 skipped_files=0 " in lines[0]
+    assert " rule_findings=0 dropped=0 deduped=0 skipped_files=0 " in lines[0]
+
+
+def test_main_counts_rule_findings_and_duplicates_in_the_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff = tmp_path / "change.diff"
+    diff.write_text(FINDING_DIFF + section("rules.py", "+except E:\n+    pass\n"), encoding="utf-8")
+    finding = Finding(**FINDING_FIELDS)
+
+    assert main([str(diff)], provider=MockProvider(findings=[finding, finding])) == 1
+
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [
+        "rules.py:1 [medium/reliability] Exception swallowed: the handler discards it, so "
+        "failures pass silently. Handle it, log it or re-raise it. (confidence 1.00)",
+        FINDING_LINE,
+    ]
+    assert " rule_findings=1 dropped=0 deduped=1 skipped_files=0 " in err

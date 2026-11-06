@@ -46,14 +46,15 @@ def test_p0_s1_ac12_sample_diff_is_not_rejected(bot, sample_diff):
 
     run = bot.review(sample_diff, provider=provider)
 
-    assert run.exit_code == 0, run.stderr
+    # Not rejected: its swallowed exception is a rule finding since P1-S7 (AC1), so it exits 1.
+    assert run.exit_code == 1, run.stderr
     assert len(provider.requests) == 1
 
 
 def test_p0_s1_ac12_sample_diff_text_reaches_the_prompt_unchanged(bot, sample_diff):
     text = sample_diff.read_bytes().decode("utf-8")
 
-    request = bot.request_for(sample_diff)
+    request = bot.request_for(sample_diff, exit_code=1)  # P1-S7 AC1: a rule finding
 
     assert text in request.user_prompt
     assert "{self.id}" in request.user_prompt
@@ -91,7 +92,7 @@ def test_p0_s1_ac13_user_prompt_is_opening_line_diff_closing_line(bot, write_dif
 def test_p0_s1_ac13_sample_diff_is_framed_by_delimiter_lines(bot, sample_diff):
     text = sample_diff.read_bytes().decode("utf-8")
 
-    request = bot.request_for(sample_diff)
+    request = bot.request_for(sample_diff, exit_code=1)  # P1-S7 AC1: a rule finding
 
     delimiter_lines(request.user_prompt, text)
 

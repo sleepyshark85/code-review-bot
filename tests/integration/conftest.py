@@ -56,11 +56,14 @@ class Bot:
         """Review `path` with `--provider mock` selected, as the spec's runs do by default."""
         return self.run(str(path), "--provider", "mock", *flags, provider=provider)
 
-    def request_for(self, path: Path, *flags: str) -> Any:
-        """Review `path` and return the one request the provider received."""
+    def request_for(self, path: Path, *flags: str, exit_code: int = 0) -> Any:
+        """Review `path` and return the one request the provider received.
+
+        A diff with a rule hit, such as the sample diff since P1-S7, exits 1 with no model findings.
+        """
         provider = self.mock(findings=[])
         run = self.review(path, *flags, provider=provider)
-        assert run.exit_code == 0, run.stderr
+        assert run.exit_code == exit_code, run.stderr
         assert len(provider.requests) == 1
         return provider.requests[0]
 

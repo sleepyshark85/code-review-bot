@@ -8,7 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from review_bot.errors import ErrorCategory, ProviderError
 
-__all__ = ["Category", "Finding", "ReviewedFinding", "Severity", "Source", "parse_findings"]
+__all__ = [
+    "Category",
+    "Finding",
+    "ReviewedFinding",
+    "RuleId",
+    "Severity",
+    "Source",
+    "parse_findings",
+]
 
 # Fixed, because pydantic's own message quotes the input and model text must never reach stderr.
 _INVALID_OUTPUT_MESSAGE: Final = (
@@ -56,12 +64,24 @@ class Source(StrEnum):
     AI = auto()
 
 
+class RuleId(StrEnum):
+    """A check that runs with no model."""
+
+    SWALLOWED_EXCEPTION = "swallowed-exception"
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewedFinding:
-    """A finding the pipeline kept, with fields set by code, so the model can't forge them."""
+    """A finding the pipeline kept, with fields set by code, so the model can't forge them.
+
+    ``rule`` is the rule that found it, or None for a model finding. ``fingerprint`` is its
+    stable identity (``fingerprint.fingerprint_for``).
+    """
 
     finding: Finding
     source: Source
+    rule: RuleId | None
+    fingerprint: str
 
 
 class _FindingsEnvelope(BaseModel):

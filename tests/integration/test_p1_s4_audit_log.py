@@ -1287,7 +1287,8 @@ def test_p1_s4_ac8_no_added_or_context_line_of_the_sample_diff_is_written(
 ):
     run = logged(sample_diff, provider=bot.mock(findings=[]))
 
-    assert run.exit_code == 0, run.stderr
+    # Its swallowed exception is a rule finding since P1-S7 (AC1), logged in `static.rules`.
+    assert run.exit_code == 1, run.stderr
     log = log_path.read_text(encoding="ascii")
     body_lines = [
         line[1:].strip()

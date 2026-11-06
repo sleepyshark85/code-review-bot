@@ -26,3 +26,4 @@ With a scripted `MockProvider` and `--format markdown`. Golden files pin the lay
 ## Notes
 - AC4 needs a CommonMark parser in the tester's checks only: a `dev` dependency, not a runtime one. The developer adds it in `pyproject.toml`, because the tester can't edit it.
 - **README (main session):** describe `--format markdown` in Usage.
+- **Non-UTF-8 paths (changed before build, main session, 2026-11-06):** a finding's `file`, or a skipped file's path, can hold lone surrogates for bytes that aren't valid UTF-8 (rule findings on such paths are built with `model_construct`). Show it in git's quoted form, as the audit log writes it ([paths in `audit/v1`](../design.md#audit-log)), so stdout can always be encoded. Trap: `Finding.model_dump_json()` raises `PydanticSerializationError` on such a path, turning exit 1 into 14.

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from diff_support import SAMPLE_RULE_LINE
 
 pytestmark = pytest.mark.integration
 
@@ -82,6 +83,7 @@ def test_p0_s1_ac16_review_runs_with_no_subprocess_and_no_network(bot, sample_di
     run = bot.review(sample_diff)
 
     # The canned finding is dropped since P1-S6 (AC11); its notice shows the mock answered.
-    assert run.exit_code == 0, run.stderr
-    assert run.stdout_body == "No findings at or above low."
+    # The sample's swallowed exception is a rule finding since P1-S7 (AC1).
+    assert run.exit_code == 1, run.stderr
+    assert run.stdout_body == SAMPLE_RULE_LINE
     assert "MockProvider output is canned" in run.stderr

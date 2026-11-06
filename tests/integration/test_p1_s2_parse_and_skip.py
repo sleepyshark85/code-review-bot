@@ -53,9 +53,9 @@ def only_file(text: str):
     return parsed.files[0]
 
 
-def reviewed_text(bot, write_diff, text: str) -> str:
+def reviewed_text(bot, write_diff, text: str, *, exit_code: int = 0) -> str:
     """Run `main` over `text` and return the diff the provider received."""
-    return framed_diff(bot.request_for(write_diff(text)).user_prompt)
+    return framed_diff(bot.request_for(write_diff(text), exit_code=exit_code).user_prompt)
 
 
 # AC1: the sample diff, whose hunk headers overstate their bodies.
@@ -116,7 +116,8 @@ def test_p1_s2_ac1_blank_before_export_csv_is_context_line_37(sample_text):
 
 
 def test_p1_s2_ac1_sample_is_reviewed_whole(bot, write_diff, sample_text):
-    assert reviewed_text(bot, write_diff, sample_text) == sample_text
+    # Its swallowed exception is a rule finding since P1-S7 (AC1), so the run exits 1.
+    assert reviewed_text(bot, write_diff, sample_text, exit_code=1) == sample_text
 
 
 BODY_TEXT = st.text(alphabet="abc xyz=()_:'.#", max_size=12)

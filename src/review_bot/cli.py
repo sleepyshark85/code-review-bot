@@ -26,7 +26,7 @@ from review_bot.errors import (
     ReviewBotError,
     SecretDetectedError,
 )
-from review_bot.findings import Severity
+from review_bot.findings import Severity, Source
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
@@ -221,7 +221,7 @@ def _review(
     reported = result.decision.reported
     output = render_findings([reviewed.finding for reviewed in reported], settings.threshold)
     dropped_count = len(result.verification.dropped)
-    summary = _summarise(result, settings, audit.run_id, dropped_count)
+    summary = _summarise(result, settings, audit.run_id)
     exit_code = 1 if reported else 0
 
     write_output(output)
@@ -283,12 +283,15 @@ def _all_dropped_warning(dropped_count: int) -> str:
     )
 
 
-def _summarise(result: PipelineResult, settings: Settings, run_id: str, dropped_count: int) -> str:
+def _summarise(result: PipelineResult, settings: Settings, run_id: str) -> str:
     # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility).
+    verification = result.verification
+    rule_count = sum(reviewed.source is Source.RULE for reviewed in verification.kept)
     return (
         f"provider={settings.provider} model={settings.model} prompt={PROMPT_VERSION} "
         f"input_tokens={result.usage.input_tokens} output_tokens={result.usage.output_tokens} "
-        f"dropped={dropped_count} "
+        f"rule_findings={rule_count} dropped={len(verification.dropped)} "
+        f"deduped={len(verification.deduped)} "
         f"skipped_files={len(result.skipped_files)} "
         f"model_called={str(result.model_called).lower()} run_id={run_id}"
     )

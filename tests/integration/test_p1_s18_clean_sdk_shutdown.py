@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from diff_support import FINDING_DIFF
+from diff_support import FINDING_DIFF, FINDING_LINE, SAMPLE_RULE_LINE
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message
 from p0_s4_support import PREFIX, assert_one_error_line
 from real_sdk_support import FINDING_LINE_START
@@ -276,8 +276,9 @@ def test_p1_s18_ac4_unraisable_after_a_mock_run_still_reaches_stderr(run_bot):
 
     run = run_bot("result", extra="release_after_main", review=(sample, "--provider", "mock"))
 
-    # The mock's canned finding is dropped since P1-S6 (AC11), so the review exits 0.
-    assert run.exit_code == 0, run.stderr
+    # The mock's canned finding is dropped since P1-S6 (AC11), but the sample's swallowed exception
+    # is a rule finding since P1-S7 (AC1), so the review exits 1.
+    assert run.exit_code == 1, run.stderr
     assert run.stdout.strip()
     assert UNRAISABLE_TEXT in run.stderr
     assert "SENTINEL" in run.stderr
@@ -296,8 +297,11 @@ def test_p1_s18_ac4_main_leaves_the_unraisable_hook_unless_it_built_claude(
     else:
         run = bot.review(sample_diff)
 
-    # Only Claude's finding is anchored: the mock's canned one is dropped since P1-S6 (AC11).
-    assert run.exit_code == (1 if route == "injected_claude" else 0), run.stderr
+    # Only Claude's finding is anchored: the mock's canned one is dropped since P1-S6 (AC11). The
+    # mock routes still exit 1, on the sample's swallowed exception, a rule finding since P1-S7.
+    expected = FINDING_LINE if route == "injected_claude" else SAMPLE_RULE_LINE
+    assert run.exit_code == 1, run.stderr
+    assert run.stdout == expected + "\n"
     assert sys.unraisablehook is hook
 
 

@@ -1,6 +1,6 @@
 # P1-S7: Catch swallowed exceptions with no model, with stable fingerprints
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S6
 - **Touches:** `rules` (new), `fingerprint` (new), `findings`, `verify`, `review`, `audit`
 
@@ -31,8 +31,11 @@ With `--provider mock` and `MockProvider(findings=[])`, unless stated. Each hit 
 ## Out of scope
 - `open()` (P1-S8), rule vs AI dedup and the model's `rule` tag (P1-S9).
 - Text inside a multi-line string that looks like a handler: fragments can't be reliably parsed, so this false positive is accepted.
+- An `except` clause split over lines, such as black's `except (` then `A,`, `B,`, `):` then `pass`: no finding and no unanchored hit, a known miss. The rule reads single-line clauses in diff fragments, which may hold only part of a clause. A later slice may widen it (changed in build, main session, 2026-11-06).
+- A slice or `lambda` inside the `except` clause, such as `except errs[1:]:` or `except (lambda: E)():`: the clause match stops at the first `:`, so this is a known miss too (changed in build, main session, 2026-11-06).
 
 ## Notes
 - **`rule` here:** a rule's identity lives on `ReviewedFinding.rule`, set by code. `Finding` doesn't gain a `rule` field until P1-S9, so the model's schema doesn't change in this slice.
 - **Handover:** on the sample diff, P0-S1 AC2's `--threshold critical` still exits 0, so its test stands. P1-S9 replaces the `rule` case of AC13.
 - **README (main session):** say that this slice and P1-S8 can turn a clean exit into exit 1.
+- **Implementation choices (developer):** `AnchorCheck` becomes `ProposalCheck`, adding `duplicate_of` and `fingerprint`, with `VerifyResult.deduped`; `RuleId` holds only `swallowed-exception` until P1-S8; a rule hit on line 0 (new start `+0`) counts as unanchored; AC13 needs no code, as `Finding` already forbids extra fields.

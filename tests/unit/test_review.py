@@ -16,7 +16,8 @@ from review_bot.errors import (
     ProviderError,
     SecretDetectedError,
 )
-from review_bot.findings import Category, Finding, Severity
+from review_bot.findings import Category, Finding, Severity, Source
+from review_bot.fingerprint import fingerprint_for
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.mock import MockProvider
 from review_bot.review import PipelineResult, run_pipeline
@@ -113,7 +114,7 @@ def test_run_pipeline_records_each_stage_of_a_review_in_order(tmp_path: Path) ->
 
     run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider(findings=[]))
 
-    assert events(log) == ["run.start", "parse.parsed", "agent.called"]
+    assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.called"]
     called = data_of(log, "agent.called")
     assert called["input_tokens"] == called["output_tokens"] == 0
     assert called["duration_s"] >= 0
@@ -177,7 +178,7 @@ def test_run_pipeline_with_every_file_skipped_records_why_and_calls_no_provider(
 
     assert not result.model_called
     assert provider.requests == []
-    assert events(log) == ["run.start", "parse.parsed", "agent.skipped"]
+    assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.skipped"]
     assert data_of(log, "agent.skipped") == {"reason": "nothing_to_review"}
 
 
@@ -188,7 +189,7 @@ def test_run_pipeline_with_a_provider_error_records_its_category(tmp_path: Path)
     with pytest.raises(ProviderError):
         run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
 
-    assert events(log) == ["run.start", "parse.parsed", "agent.failed"]
+    assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.failed"]
     assert data_of(log, "agent.failed") == {"category": "rate_limit", "diagnostics": []}
     assert "SENTINEL" not in log.read_text(encoding="ascii")
 
@@ -316,6 +317,7 @@ def test_run_pipeline_with_provider_warnings_writes_and_records_each_in_order(
     assert events(log) == [
         "run.start",
         "parse.parsed",
+        "static.rules",
         "agent.called",
         "agent.warning",
         "agent.warning",
@@ -387,8 +389,8 @@ def sha256(text: str) -> str:
 def test_run_pipeline_reports_only_findings_in_the_diff_at_or_above_the_threshold(
     tmp_path: Path,
 ) -> None:
-    low, high = make_finding(severity=Severity.LOW), make_finding(file="./app.py")
-    provider = MockProvider(findings=[low, make_finding(file="gone.py"), high])
+    low = make_finding(severity=Severity.LOW, rationale="Minor.")
+    provider = MockProvider(findings=[low, make_finding(file="gone.py"), make_finding("./app.py")])
 
     result = run(write_diff(tmp_path, MINIMAL_DIFF), tmp_path / "a.jsonl", provider, Severity.HIGH)
 
@@ -401,7 +403,8 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
     tmp_path: Path,
 ) -> None:
     log = tmp_path / "audit.jsonl"
-    low, unknown = make_finding(severity=Severity.LOW), make_finding(file="gone.py")
+    low = make_finding(severity=Severity.LOW, rationale="Minor.")
+    unknown = make_finding(file="gone.py")
     provider = MockProvider(findings=[make_finding(file="b/app.py"), unknown, low])
 
     run(write_diff(tmp_path, MINIMAL_DIFF), log, provider, Severity.HIGH)
@@ -409,12 +412,13 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
     assert events(log)[-5:] == ["verify.checked"] * 3 + ["policy.decided"] * 2
     records = [record["data"] for record in read_records(log)[-5:]]
     kept = {
-        "fingerprint": None,
+        "fingerprint": fingerprint_for(file="app.py", rule="ai:logic", anchor_text="x", ordinal=0),
         "file": "app.py",
         "line": 1,
         "severity": "high",
         "outcome": "kept",
         "reason": None,
+        "duplicate_of": None,
         "rationale_sha256": sha256("Why."),
     }
     assert records[0] == kept
@@ -426,9 +430,14 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
         "severity": "high",
         "outcome": "dropped",
         "reason": "unknown_file",
+        "duplicate_of": None,
         "rationale_sha256": sha256("Why."),
     }
-    assert records[2] == kept | {"severity": "low"}
+    assert records[2] == kept | {
+        "fingerprint": fingerprint_for(file="app.py", rule="ai:logic", anchor_text="x", ordinal=1),
+        "severity": "low",
+        "rationale_sha256": sha256("Minor."),
+    }
     assert records[3:] == [
         {"file": "app.py", "line": 1, "outcome": "reported"},
         {"file": "app.py", "line": 1, "outcome": "below_threshold"},
@@ -458,3 +467,61 @@ def test_run_pipeline_with_no_proposals_records_no_verify_or_policy_stage(tmp_pa
     assert result.verification.checks == ()
     assert result.decision.reported == ()
     assert not any(event.startswith(("verify.", "policy.")) for event in events(log))
+
+
+SWALLOWING_DIFF = section("app.py", "+try:\n+    x()\n+except E:\n+    pass\n")
+
+
+def test_run_pipeline_records_each_rule_finding_and_the_unanchored_hits(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+    unanchored = (
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +x @@\n+except E:\n+    pass\n"
+    )
+
+    run(write_diff(tmp_path, SWALLOWING_DIFF + unanchored), log, MockProvider(findings=[]))
+
+    assert data_of(log, "static.rules") == {
+        "findings": [
+            {
+                "fingerprint": fingerprint_for(
+                    file="app.py", rule="swallowed-exception", anchor_text="except E:", ordinal=0
+                ),
+                "rule": "swallowed-exception",
+                "file": "app.py",
+                "line": 3,
+                "severity": "medium",
+            }
+        ],
+        "unanchored_hits": 1,
+    }
+
+
+def test_run_pipeline_reports_rule_findings_before_model_findings(tmp_path: Path) -> None:
+    provider = MockProvider(findings=[make_finding()])
+
+    result = run(write_diff(tmp_path, SWALLOWING_DIFF), tmp_path / "a.jsonl", provider)
+
+    assert [(item.source, item.finding.line) for item in result.decision.reported] == [
+        (Source.RULE, 3),
+        (Source.AI, 1),
+    ]
+
+
+def test_run_pipeline_records_a_duplicate_with_the_fingerprint_it_repeats(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+    provider = MockProvider(findings=[make_finding(), make_finding()])
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
+
+    [kept, duplicate] = [
+        record["data"] for record in read_records(log) if record["stage"] == "verify"
+    ]
+    assert (duplicate["outcome"], duplicate["fingerprint"], duplicate["reason"]) == (
+        "duplicate",
+        None,
+        None,
+    )
+    assert (
+        duplicate["duplicate_of"] == kept["fingerprint"] == result.verification.kept[0].fingerprint
+    )
+    assert events(log).count("policy.decided") == 1
