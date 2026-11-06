@@ -15,6 +15,7 @@ review-bot = "review_bot.cli:main"
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.14",
+    "markdown-it-py[linkify]>=4.2.0",
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

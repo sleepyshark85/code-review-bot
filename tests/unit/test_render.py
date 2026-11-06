@@ -1,13 +1,15 @@
 import json
 
 import pytest
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from review_bot.diff_parser import FileDiff, SkipReason
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
 from review_bot.policy import Decision
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
-from review_bot.render import escape_unprintable, render_findings, render_json
+from review_bot.render import escape_unprintable, render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult
 from review_bot.settings import Settings
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult
@@ -16,6 +18,8 @@ from review_bot.verify import DropReason, ProposalCheck, VerifyResult
 KEY_END_MARKER = "-" * 5 + "END RSA " + "PRIVATE KEY" + "-" * 5
 NO_USAGE = TokenUsage(input_tokens=0, output_tokens=0)
 UNDECODABLE_PATH = b"docs/caf\xff.py".decode("utf-8", "surrogateescape")
+LINE_SEPARATOR = chr(0x2028)
+BIDI_OVERRIDE = chr(0x202E)
 
 
 def make_finding(
@@ -267,3 +271,233 @@ def test_render_json_and_text_write_a_path_holding_a_key_marker_alike() -> None:
 
     assert parsed["file"] == path
     assert render_findings([finding], Severity.LOW).startswith(f"{path}:7 ")
+
+
+def markdown_tokens(markdown: str) -> list[Token]:
+    """Parse as CommonMark, plus autolinking bare URLs and e-mail addresses as GitHub does."""
+    return MarkdownIt("commonmark", {"linkify": True}).enable("linkify").parse(markdown)
+
+
+def visible_lines(markdown: str) -> list[str]:
+    """Each paragraph or list item's text as a reader sees it, markup removed."""
+    return [
+        "".join(child.content for child in token.children or () if child.content)
+        for token in markdown_tokens(markdown)
+        if token.type == "inline"
+    ]
+
+
+def inline_types(markdown: str) -> set[str]:
+    return {
+        child.type
+        for token in markdown_tokens(markdown)
+        if token.type == "inline"
+        for child in token.children or ()
+    }
+
+
+def test_render_markdown_writes_heading_counts_and_one_item_per_finding() -> None:
+    rule_finding = make_finding(file="src/app.py", severity=Severity.MEDIUM, rationale="Swallowed.")
+    result = pipeline_result(
+        reported=(reviewed(rule_finding, source=Source.RULE), reviewed(make_finding())),
+    )
+
+    assert render_markdown(result, Severity.LOW) == (
+        "## Review\n"
+        "\n"
+        "2 reported, 0 below threshold, 0 dropped, 0 deduped.\n"
+        "\n"
+        r"- **medium** logic at `src/app.py:7`: Swallowed\. (confidence 0.88, source: rule)"
+        "\n"
+        r"- **high** logic at `a.py:7`: Why\. (confidence 0.88, source: ai)"
+    )
+
+
+def test_render_markdown_with_nothing_to_count_is_the_heading_and_the_no_findings_line() -> None:
+    assert render_markdown(pipeline_result(), Severity.MEDIUM) == (
+        "## Review\n\nNo findings at or above medium."
+    )
+
+
+def test_render_markdown_with_only_dropped_and_deduped_findings_still_counts_them() -> None:
+    proposed = make_finding()
+    checks = (
+        ProposalCheck(proposed, None, drop_reason=DropReason.UNKNOWN_FILE),
+        ProposalCheck(proposed, "a.py", duplicate_of="aaaaaaaaaaaaaaaa"),
+    )
+    result = pipeline_result(below_threshold=(reviewed(),), checks=checks)
+
+    assert render_markdown(result, Severity.CRITICAL) == (
+        "## Review\n"
+        "\n"
+        "0 reported, 1 below threshold, 1 dropped, 1 deduped.\n"
+        "\n"
+        "No findings at or above critical."
+    )
+
+
+def test_render_markdown_lists_skipped_files_with_their_reasons() -> None:
+    skipped = (
+        FileDiff("README.md", "README.md", (), SkipReason.DOCS),
+        FileDiff(None, "uv.lock", (), SkipReason.LOCK),
+        FileDiff(UNDECODABLE_PATH, None, (), SkipReason.BINARY),
+    )
+
+    assert render_markdown(pipeline_result(skipped_files=skipped), Severity.LOW) == (
+        "## Review\n"
+        "\n"
+        "No findings at or above low.\n"
+        "\n"
+        "### Skipped files\n"
+        "\n"
+        "- `README.md`: docs\n"
+        "- `uv.lock`: lock\n"
+        r'- `"docs/caf\377.py"`: binary'
+    )
+
+
+def test_render_markdown_quotes_a_finding_path_that_is_not_utf8() -> None:
+    finding = Finding.model_construct(**{**make_finding().model_dump(), "file": UNDECODABLE_PATH})
+
+    rendered = render_markdown(pipeline_result(reported=(reviewed(finding),)), Severity.LOW)
+
+    assert r'`"docs/caf\377.py":7`' in rendered
+    assert rendered.isascii()
+
+
+def test_render_markdown_shows_an_empty_skipped_path_as_a_code_span_not_stray_backticks() -> None:
+    skipped = (FileDiff("", None, (), SkipReason.DOCS),)
+
+    rendered = render_markdown(pipeline_result(skipped_files=skipped), Severity.LOW)
+
+    assert rendered.endswith("- `  `: docs")
+    assert "code_inline" in inline_types(rendered)
+
+
+@pytest.mark.parametrize(
+    "rationale",
+    [
+        "x\n## Forged",
+        "x\n\n# Forged\n\n- forged item",
+        "<img src=x onerror=y>",
+        "<!-- hidden -->",
+        "![x](http://evil)",
+        "[click](http://evil)",
+        "<http://evil>",
+        "```\ncode\n```",
+        "`span` and `` double ``",
+        "@someone",
+        "Before @someone after.",
+        "(@someone)",
+        r"\@someone",
+        "a@b.com",
+        "http://evil",
+        "https://evil/x",
+        "see ftp://evil.com/x",
+        "see FTP://evil.com/x",
+        "WWW.evil.com",
+        r"\[www.evil.com\]",
+        r"\<https://evil/x\>",
+        "| a | b |\n|---|---|",
+        "*a* **b** _c_ __d__ ~~e~~",
+        r"back\slash \* and &amp; &#60;",
+        "x  \ny",
+        "[ref]\n\n[ref]: http://evil",
+    ],
+)
+def test_render_markdown_makes_a_hostile_rationale_inert_and_keeps_its_text(
+    rationale: str,
+) -> None:
+    result = pipeline_result(reported=(reviewed(make_finding(rationale=rationale)),))
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    block_types = [token.type for token in markdown_tokens(rendered)]
+    assert block_types.count("heading_open") == 1
+    assert block_types.count("list_item_open") == 1
+    assert "html_block" not in block_types
+    assert inline_types(rendered) <= {"text", "code_inline", "strong_open", "strong_close"}
+    assert visible_lines(rendered)[-1] == (
+        f"high logic at a.py:7: {escape_unprintable(rationale)} (confidence 0.88, source: ai)"
+    )
+
+
+def code_spans(markdown: str) -> list[str]:
+    return [
+        child.content
+        for token in markdown_tokens(markdown)
+        if token.type == "inline"
+        for child in token.children or ()
+        if child.type == "code_inline"
+    ]
+
+
+def test_render_markdown_puts_each_word_holding_a_mention_or_url_in_a_code_span() -> None:
+    rationale = (
+        "Ask (@someone) or a@b.com, see https://x/y`z, ftp://f/x, FTP://F/X and www.e.com; "
+        "plain words stay."
+    )
+    result = pipeline_result(reported=(reviewed(make_finding(rationale=rationale)),))
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    assert code_spans(rendered) == [
+        "a.py:7",
+        "(@someone)",
+        "a@b.com,",
+        "https://x/y`z,",
+        "ftp://f/x,",
+        "FTP://F/X",
+        "www.e.com;",
+    ]
+    assert r"plain words stay\." in rendered
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "a`b.py",
+        "a``b```c.py",
+        "`a.py",
+        "a.py`",
+        " a.py ",
+        "<img src=x>.py",
+        "a\nb.py",
+        f"a{LINE_SEPARATOR}## b.py",
+        "[x](http://evil).py",
+    ],
+)
+def test_render_markdown_shows_a_hostile_path_exactly_in_one_code_span(path: str) -> None:
+    result = pipeline_result(
+        reported=(reviewed(make_finding(file=path)),),
+        skipped_files=(FileDiff(path, None, (), SkipReason.DOCS),),
+    )
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    shown = escape_unprintable(path)
+    assert code_spans(rendered) == [f"{shown}:7", shown]
+    assert inline_types(rendered) <= {"text", "code_inline", "strong_open", "strong_close"}
+
+
+@pytest.mark.parametrize(
+    "hostile", [chr(0x1B) + "[31m", LINE_SEPARATOR, chr(0x85), BIDI_OVERRIDE, chr(0x0D), chr(0)]
+)
+def test_render_markdown_writes_no_raw_control_character(hostile: str) -> None:
+    finding = make_finding(file=f"a{hostile}.py", rationale=f"x{hostile}y")
+    result = pipeline_result(
+        reported=(reviewed(finding),),
+        skipped_files=(FileDiff(f"b{hostile}.md", None, (), SkipReason.DOCS),),
+    )
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    assert all(char.isprintable() for line in rendered.split("\n") for char in line)
+
+
+def test_render_markdown_keeps_printable_unicode() -> None:
+    finding = make_finding(rationale="a → b é 日本")
+
+    rendered = render_markdown(pipeline_result(reported=(reviewed(finding),)), Severity.LOW)
+
+    assert "a → b é 日本" in rendered
