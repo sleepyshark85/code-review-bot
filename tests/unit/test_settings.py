@@ -165,3 +165,19 @@ def test_load_settings_with_an_unknown_format_names_its_source(
 
     with pytest.raises(ConfigError, match=f"{source}: .*'json'"):
         load_settings(flags)
+
+
+def test_load_settings_with_no_triage_flag_leaves_triage_off() -> None:
+    assert load_settings({}).triage is False
+
+
+def test_load_settings_takes_triage_from_its_flag() -> None:
+    assert load_settings({"triage": True}).triage is True
+
+
+def test_load_settings_never_reads_triage_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_TRIAGE", "true")
+
+    assert load_settings({}).triage is False

@@ -8,7 +8,14 @@ from typing import Final
 
 from review_bot.findings import Finding, ReviewedFinding, Severity
 from review_bot.prompt import PROMPT_VERSION
-from review_bot.report import PipelineResult, path_fields, section_path
+from review_bot.report import (
+    PipelineResult,
+    TriageDecision,
+    TriagedFinding,
+    not_rejected,
+    path_fields,
+    section_path,
+)
 from review_bot.settings import Settings
 
 __all__ = ["escape_unprintable", "render_findings", "render_json", "render_markdown"]
@@ -37,13 +44,32 @@ def _render_finding(finding: Finding) -> str:
     )
 
 
-def render_json(result: PipelineResult, settings: Settings, run_id: str) -> str:
+def render_json(
+    result: PipelineResult,
+    settings: Settings,
+    run_id: str,
+    *,
+    triaged: Sequence[TriagedFinding] | None = None,
+) -> str:
     """Render the review as one line of pure ASCII JSON, schema ``report/v1``.
 
     Keys come in a fixed order, and every non-ASCII or control character is a JSON escape. Paths
     are written as they are, unredacted, so they match the text output; one that isn't valid
     UTF-8 is C-quoted, with ``path_quoted: true`` on its object (``report.path_fields``).
+
+    Args:
+        result: The review.
+        settings: The run's settings.
+        run_id: The run's identifier, as in the audit log.
+        triaged: The reported findings with their triage decisions, or None if triage didn't
+            run, which makes every finding's ``triage`` null. Rejected findings stay listed,
+            but ``counts.reported`` leaves them out.
+
+    Raises:
+        ValueError: If ``triaged`` doesn't hold the reported findings, in order.
     """
+    findings = _with_decisions(result, triaged)
+    decisions = [decision for _, decision in findings]
     report: dict[str, object] = {
         "schema": _REPORT_SCHEMA,
         "run_id": run_id,
@@ -51,15 +77,14 @@ def render_json(result: PipelineResult, settings: Settings, run_id: str) -> str:
         "model": settings.model,
         "prompt_version": PROMPT_VERSION,
         "threshold": settings.threshold,
-        "findings": [_finding_json(reviewed) for reviewed in result.decision.reported],
+        "findings": [_finding_json(reviewed, decision) for reviewed, decision in findings],
         "counts": {
-            "reported": len(result.decision.reported),
+            "reported": len(findings) - decisions.count(TriageDecision.REJECT),
             "below_threshold": len(result.decision.below_threshold),
             "dropped": len(result.verification.dropped),
             "deduped": len(result.verification.deduped),
-            # Triage (P1-S12) is what rejects findings or leaves them undecided.
-            "rejected": 0,
-            "undecided": 0,
+            "rejected": decisions.count(TriageDecision.REJECT),
+            "undecided": decisions.count(TriageDecision.UNDECIDED),
         },
         "skipped_files": [
             {**path_fields(section_path(file)), "reason": file.skip_reason}
@@ -73,7 +98,28 @@ def render_json(result: PipelineResult, settings: Settings, run_id: str) -> str:
     return json.dumps(report, ensure_ascii=True, allow_nan=False)
 
 
-def _finding_json(reviewed: ReviewedFinding) -> dict[str, object]:
+def _with_decisions(
+    result: PipelineResult, triaged: Sequence[TriagedFinding] | None
+) -> list[tuple[ReviewedFinding, TriageDecision | None]]:
+    """The reported findings, each with its triage decision, or None if triage didn't run.
+
+    Raises:
+        ValueError: If ``triaged`` doesn't hold the reported findings, in order.
+    """
+    if triaged is None:
+        return [(reviewed, None) for reviewed in result.decision.reported]
+    _check_triaged(result, triaged)
+    return [(item.reviewed, item.decision) for item in triaged]
+
+
+def _check_triaged(result: PipelineResult, triaged: Sequence[TriagedFinding]) -> None:
+    """Raise ``ValueError`` unless ``triaged`` holds the reported findings, in order."""
+    reported = result.decision.reported
+    if [item.reviewed.fingerprint for item in triaged] != [item.fingerprint for item in reported]:
+        raise ValueError("The triaged findings must be the reported findings, in order.")
+
+
+def _finding_json(reviewed: ReviewedFinding, decision: TriageDecision | None) -> dict[str, object]:
     # Field by field, never ``model_dump_json``: a rule finding's path can hold lone surrogates,
     # which pydantic refuses to serialise.
     finding = reviewed.finding
@@ -87,17 +133,27 @@ def _finding_json(reviewed: ReviewedFinding) -> dict[str, object]:
         "category": finding.category,
         "rationale": finding.rationale,
         "confidence": finding.confidence,
-        # Set by triage (P1-S12) and editing (P1-S13).
-        "triage": None,
+        "triage": decision,
+        # Set by editing (P1-S13).
         "original_rationale": None,
     }
 
 
-def render_markdown(result: PipelineResult, threshold: Severity) -> str:
+def render_markdown(
+    result: PipelineResult,
+    threshold: Severity,
+    *,
+    triaged: Sequence[TriagedFinding] | None = None,
+) -> str:
     """Render the review as GitHub-flavoured Markdown, with no trailing newline.
 
     A ``## Review`` heading, then the counts unless all are zero, then one list item per reported
     finding (or the no-findings line), then a ``### Skipped files`` section if any were skipped.
+    With ``triaged``, the reported findings' triage decisions, rejected findings are left out of
+    both the list and the counts.
+
+    Raises:
+        ValueError: If ``triaged`` doesn't hold the reported findings, in order.
 
     Text from the diff or the model is made inert, so it can't add structure, while every
     character stays visible. A rationale has its unprintable characters escaped as in the text
@@ -109,11 +165,14 @@ def render_markdown(result: PipelineResult, threshold: Severity) -> str:
     unprintable-escaped, in a code span. A code span's backtick fence is longer than any backtick
     run in its text, so nothing inside it is interpreted.
     """
+    reported = result.decision.reported
+    if triaged is not None:
+        _check_triaged(result, triaged)
+        reported = not_rejected(triaged)
     blocks = [_MARKDOWN_HEADING]
-    counts = _markdown_counts(result)
+    counts = _markdown_counts(result, len(reported))
     if counts:
         blocks.append(counts)
-    reported = result.decision.reported
     if reported:
         blocks.append("\n".join(_markdown_finding(finding) for finding in reported))
     else:
@@ -129,10 +188,10 @@ def render_markdown(result: PipelineResult, threshold: Severity) -> str:
     return "\n\n".join(blocks)
 
 
-def _markdown_counts(result: PipelineResult) -> str:
+def _markdown_counts(result: PipelineResult, reported_count: int) -> str:
     """The counts as one sentence, or an empty string when there is nothing to count."""
     counts = {
-        "reported": len(result.decision.reported),
+        "reported": reported_count,
         "below threshold": len(result.decision.below_threshold),
         "dropped": len(result.verification.dropped),
         "deduped": len(result.verification.deduped),

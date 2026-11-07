@@ -3,7 +3,7 @@
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -12,6 +12,9 @@ from review_bot.errors import ConfigError
 from review_bot.findings import Severity
 
 __all__ = ["Settings", "load_settings"]
+
+# Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
+_FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
 
 
 class Settings(BaseModel):
@@ -32,10 +35,13 @@ class Settings(BaseModel):
     deadline_s: float = Field(default=300, gt=0, allow_inf_nan=False)
     audit_log: Path = DEFAULT_AUDIT_LOG_PATH
     format: Literal["text", "json", "markdown"] = "text"
+    triage: bool = False
 
 
-def load_settings(flags: Mapping[str, str | None]) -> Settings:
+def load_settings(flags: Mapping[str, str | bool | None]) -> Settings:
     """Build the settings, reading each field's ``REVIEW_BOT_*`` variable if it has no flag.
+
+    ``triage`` has no variable: only its flag sets it.
 
     Args:
         flags: Flag values by field name; None means the flag wasn't given.
@@ -52,7 +58,7 @@ def load_settings(flags: Mapping[str, str | None]) -> Settings:
     sources = {name: f"--{name.replace('_', '-')}" for name in values}
     for field in Settings.model_fields:
         env_var = f"REVIEW_BOT_{field.upper()}"
-        if field not in values and env_var in os.environ:
+        if field not in values and field not in _FLAG_ONLY_FIELDS and env_var in os.environ:
             values[field] = os.environ[env_var]
             sources[field] = env_var
 

@@ -1,18 +1,29 @@
-"""A review's result, and how its diff paths are written in machine-readable output.
+"""A review's result, its triage, and how its diff paths are written in machine-readable output.
 
 Pure: the audit log and the JSON report both write paths with these helpers, and the audit log
 redacts them first.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final
 
 from review_bot.diff_parser import FileDiff
+from review_bot.findings import ReviewedFinding
 from review_bot.policy import Decision
 from review_bot.providers.base import TokenUsage
 from review_bot.verify import VerifyResult
 
-__all__ = ["PipelineResult", "has_lone_surrogate", "path_fields", "section_path"]
+__all__ = [
+    "PipelineResult",
+    "TriageDecision",
+    "TriagedFinding",
+    "has_lone_surrogate",
+    "not_rejected",
+    "path_fields",
+    "section_path",
+]
 
 # Git's C-quoting: these bytes get a short escape, other control and non-ASCII bytes an octal one.
 _SHORT_ESCAPES: Final = {
@@ -46,6 +57,27 @@ class PipelineResult:
     skipped_files: tuple[FileDiff, ...]
     model_called: bool
     warnings: tuple[str, ...] = ()
+
+
+class TriageDecision(StrEnum):
+    """A person's call on a reported finding, or ``undecided`` if triage stopped before it."""
+
+    ACCEPT = "accept"
+    REJECT = "reject"
+    UNDECIDED = "undecided"
+
+
+@dataclass(frozen=True, slots=True)
+class TriagedFinding:
+    """A reported finding and the call triage made on it."""
+
+    reviewed: ReviewedFinding
+    decision: TriageDecision
+
+
+def not_rejected(triaged: Iterable[TriagedFinding]) -> tuple[ReviewedFinding, ...]:
+    """The findings a person didn't reject, undecided ones included, in order."""
+    return tuple(item.reviewed for item in triaged if item.decision is not TriageDecision.REJECT)
 
 
 def section_path(file: FileDiff) -> str:

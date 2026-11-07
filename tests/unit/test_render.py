@@ -10,7 +10,7 @@ from review_bot.policy import Decision
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
 from review_bot.render import escape_unprintable, render_findings, render_json, render_markdown
-from review_bot.report import PipelineResult
+from review_bot.report import PipelineResult, TriageDecision, TriagedFinding
 from review_bot.settings import Settings
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult
 
@@ -501,3 +501,70 @@ def test_render_markdown_keeps_printable_unicode() -> None:
     rendered = render_markdown(pipeline_result(reported=(reviewed(finding),)), Severity.LOW)
 
     assert "a → b é 日本" in rendered
+
+
+def triaged_pair() -> tuple[PipelineResult, tuple[TriagedFinding, ...]]:
+    """Three reported findings, accepted, rejected and left undecided."""
+    accepted = reviewed(make_finding(rationale="Kept."), fingerprint="aaaaaaaaaaaaaaaa")
+    rejected = reviewed(make_finding(rationale="Wrong."), fingerprint="bbbbbbbbbbbbbbbb")
+    undecided = reviewed(make_finding(rationale="Later."), fingerprint="cccccccccccccccc")
+    triaged = (
+        TriagedFinding(accepted, TriageDecision.ACCEPT),
+        TriagedFinding(rejected, TriageDecision.REJECT),
+        TriagedFinding(undecided, TriageDecision.UNDECIDED),
+    )
+    return pipeline_result(reported=(accepted, rejected, undecided)), triaged
+
+
+def test_render_json_with_triage_keeps_rejected_findings_marked_and_counts_them() -> None:
+    result, triaged = triaged_pair()
+
+    report = json.loads(render_json(result, Settings(provider="mock"), "run-1", triaged=triaged))
+
+    assert [(item["rationale"], item["triage"]) for item in report["findings"]] == [
+        ("Kept.", "accept"),
+        ("Wrong.", "reject"),
+        ("Later.", "undecided"),
+    ]
+    counts = report["counts"]
+    assert (counts["reported"], counts["rejected"], counts["undecided"]) == (2, 1, 1)
+
+
+def test_render_json_without_triage_writes_every_triage_as_null() -> None:
+    result, _ = triaged_pair()
+
+    report = json.loads(render(result))
+
+    assert [item["triage"] for item in report["findings"]] == [None, None, None]
+
+
+def test_render_markdown_with_triage_leaves_out_rejected_findings() -> None:
+    result, triaged = triaged_pair()
+
+    rendered = render_markdown(result, Severity.LOW, triaged=triaged)
+
+    assert rendered.startswith("## Review\n\n2 reported, 0 below threshold, ")
+    assert r"Kept\." in rendered
+    assert r"Later\." in rendered
+    assert "Wrong" not in rendered
+
+
+def test_render_markdown_with_every_finding_rejected_is_the_no_findings_output() -> None:
+    finding = reviewed()
+    result = pipeline_result(reported=(finding,))
+
+    rendered = render_markdown(
+        result, Severity.LOW, triaged=(TriagedFinding(finding, TriageDecision.REJECT),)
+    )
+
+    assert rendered == "## Review\n\nNo findings at or above low."
+
+
+def test_render_json_and_markdown_reject_triaged_findings_that_are_not_the_reported_ones() -> None:
+    result, triaged = triaged_pair()
+    out_of_order = (triaged[1], triaged[0], triaged[2])
+
+    with pytest.raises(ValueError, match="reported findings, in order"):
+        render_json(result, Settings(provider="mock"), "run-1", triaged=out_of_order)
+    with pytest.raises(ValueError, match="reported findings, in order"):
+        render_markdown(result, Severity.LOW, triaged=triaged[:2])

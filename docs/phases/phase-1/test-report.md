@@ -1122,3 +1122,68 @@ None now. All three are fixed in the developer's code; they're kept here as the 
 ### Coverage
 
 Before review round 1, coverage was 100.00% overall (1,486 statements, 362 branches, none missed), so the slice's modules (`render`, `cli`, `settings`) were fully covered. For coverage after round 1, see the main session's gate. Nothing in the criteria was left untested. `/dev/full` runs only in CI. GitHub's own renderer can't run offline, so "GitHub neither links nor notifies" is evidenced by linkify plus the direct code-span check, not by GitHub itself.
+
+## P1-S12: Accept or reject findings interactively, with labels logged
+
+Spec: [p1-s12-triage.md](slices/p1-s12-triage.md). Tests: [`tests/integration/test_p1_s12_triage.py`](../../../tests/integration/test_p1_s12_triage.py), 102 cases. In-process runs go through `main` with an injected `MockProvider`, and `sys.stdin`, `sys.stdout` and `sys.stderr` are replaced by `FakeStream`s. Each fake says whether it's a terminal through `isatty`, has no descriptor, and records every read and write on a shared timeline (AC10). Four cases call `run_triage` directly. AC5 also runs real child processes.
+
+**Status: every criterion passes: 99 passed and 3 skipped, from this file alone, on the developer's uncommitted working tree during review round 1** (base `b754b09`). The 3 skips are the POSIX pseudo-terminal cases, which run only in CI (Gaps).
+
+**Before the code.** The developer's code was already on disk at this file's first run, so the file was also run against `HEAD` in a scratch worktree: 81 failed, 11 passed, 3 skipped. The 11 passes are the cases without `--triage` (AC3's all-null case and AC7's ten), which pre-slice behaviour already satisfies. Every case with `--triage` failed; the AC5 ones failed because argparse's `unrecognized arguments: --triage` doesn't say a terminal is needed. On the working tree, the first run had 1 failure, a test bug: the baseline and triage runs share one log, so `run.start` appeared twice. Records are now scoped to the last run's `run_id`.
+
+**Review round 1** added 6 cases: AC8's stdout-failure case ×3 and AC4's answer normalisation ×3. AC8's event name is now asserted too. All of them passed on their first run on the developer's working tree.
+
+**Mutation check** (scratch pytest plugins, `src/` untouched). With the Windows console check removed, so that `isatty` alone decides, `ac5_stdin_from_the_null_device_exits_2` fails. With prompts written to stdout, 41 cases fail (AC1 to AC6, AC9, AC10, AC12). With labels recorded only after the report is written, the order before round 1, the 3 stdout-failure cases fail.
+
+### Gate
+
+The tester ran ruff (check and format) on this file and ran the file alone, as the coordinator asked. The full gate waits for the coordinator's go-ahead.
+
+### Seam
+
+The developer's `console.is_terminal` trusts `isatty` for a stream with no descriptor, and asks the Windows console (`GetConsoleMode`) when there is one. So the fakes stand for terminals, and a real `os.devnull` stream (`NUL` on Windows, where `isatty` is true) exercises the console check in-process. No adaptation was needed.
+
+### Criteria
+
+Test names drop the `test_p1_s12_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_each_finding_is_shown_once_with_its_fields`: a rule and an AI finding, each rationale on exactly one stderr line holding its file, line, severity, category and source. `ac1_accept_then_reject_reports_only_the_accepted_one_and_exits_1` ×2 (text, Markdown). `ac1_reject_then_accept_reports_only_the_second` | pass (4) |
+| AC2 | `ac2_all_rejected_exits_0_with_the_no_findings_output` ×2: text is `No findings at or above low.`, Markdown equals `p1_s11/no_findings.golden.md`. `ac2_all_rejected_json_keeps_them_marked_reject_with_their_rationale`: `reject` ×2, rationales kept, `reported` 0, `rejected` 2 | pass (3) |
+| AC3 | `ac3_accepted_finding_is_marked_accept`. `ac3_without_triage_every_finding_is_null`. `ac3_with_triage_no_finding_is_null` ×4: all accepted, mixed, EOF part-way, Ctrl+C at once | pass (6) |
+| AC4 | `ac4_invalid_answer_asks_again` ×6: `x`, empty, spaces, `ar`, `accept?`, `q`. `ac4_x_then_empty_line_still_leaves_the_first_undecided`: 4 prompts, then `reject` ×2. `ac4_x_then_eof_leaves_the_finding_undecided`. `ac4_answers_are_matched_after_strip_and_lower` ×3 (round 1): `A` and ` r `, `a\n` and `R\n`, `\tA\t` and `  R` each give `accept, reject`. `ac4_limits_a_megabyte_answer_asks_again_within_the_bound`, and the answer isn't echoed in full. `ac4_run_triage_asks_again_with_the_prompt_each_time`: 3 prompts, each holding `[a]ccept [r]eject` | pass (13) |
+| AC5 | In-process: `ac5_without_a_terminal_exits_2_naming_the_flag` ×3 (stdin, stderr, neither): exit 2, one `review-bot: error:` line holding `--triage` and "terminal", stdout empty, no stdin read, no provider request, under 5 s. `ac5_stdin_from_the_null_device_exits_2`: a real `os.devnull` stdin with a terminal stderr. `ac5_the_diff_is_not_read`: a missing diff gives 2, not 3. `ac5_terminal_stdin_and_stderr_are_enough` ×2 (stdout redirected, stdout a terminal). Child process, with a 5 s hard timeout on the `subprocess` wait: `ac5_real_process_without_a_terminal_exits_2_within_5_s` ×4 (a pipe held open with nothing written, a pipe holding `a\na\n`, `os.devnull`, and literal `NUL` on Windows): exit 2 under 5 s, one error line, no traceback, and the log, if written, has no `parse` or `agent` record. POSIX only: `ac5_real_process_with_a_terminal_stderr_but_not_stdin_exits_2` ×2 (stderr a pseudo-terminal, so only the stdin check can fire), and the control `ac5_real_process_with_terminal_stdin_and_stderr_triages` | pass (12), skip (3: POSIX only) |
+| AC6 | `ac6_stopping_part_way_leaves_the_rest_undecided` ×2 (EOF, Ctrl+C): 2 prompts and 2 reads for 3 findings, `accept, undecided, undecided`, `counts.undecided` 2, exit 1, no traceback or `KeyboardInterrupt`. `ac6_undecided_findings_stay_in_the_text_report` ×2. `ac6_undecided_findings_get_no_label` ×2: one `triage` record, the accepted one. `ac6_stopping_at_the_first_prompt_exits_1_with_all_undecided` ×2. `ac6_rejected_then_stopped_still_exits_1` ×2. `ac6_the_run_ends_in_the_log_with_exit_1` ×2. `ac6_limits_a_broken_stderr_stops_asking_and_reads_nothing`. `ac6_run_triage_returns_on_ctrl_c_instead_of_raising` | pass (14) |
+| AC7 | `ac7_without_the_flag_nothing_reads_stdin` ×9: text, JSON and Markdown × `REVIEW_BOT_TRIAGE` unset, `true` and `1`, all with terminal stdin and stderr. `ac7_the_variable_does_not_need_a_terminal`: no exit 2. `ac7_no_findings_with_triage_asks_nothing` ×3 | pass (13) |
+| AC8 | `ac8_one_record_per_decision_with_the_label_fields`: 2 records, each with event `labelled`. Each `data` is exactly the Label's 6 fields (with `source`) plus `model` and `prompt_version`. Fingerprints and severities match the JSON report, `rationale_changed` is false, and `model` and `prompt_version` equal `run.start`'s. `ac8_triage_records_hold_no_rationale_text`: neither the rationale nor any of its words longer than 6 characters. `ac8_records_come_after_the_policy_and_before_the_end`. `ac8_labels_are_logged_even_when_stdout_fails` ×3 (round 1): stdout failing on write, failing on flush (the conftest `failing_stream` helper), or closed. Each exits 14 with no traceback, the log still holds one `triage`/`labelled` record with `accept`, and `run.end` has exit code 14. `ac8_run_triage_returns_a_label_per_decision` | pass (7) |
+| AC9 | `ac9_hostile_rationale_is_shown_on_one_clean_line` and `ac9_hostile_path_is_shown_on_one_clean_line` (git-quoted octal header). Both use `\x1b[31m` and a newline. The start and end markers share a stderr line, and stderr has no `Cc`, `Zl` or `Zp` character other than `\n`. `ac9_limits_other_controls_in_a_rationale_stay_inert` ×8: CR, BEL and BS, U+2028, U+2029, NEL, NUL, DEL, and an OSC title sequence. `ac9_limits_a_long_rationale_stays_one_line_within_the_bound`: 20,000 escape-and-newline pairs. `ac9_run_triage_writes_and_prompts_single_clean_lines`: every `write_line` text and `read_line` prompt | pass (12) |
+| AC10 | `ac10_prompts_go_to_stderr_and_the_report_follows_the_last_answer` ×3 (formats): no prompt on stdout, and the first stdout write comes after the last read on the timeline. `ac10_all_accepted_stdout_is_the_report_without_triage` ×2: byte-identical to a run without `--triage`. `ac10_json_stdout_is_one_document`. `ac10_stdout_is_untouched_when_stopped_by_ctrl_c` | pass (7) |
+| AC11 | `ac11_secret_hit_exits_16_and_asks_nothing`, with a generated key and no provider call. `ac11_invalid_setting_exits_2_and_asks_nothing`: `--threshold bogus`, with the error naming `--threshold`. `ac11_provider_failure_keeps_its_code_and_asks_nothing` ×3: `auth` 8, `refusal` 10, `invalid_output` 13. All run with terminal stdin and stderr, so triage would otherwise run | pass (5) |
+| AC12 | `ac12_below_threshold_findings_are_not_asked_about`: `--threshold high` with a high and a low finding. It gives 1 prompt and 1 read, the low rationale never reaches stderr, `below_threshold` is 1, and it exits 0 after `r`. `ac12_only_below_threshold_findings_asks_nothing` | pass (2) |
+| Limits | `limits_hundreds_of_findings_are_each_asked_once_within_the_bound`: 300 findings, 300 prompts, all rejected, exit 0. `limits_answers_after_the_last_finding_are_not_read` | pass (2) |
+
+### Failures
+
+None on the current code.
+
+### Readings for the designer
+
+Answered in review round 1 by the main session, and pinned in the spec's Interfaces and design.md's Audit log table (changed in build, 2026-11-07).
+
+1. **Answered: EOF is signalled by `EOFError` from `read_line`.** EOF is still tested through `main`, where stdin really ends.
+2. **Answered: the attribute is `TriageResult.labels`.** Two direct tests read it, and one also reads `Label.source`.
+3. **Answered: answers are matched after `.strip().lower()`.** Tested by `ac4_answers_are_matched_after_strip_and_lower`.
+4. **Answered: the event is `labelled`, and `source` is one of the Label's 6 fields.** The record adds `model` and `prompt_version`, so each `data` still has 8 fields. AC8 asserts both.
+5. **Open: AC5's 5 s also bounds interpreter start-up in the child-process cases.** These take about 1 s here. If slow CI flakes, the bound is the spec's, so changing it is a designer decision.
+6. **Answered, not a criterion:** the Notes' help-line correction (`--triage` has no variable) is tested by `tests/unit/test_cli_main.py::test_parse_args_help_says_triage_has_no_variable`.
+
+### Gaps
+
+- **Windows child process.** Stderr is a pipe there, so the child is refused whatever stdin is. The child cases prove the CLI exits 2 without hanging. The stdin check itself, on a real `NUL`, is proven in-process by `ac5_stdin_from_the_null_device_exits_2`. A test can't attach a real Windows console to a child, so the positive case on Windows is in-process only.
+- **POSIX pseudo-terminal cases (3)** are skipped on Windows and couldn't run locally: there's no Linux Python here. Their first run is CI. The control case writes `a\n` to the terminal before the child starts.
+- **`NUL` (Windows only)** and the pty cases (POSIX only) never run on the same machine, as the spec's Notes say.
+
+### Coverage
+
+From this file alone: `triage` 100%. `console` 79%; the rest is pre-existing stream-failure handling, the non-Windows branch of the console check, and `get_osfhandle` failing. `cli` 78%; the rest is outside triage. Whole-suite coverage waits for the full gate.

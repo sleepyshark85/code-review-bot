@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Final, NoReturn, override
 
 from review_bot.audit import AuditLog, Stage
-from review_bot.console import write_diagnostic, write_output
+from review_bot.console import is_terminal, read_answer, write_diagnostic, write_output
 from review_bot.diff_parser import FileDiff
 from review_bot.errors import (
     AuditError,
@@ -26,15 +26,16 @@ from review_bot.errors import (
     ReviewBotError,
     SecretDetectedError,
 )
-from review_bot.findings import Severity, Source
+from review_bot.findings import ReviewedFinding, Severity, Source
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import render_findings, render_json, render_markdown
-from review_bot.report import PipelineResult
+from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings
+from review_bot.triage import TriageResult, run_triage
 
 __all__ = ["build_provider", "main", "parse_args"]
 
@@ -74,6 +75,11 @@ _NOTHING_REVIEWED_WARNING: Final = (
 )
 _MAX_NAMED_SKIPPED_FILES: Final = 10
 
+_NO_TERMINAL_FOR_TRIAGE: Final = (
+    "--triage needs a terminal: stdin and stderr must both be attached to one. Run it from an "
+    "interactive shell, or leave out --triage."
+)
+
 
 class _ReviewAbortedError(ReviewBotError):
     """The review raised a ``BaseException`` such as ``SystemExit``, so it has no result."""
@@ -109,7 +115,10 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
     parser = _ArgumentParser(
         prog="review-bot",
         description="Review a diff file.",
-        epilog="Each option can also be set with REVIEW_BOT_<OPTION>, e.g. REVIEW_BOT_MODEL.",
+        epilog=(
+            "Each option except --triage can also be set with REVIEW_BOT_<OPTION>, e.g. "
+            "REVIEW_BOT_MODEL."
+        ),
         allow_abbrev=False,
     )
     parser.add_argument("diff_path", help="the diff file to review")
@@ -126,6 +135,11 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
     )
     parser.add_argument(
         "--format", help="the report's format on stdout: text (default), json, markdown"
+    )
+    parser.add_argument(
+        "--triage",
+        action="store_true",
+        help="ask on the terminal to accept or reject each reported finding",
     )
     args = vars(parser.parse_args(argv))
     return Path(args.pop("diff_path")), load_settings(args)
@@ -159,6 +173,8 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
     try:
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
+        # Before anything else runs, so triage can never wait on input nobody will give.
+        _require_terminal_for_triage(settings)
         # Opened before the diff is read, so an untraceable run never reaches a provider.
         audit = AuditLog(settings.audit_log, clock=_utc_now)
     except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
@@ -169,6 +185,12 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         exit_code = _report_failure(exc)
         _record_failed_end(audit, exit_code, exc)
         return exit_code
+
+
+def _require_terminal_for_triage(settings: Settings) -> None:
+    """Raise ``ConfigError`` if ``--triage`` is given and nobody can answer it."""
+    if settings.triage and not (is_terminal(sys.stdin) and is_terminal(sys.stderr)):
+        raise ConfigError(_NO_TERMINAL_FOR_TRIAGE)
 
 
 def _report_failure(exc: Exception) -> int:
@@ -208,25 +230,21 @@ def _record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
 def _review(
     diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
 ) -> int:
-    selected_provider = build_provider(settings) if provider is None else provider
-    is_own_claude = provider is None and settings.provider == "claude"
-    pipeline = _run_pipeline_then_discard_unraisable if is_own_claude else run_pipeline
-    try:
-        result = asyncio.run(pipeline(diff_path, settings, selected_provider, audit))
-    except Exception:
-        raise
-    except BaseException as exc:
-        # Left alone, this skips ``main``'s handlers and can set the exit code itself, so
-        # ``SystemExit(0)`` would read as a clean review. Only the review is wrapped because
-        # ``--help`` exits through ``SystemExit`` too.
-        raise _ReviewAbortedError(exc) from exc
+    result = _run_review(diff_path, settings, provider, audit)
+    # Before any output, so stdout holds only the report, written after the last decision.
+    triage = None
+    if settings.triage:
+        triage = run_triage(
+            result.decision.reported, read_line=read_answer, write_line=write_diagnostic
+        )
+        # Before stdout, so a failure writing the report can't lose the decisions.
+        _record_labels(triage, settings, audit)
 
     # Stdout goes first, so a failure writing it leaves only the error line on stderr.
-    reported = result.decision.reported
-    output = _render_report(result, settings, audit.run_id)
+    output = _render_report(result, settings, audit.run_id, triage)
     dropped_count = len(result.verification.dropped)
     summary = _summarise(result, settings, audit.run_id)
-    exit_code = 1 if reported else 0
+    exit_code = 1 if _shown(result, triage) else 0
 
     write_output(output)
     if not result.model_called:
@@ -242,12 +260,55 @@ def _review(
     return exit_code
 
 
-def _render_report(result: PipelineResult, settings: Settings, run_id: str) -> str:
+def _run_review(
+    diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
+) -> PipelineResult:
+    selected_provider = build_provider(settings) if provider is None else provider
+    is_own_claude = provider is None and settings.provider == "claude"
+    pipeline = _run_pipeline_then_discard_unraisable if is_own_claude else run_pipeline
+    try:
+        return asyncio.run(pipeline(diff_path, settings, selected_provider, audit))
+    except Exception:
+        raise
+    except BaseException as exc:
+        # Left alone, this skips ``main``'s handlers and can set the exit code itself, so
+        # ``SystemExit(0)`` would read as a clean review. Only the review is wrapped because
+        # ``--help`` exits through ``SystemExit`` too.
+        raise _ReviewAbortedError(exc) from exc
+
+
+def _record_labels(triage: TriageResult, settings: Settings, audit: AuditLog) -> None:
+    for label in triage.labels:
+        audit.record(
+            Stage.TRIAGE,
+            "labelled",
+            {
+                "fingerprint": label.fingerprint,
+                "label": label.label,
+                "severity_before": label.severity_before,
+                "severity_after": label.severity_after,
+                "rationale_changed": label.rationale_changed,
+                "source": label.source,
+                "model": settings.model,
+                "prompt_version": PROMPT_VERSION,
+            },
+        )
+
+
+def _shown(result: PipelineResult, triage: TriageResult | None) -> tuple[ReviewedFinding, ...]:
+    """The reported findings a person didn't reject: all of them if triage didn't run."""
+    return result.decision.reported if triage is None else not_rejected(triage.findings)
+
+
+def _render_report(
+    result: PipelineResult, settings: Settings, run_id: str, triage: TriageResult | None
+) -> str:
+    triaged = None if triage is None else triage.findings
     if settings.format == "json":
-        return render_json(result, settings, run_id)
+        return render_json(result, settings, run_id, triaged=triaged)
     if settings.format == "markdown":
-        return render_markdown(result, settings.threshold)
-    findings = [reviewed.finding for reviewed in result.decision.reported]
+        return render_markdown(result, settings.threshold, triaged=triaged)
+    findings = [reviewed.finding for reviewed in _shown(result, triage)]
     return render_findings(findings, settings.threshold)
 
 
