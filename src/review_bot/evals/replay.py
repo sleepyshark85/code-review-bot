@@ -206,15 +206,19 @@ async def _replay_case(loaded: LoadedCase, recording: Recording | None) -> CaseE
 
 async def _replay_run(loaded: LoadedCase, run: RecordedRun, audit_path: Path) -> RunFindings:
     if run.error_category is not None:
-        return RunFindings(anchor_valid=(), final=(), error=run.error_category)
+        return RunFindings(
+            returned=(), anchor_valid=(), dropped=(), final=(), error=run.error_category
+        )
     # ``findings`` is set whenever ``error`` isn't (``RecordedRun``'s check).
-    result = await _review(loaded, run.findings or (), audit_path)
-    verification = result.verification
+    returned = run.findings or ()
+    verification = (await _review(loaded, returned, audit_path)).verification
     return RunFindings(
+        returned=returned,
         anchor_valid=tuple(
             check.proposed.model_copy(update={"file": check.diff_path})
             for check in verification.ai_anchor_valid
         ),
+        dropped=tuple(check.proposed for check in verification.dropped),
         final=tuple(
             reviewed.finding for reviewed in verification.kept if reviewed.source is Source.AI
         ),

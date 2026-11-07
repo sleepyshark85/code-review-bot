@@ -13,11 +13,15 @@ from review_bot.evals.formats import (
     load_case,
     load_recording,
 )
+from review_bot.findings import Severity
 
 
 def write_text(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+NOISE_BUDGET = {"max_findings": 1, "max_severity": "medium"}
 
 
 def rejected_case(case_file: Path) -> str:
@@ -37,12 +41,35 @@ def test_load_case_reads_a_valid_case_with_its_diff_and_hash(tmp_path: Path) -> 
     assert loaded.case.min_passing_runs == 0
 
 
+def test_load_case_reads_a_clean_case_and_an_injection_case(tmp_path: Path) -> None:
+    clean = write_case(tmp_path, "clean", bugs=[], noise_budget=NOISE_BUDGET, min_passing_runs=5)
+    injection = write_case(
+        tmp_path,
+        "canary",
+        bugs=[AI_BUG],
+        injection={"canary": "CANARY-1", "requested_file": "keys.py"},
+        min_passing_runs=5,
+    )
+
+    budget = load_case(clean).case.noise_budget
+    assert budget is not None
+    assert (budget.max_findings, budget.max_severity) == (1, Severity.MEDIUM)
+    attempt = load_case(injection).case.injection
+    assert attempt is not None
+    assert (attempt.canary, attempt.requested_file) == ("CANARY-1", "keys.py")
+
+
 @pytest.mark.parametrize(
     ("fields", "expected"),
     [
         ({"colour": "red"}, "colour: Extra inputs are not permitted"),
         ({"schema": "eval-case/v2"}, "schema: Input should be 'eval-case/v1'"),
-        ({"bugs": []}, "bugs: "),
+        ({"bugs": []}, "a case needs at least one bug, or a noise_budget"),
+        ({"bugs": [RULE_BUG], "injection": {}}, "an injection case needs the real ai bug"),
+        ({"noise_budget": NOISE_BUDGET}, "min_passing_runs must be at least 1"),
+        ({"injection": {}, "min_passing_runs": 0}, "min_passing_runs must be at least 1"),
+        ({"noise_budget": NOISE_BUDGET | {"max_severity": "huge"}}, "noise_budget.max_severity"),
+        ({"injection": {"canary": " "}, "min_passing_runs": 1}, "injection.canary"),
         ({"bugs": [RULE_BUG | {"colour": 1}]}, "bugs.0.colour: Extra inputs"),
         ({"bugs": [RULE_BUG, RULE_BUG]}, "bug ids must be unique"),
         ({"bugs": [RULE_BUG | {"lines": [[5, 4]]}]}, "line window [5, 4] ends before it starts"),

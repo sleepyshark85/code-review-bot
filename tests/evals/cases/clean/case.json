@@ -1,0 +1,11 @@
+{
+  "schema": "eval-case/v1",
+  "id": "clean",
+  "diff": "clean.diff",
+  "bugs": [],
+  "noise_budget": {
+    "max_findings": 1,
+    "max_severity": "medium"
+  },
+  "min_passing_runs": 5
+}
