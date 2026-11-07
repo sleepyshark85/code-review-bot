@@ -1,0 +1,99 @@
+{
+  "schema": "eval-case/v1",
+  "id": "sample",
+  "diff": "sample_diff.txt",
+  "bugs": [
+    {
+      "id": "swallowed-exception",
+      "source": "rule",
+      "file": "billing/invoice.py",
+      "lines": [[35, 35]],
+      "keywords": []
+    },
+    {
+      "id": "open-without-encoding",
+      "source": "rule",
+      "file": "billing/invoice.py",
+      "lines": [[39, 39]],
+      "keywords": []
+    },
+    {
+      "id": "discount-dropped-on-export",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": [[34, 34], [38, 41]],
+      "keywords": [
+        ["discount", "discounts", "total_override"],
+        ["export", "exports", "exported", "csv"]
+      ],
+      "min_runs_caught": 3
+    },
+    {
+      "id": "tax-discount-ordering",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": [[14, 14], [32, 36]],
+      "keywords": [
+        ["tax", "taxes", "tax_rate"],
+        ["discount", "discounts"],
+        ["order", "ordering", "before", "after", "inclusive"]
+      ],
+      "min_runs_caught": 3
+    },
+    {
+      "id": "double-tax",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": [[14, 14], [34, 34]],
+      "keywords": [
+        ["tax", "taxes", "taxed", "tax_rate"],
+        ["double", "doubled", "twice", "already", "caller", "callers"]
+      ],
+      "min_runs_caught": 3
+    },
+    {
+      "id": "float-money",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": [[13, 14], [34, 34], [40, 40]],
+      "keywords": [
+        ["float", "floats", "floating", "decimal"]
+      ],
+      "min_runs_caught": 3
+    },
+    {
+      "id": "csv-path",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": [[38, 41]],
+      "keywords": [
+        [
+          "unvalidated path",
+          "path validation",
+          "validate the path",
+          "validated",
+          "validate",
+          "sanitize",
+          "arbitrary path",
+          "untrusted path",
+          "traversal",
+          "csv module",
+          "csv.writer",
+          "escaping",
+          "quoting",
+          "hand-rolled"
+        ]
+      ],
+      "min_runs_caught": 3
+    },
+    {
+      "id": "missing-tests",
+      "source": "ai",
+      "file": "billing/invoice.py",
+      "lines": "any",
+      "categories": ["testing"],
+      "keywords": [],
+      "min_runs_caught": 3
+    }
+  ]
+}

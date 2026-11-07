@@ -1238,3 +1238,81 @@ None on the current code.
 ### Coverage
 
 From this file alone: `triage` 100%. `render` 87% and `report` 70%; the rest is output this slice doesn't touch (skipped files, quoted paths, count wording), covered by P1-S10's and P1-S11's files. Whole-suite coverage waits for the full gate.
+
+## P1-S14: Score the sample diff per planted bug and per source, offline
+
+Spec: [p1-s14-eval-sample.md](slices/p1-s14-eval-sample.md). Tests: [`tests/evals/test_p1_s14_eval_sample.py`](../../../tests/evals/test_p1_s14_eval_sample.py), 114 cases. Case data: [`tests/evals/cases/sample/`](../../../tests/evals/cases/sample/). It holds `case.json` (`eval-case/v1`, the spec's bug table) and `sample_diff.txt`, which a test checks is byte-identical to `Assignment/sample_diff.txt`. It also holds five 5-run synthetic controls under `recordings/synthetic/`: `all_ai_bugs`, `float_money_only`, `double_tax_2_of_5`, `double_tax_3_of_5` and `failed_runs` (a `refusal` run and an `invalid_output` run, then 3 runs catching every AI bug). There is no live recording; that comes in P1-S17.
+
+Every run calls `review_bot.evals.main(["replay", ...])` in the test's own process, with stdout and stderr read together, so AC10's guard sees it. Each test copies the case into `tmp_path` and writes its recording there, with today's `case_sha256`, `diff_sha256`, `prompt_version` and `prompt_sha256` from `review_bot.evals.replay.freshness_fields(case_file)`. So a prompt change needs no hand edit of a test. The committed controls carry today's hashes, so they can be replayed by hand. The tests take only their `runs`. The unit test `test_each_committed_sample_control_is_fresh` fails the suite when a committed control goes stale.
+
+**Status: every criterion passes: 114 passed, from this file alone, on the developer's uncommitted working tree** (base `7830349`).
+
+**Before the code.** At my first run, the developer's `formats`, `match`, `replay` and `score` modules were on disk but `main` wasn't, and the file had 96 cases: 14 passed, 82 failed. The 14 are the case-data self-checks and `ac6_hashes_track_the_case_and_diff_bytes`, which calls `freshness_fields` directly. The 82 failed on the missing `main`. On the finished code, 2 failed, both test bugs, now fixed:
+1. The AC5 dedup finding was tagged `open-without-encoding` at `medium`. The rule finding is `low`, and P1-S9 AC5 stops a tag from deduping a more serious finding, so the finding was rightly kept and `final` read `5/5`. The finding is now `low`.
+2. `write_live` passed `kind` twice when a test overrode it.
+
+The tests were then tightened to the developer's output format, which meets each criterion's intent: `caught N/5`, `final N/5`, `pass` or `fail`, `run N (category)`, the credit block under each row, and the `unmatched findings:` section. 18 cases were added:
+- 13 for AC9: more invalid cases, a run holding both `findings` and `error`, a recording for another case, a cases directory with no case, and a diff that can't be reviewed;
+- 4 for Limits: report lines forged through a rationale;
+- 1 for AC13.
+
+### Gate
+
+The tester ran `ruff format --check` and `ruff check` on `tests/evals`, and ran this file alone, as the coordinator asked. The full gate waits for the coordinator.
+
+### How the output is read
+
+The developer's format:
+- a bug's row is the first line naming its ID, `<id>: ai, caught N/5, final N/5, needs 3, pass|fail, evidence=…, model=…, recorded=YYYY-MM-DD`, or `<id>: ai, not measured` with no recording;
+- the lines between that row and the next row, or the `recall:` line, are its credits (`bug_block`);
+- per-source recall is `recall: rules N/2, ai N/6`.
+
+A bug not credited is checked as `caught 0/5` in its row.
+
+A self-check reads each committed control with an independent matcher written from the spec's Interfaces: ASCII-alphanumeric boundaries, case-insensitive, all groups, `categories`, and inclusive windows or `any`. It shows that each control finding credits exactly the bug it's meant for, and that each control catches what its name says. The AC11 and AC12 cases run the same matcher first, so a wrong test expectation fails before the command runs.
+
+### Criteria
+
+Test names drop the `test_p1_s14_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| Case data | `case_diff_is_the_assignments_sample_byte_for_byte`. `case_holds_the_specs_bug_table`. `committed_controls_are_synthetic_five_run_recordings` ×5. `each_control_finding_credits_exactly_its_bug`. `controls_catch_what_their_names_say` ×5 | pass (13) |
+| AC1 | `ac1_no_recording_catches_both_rule_bugs_and_exits_0` (`rules 2/2`). `ac1_no_recording_has_one_row_per_bug_ai_not_measured` (and rule rows aren't). `ac1_committed_cases_with_no_live_recording_exit_0`: the repository's own `tests/evals/cases`, whose synthetic files are ignored. `ac1_no_recording_with_require_live_exits_1` | pass (4) |
+| AC2 | `ac2_all_ai_bugs_each_show_5_of_5_and_exit_0`. `ac2_per_source_recall_is_rules_2_of_2_and_ai_6_of_6`. `ac2_each_ai_row_says_evidence_synthetic` | pass (3) |
+| AC3 | `ac3_float_money_only_gives_ai_1_of_6_and_exits_1` (the other rows `caught 0/5`). `ac3_double_tax_in_2_of_5_runs_exits_1` (`caught 2/5`, `fail`, `ai 5/6`). `ac3_double_tax_in_3_of_5_runs_passes` (exit 0, `caught 3/5`, `pass`, `ai 6/6`) | pass (3) |
+| AC4 | `ac4_rule_disabled_by_a_test_double_lowers_rules_and_exits_1` ×2 (each rule). A double of `run_rules` drops one rule's findings and replaces every `review_bot` module's reference to it, giving `rules 1/2` and exit 1. `ac4_line_39_with_an_encoding_lowers_rules_and_exits_1` | pass (3) |
+| AC5 | `ac5_matching_finding_on_line_42_doesnt_count`. `ac5_any_line_bug_isnt_credited_by_an_invalid_anchor`: `missing-tests` takes any line, so only verify can stop a `testing` finding on line 42. `ac5_finding_on_a_file_not_in_the_diff_doesnt_count`. `ac5_control_same_finding_on_a_valid_line_counts`. `ac5_ai_recall_is_before_dedup_and_final_after`: a `low` `csv-path` finding on line 39, tagged `open-without-encoding`, is deduped against the rule, and its row shows `caught 5/5` and `final 0/5` | pass (5) |
+| AC6 | `ac6_stale_field_exits_1_naming_it_and_live_without_scoring` ×4 (each field, through `--recording`): exit 1, the field, `evals live`, and no `5/5` or `6/6`. `ac6_stale_live_recording_exits_1_naming_the_field` ×4. `ac6_editing_the_case_after_recording_makes_case_sha256_stale`. `ac6_editing_the_diff_after_recording_makes_diff_sha256_stale`. `ac6_changed_prompt_makes_prompt_sha256_stale` ×2: a double of `build_request` that changes the system prompt, or the framing. `ac6_changed_skipping_makes_prompt_sha256_stale`: the case diff gains a `README.md` section, and a double of `parse_diff` that stops skipping it gives `prompt_sha256` but not `diff_sha256`. `ac6_recording_of_another_model_is_scored_and_shows_the_model` (live, `ai 6/6`, exit 0). `ac6_another_model_with_require_live_exits_1`. `ac6_control_default_model_live_recording_with_require_live_exits_0`. `ac6_hashes_track_the_case_and_diff_bytes` (`diff_sha256` is the SHA-256 of the diff's bytes) | pass (17) |
+| AC7 | `ac7_every_run_prints_the_fixed_line` ×5 (no recording, synthetic, failing, `--require-live` failing, stale): the exact sentence as a whole line. `ac7_each_row_shows_the_recordings_date_and_model` (each AI row) | pass (6) |
+| AC8 | `ac8_failed_runs_catch_nothing` (each AI row `caught 3/5` with 2 failed runs). `ac8_failed_runs_are_listed_by_category` (`run 1 (refusal)`, `run 2 (invalid_output)`). `ac8_all_runs_failed_fails_every_ai_bug` (5 `transient` runs: `ai 0/6`, exit 1) | pass (3) |
+| AC9 | `ac9_invalid_case_exits_2_naming_the_file` ×11: unknown field, `eval-case/v2`, unknown bug field, bad `lines`, no `bugs`, a reversed window, a duplicate bug ID, an `id` that isn't its directory's name, a missing diff outside the case, an AI bug without `min_runs_caught`, and a rule bug with one. `ac9_case_that_isnt_json_exits_2_naming_the_file`. `ac9_missing_diff_exits_2_naming_the_file`. `ac9_cases_directory_missing_exits_2_naming_it`. `ac9_cases_flag_missing_exits_2`. `ac9_cases_directory_with_no_case_exits_2_naming_it`. `ac9_synthetic_file_under_live_exits_2_naming_it`. `ac9_live_file_under_synthetic_exits_2_naming_it` (with no `--recording`). `ac9_recording_flag_with_a_live_file_exits_2_naming_it`. `ac9_recording_flag_with_require_live_exits_2`. `ac9_recording_flag_with_a_missing_file_exits_2_naming_it`. `ac9_run_with_findings_and_error_exits_2_naming_the_file`. `ac9_recording_flag_for_another_case_exits_2_naming_it`. `ac9_live_recording_of_another_case_exits_2_naming_it`. `ac9_unreviewable_diff_exits_2_naming_the_case` ×4 (not a diff, not UTF-8, each with and without a recording) | pass (28) |
+| AC10 | `ac10_whole_run_is_offline_and_leaves_nothing_behind` ×2 (rules only, with a recording). The working directory is an empty `tmp_path`, and `tempfile.tempdir` is another; afterwards both are empty. `real_query_calls` is empty. `subprocess.Popen`, `os.system` and asyncio's subprocess functions record and refuse. The case copy, the committed `tests/evals/cases` and the file named by `REVIEW_BOT_AUDIT_LOG` are unchanged | pass (2) |
+| AC11 | `ac11_order_doesnt_match_inside_a_word` ×2 (`reorder`, `disorder`). `ac11_control_order_as_a_word_matches`. `ac11_underscore_is_a_boundary` ×4 (`export_csv`, `export_total`, `write_csv`, `EXPORT`). `ac11_phrase_inside_a_longer_word_doesnt_match` ×6 (`csvfile`, `exporter`, `discounted`, `Taxonomy`, `Floatation`, `callersX`) | pass (13) |
+| AC12 | `ac12_finding_credits_only_its_own_bug` ×6: the spec's four sentences, plus two `missing-tests` cases: a "test" finding in `logic` (no credit) and a `testing` finding without the word (credit). Each row (`caught 5/5` or `caught 0/5`) and `ai N/6` are checked. `ac12_finding_meeting_two_matchers_credits_both` (`float-money` and `double-tax`, `ai 2/6`) | pass (7) |
+| AC13 | `ac13_each_matching_rationale_is_listed_under_its_bug`: all 30 rationales of `all_ai_bugs`, each in its own bug's block. `ac13_each_unmatched_finding_is_listed`: five unmatched rationales appear in the `unmatched findings:` section. A matched rationale in the same runs appears under `float-money` and not in that section | pass (2) |
+| Limits | `limits_large_hostile_recording_is_scored_in_bounded_time`: each run holds a 450,000-character rationale of near misses (`taxonomy_`, `discounted_`, `reorder`, 50,000 `_`) and 400 near-miss findings. It finishes within 60 s with `ai 0/6`; the whole file takes about 12 s here. `limits_hostile_rationale_cant_forge_report_lines` ×4 (LF, CR, U+2028, NEL). The rationale carries a forged `recall:` line, `result: pass` and an ESC sequence. There is still one `recall:` line, reading `ai 1/6`, no `result: pass` line, and no raw ESC or line breaker | pass (5) |
+
+### Failures
+
+None on the current code.
+
+### Readings for the designer
+
+1. **The entry point** is `review_bot.evals.main(argv) -> int`, called with `["replay", ...]`. The developer confirmed it, and it raises `SystemExit` only for `--help`.
+2. **"Names the field and the `live` command" (AC6)** is read as the field's name and `evals live` in the output. The message names `python -m review_bot.evals live --cases DIR --runs N --max-calls M`.
+3. **"Each row says `evidence=synthetic`" (AC2) and "each row shows the recording's date and model" (AC7)** are checked on AI rows. Rule rows say `evidence=rules`, because they're scored on today's rules, not on the recording.
+4. **"A `live` file under `recordings/synthetic/`" (AC9)** is read as a layout check even without `--recording`, since `--recording` with a `live` file is listed separately. The code checks it.
+5. **AC8's exit code isn't asserted** with 2 failed runs and each bug at 3/5: the sample case sets no `min_passing_runs`, and the code passes it.
+6. **Word boundaries are ASCII** in the self-check's matcher. The spec says "non-alphanumeric", and Python's `isalnum` counts `é` as alphanumeric. No test depends on the difference.
+7. **Prompt-change doubles.** AC6's prompt and skipping cases replace `build_request` or `parse_diff` in every `review_bot` module that holds them. That covers both `review_bot.evals.replay`, where `freshness_fields` computes today's hash, and `review_bot.review`, which the pipeline runs through.
+8. **Committed controls are checked for freshness by a unit test,** `test_each_committed_sample_control_is_fresh`, which names the file and fields to update after a prompt or case change. These acceptance tests still re-hash a copy, so they don't depend on it.
+
+### Gaps
+
+- **`python -m review_bot.evals` itself** (`evals/__main__.py`, 2 lines) isn't run. A child process would break AC10's "no subprocess", and the in-process `main` is the same code.
+- **`min_passing_runs`** (`score.py`) isn't reached from this file, because the sample sets none. The unit test `test_score_case_needs_min_passing_runs_and_a_failed_run_never_passes` covers it, and P1-S15's cases will too.
+
+### Coverage
+
+From this file alone, `review_bot.evals` is at 99% (422 statements, 3 missed). `__main__` is 0% (Gaps) and `score` is 98% (the `min_passing_runs` check, Gaps). The other modules are at 100%. Whole-suite coverage waits for the full gate.

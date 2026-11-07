@@ -87,6 +87,14 @@ class VerifyResult:
         return tuple(check for check in self.checks if check.drop_reason is not None)
 
     @property
+    def ai_anchor_valid(self) -> tuple[ProposalCheck, ...]:
+        """The checks whose anchor is in the diff, duplicates included, in the order proposed.
+
+        So the model's findings that passed the anchor check, before dedup.
+        """
+        return tuple(check for check in self.checks if check.drop_reason is None)
+
+    @property
     def deduped(self) -> tuple[ProposalCheck, ...]:
         """The checks that found their finding a duplicate, in the order proposed."""
         return tuple(check for check in self.checks if check.duplicate_of is not None)
