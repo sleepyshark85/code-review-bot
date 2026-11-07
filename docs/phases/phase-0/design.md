@@ -170,7 +170,7 @@ A public contract: codes are never renumbered or reused, and new ones are append
 
 ### Settings
 
-Precedence: CLI flag, then environment variable, then default. The bot never reads or stores `ANTHROPIC_API_KEY`.
+Precedence: CLI flag, then environment variable, then default. The bot never stores or logs `ANTHROPIC_API_KEY`, and authentication is left to the Claude Code CLI ([README](../../../README.md)). Since [P1-S5](../phase-1/slices/p1-s5-provider-notices.md), it reads that variable, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` only to scrub their values from failure diagnostics (changed at Phase 1's close, designer, 2026-11-07).
 
 | Flag | Environment variable | Default |
 |---|---|---|

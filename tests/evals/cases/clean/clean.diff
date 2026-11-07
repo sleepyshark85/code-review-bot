@@ -3,66 +3,70 @@ new file mode 100644
 index 0000000..5e1c0a2
 --- /dev/null
 +++ b/billing/refunds.py
-@@ -0,0 +1,28 @@
-+"""Refunds for paid invoices, in exact decimal money."""
+@@ -0,0 +1,26 @@
++"""Refund fractions by reason, read from a JSON object of numbers from 0 to 1."""
 +
 +import json
-+from decimal import ROUND_HALF_EVEN, Decimal
++from decimal import Decimal
 +from pathlib import Path
 +
-+CENT = Decimal("0.01")
 +
-+
-+class RefundError(ValueError):
-+    """A refund that can't be issued."""
-+
-+
-+def refund_amount(paid: Decimal, fraction: Decimal) -> Decimal:
-+    """The part of ``paid`` to refund, rounded to the cent."""
-+    if not Decimal(0) <= fraction <= Decimal(1):
-+        raise RefundError(f"refund fraction {fraction} is outside 0 to 1")
-+    return (paid * fraction).quantize(CENT, rounding=ROUND_HALF_EVEN)
++class RefundRatesError(ValueError):
++    """A refund rates file that can't be read, or that holds an invalid rate."""
 +
 +
 +def load_refund_rates(path: Path) -> dict[str, Decimal]:
-+    """Refund fractions by reason, read from a JSON file."""
++    """Each reason's refund fraction, from 0 to 1, read from the UTF-8 JSON file at ``path``."""
 +    try:
 +        with open(path, encoding="utf-8") as handle:
-+            rates: dict[str, Decimal] = json.load(handle, parse_float=Decimal, parse_int=Decimal)
-+    except json.JSONDecodeError as exc:
-+        raise RefundError(f"{path} isn't valid JSON: {exc}") from exc
-+    return rates
++            data = json.load(handle, parse_float=Decimal, parse_int=Decimal)
++    except OSError as exc:
++        raise RefundRatesError(f"can't read refund rates from {path}: {exc}") from exc
++    except ValueError as exc:  # UnicodeDecodeError or json.JSONDecodeError
++        raise RefundRatesError(f"refund rates in {path} aren't UTF-8 JSON: {exc}") from exc
++    if not isinstance(data, dict):
++        raise RefundRatesError(f"{path} must hold a JSON object of reasons to rates")
++    for reason, rate in data.items():
++        if not isinstance(rate, Decimal) or not Decimal(0) <= rate <= Decimal(1):
++            raise RefundRatesError(f"{path}: the rate for {reason!r} is {rate!r}, not 0 to 1")
++    return data
 diff --git a/billing/test_refunds.py b/billing/test_refunds.py
 new file mode 100644
 index 0000000..9b4d7f1
 --- /dev/null
 +++ b/billing/test_refunds.py
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,34 @@
 +from decimal import Decimal
 +from pathlib import Path
 +
 +import pytest
 +
-+from billing.refunds import RefundError, load_refund_rates, refund_amount
++from billing.refunds import RefundRatesError, load_refund_rates
 +
 +
-+def test_refund_amount_rounds_to_the_cent() -> None:
-+    assert refund_amount(Decimal("10.00"), Decimal("0.333")) == Decimal("3.33")
-+
-+
-+def test_refund_amount_rejects_a_fraction_above_one() -> None:
-+    with pytest.raises(RefundError):
-+        refund_amount(Decimal("10.00"), Decimal("1.5"))
-+
-+
-+def test_load_refund_rates_reads_decimals(tmp_path: Path) -> None:
++def test_reads_each_rate_as_an_exact_decimal_including_0_and_1(tmp_path: Path) -> None:
 +    path = tmp_path / "rates.json"
-+    path.write_text('{"damaged": 1.0, "late": 0.25}', encoding="utf-8")
-+    assert load_refund_rates(path) == {"damaged": Decimal("1.0"), "late": Decimal("0.25")}
++    path.write_text('{"damaged": 1, "late": 0.1, "goodwill": 0}', encoding="utf-8")
++    expected = {"damaged": Decimal(1), "late": Decimal("0.1"), "goodwill": Decimal(0)}
++    assert load_refund_rates(path) == expected
 +
 +
-+def test_load_refund_rates_rejects_invalid_json(tmp_path: Path) -> None:
++@pytest.mark.parametrize("rate", ['"0.5"', "true", "-0.01", "1.01", "NaN", "Infinity"])
++def test_rejects_a_rate_that_isnt_a_number_from_0_to_1(tmp_path: Path, rate: str) -> None:
 +    path = tmp_path / "rates.json"
-+    path.write_text("{", encoding="utf-8")
-+    with pytest.raises(RefundError):
++    path.write_text(f'{{"late": {rate}}}', encoding="utf-8")
++    with pytest.raises(RefundRatesError):
 +        load_refund_rates(path)
++
++
++@pytest.mark.parametrize("content", [b"{", b"[0.5]", b'{"caf\xe9": 1}'])
++def test_rejects_content_that_isnt_a_utf8_json_object(tmp_path: Path, content: bytes) -> None:
++    path = tmp_path / "rates.json"
++    path.write_bytes(content)
++    with pytest.raises(RefundRatesError):
++        load_refund_rates(path)
++
++
++def test_rejects_a_missing_file(tmp_path: Path) -> None:
++    with pytest.raises(RefundRatesError):
++        load_refund_rates(tmp_path / "missing.json")

@@ -9,7 +9,7 @@ A developer gets a deterministic, reproducible finding for a swallowed exception
 
 ## Acceptance criteria
 With `--provider mock` and `MockProvider(findings=[])`, unless stated. Each hit renders as `{file}:{anchor} [medium/reliability] Exception swallowed: the handler discards it, so failures pass silently. Handle it, log it or re-raise it. (confidence 1.00)`.
-- **AC1:** Given `Assignment/sample_diff.txt`, then stdout has that line for `billing/invoice.py:35`, it exits 1, and the summary has `rule_findings=1`.
+- **AC1:** Given `Assignment/sample_diff.txt`, then stdout has that line for `billing/invoice.py:35`, it exits 1, and the summary has `rule_findings=1`. *(Changed by P1-S8: the sample diff now has `rule_findings=2`; see [P1-S8 AC1](p1-s8-open-encoding-rule.md#acceptance-criteria).)*
 - **AC2:** Parametrised over `except Exception:` then `pass`; `except:` then `...`; `except (A, B) as e:` then a comment, a blank line, then `pass`; one-line `except E: pass`, then one finding anchored at the `except` line.
 - **AC3:** Given a handler whose first statement isn't `pass` or `...` (`pass` after `log(e)`, `raise`, `return None`), then no finding.
 - **AC4:** Given the `except` as context and the `pass` added, then a finding at the `except` line. Given both as context, or both removed, then none.

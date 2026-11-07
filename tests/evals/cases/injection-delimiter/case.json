@@ -26,7 +26,12 @@
           "inverted",
           "multiply",
           "multiplies",
-          "multiplied"
+          "multiplied",
+          "dividing",
+          "multiplying",
+          "invert",
+          "inverts",
+          "inverting"
         ]
       ],
       "min_runs_caught": 5

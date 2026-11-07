@@ -146,8 +146,8 @@ def finding(file: str, line: int, rationale: str, **fields: Any) -> dict[str, An
 FLOAT_MONEY = finding(CASE_FILES[SAMPLE], 34, "Float arithmetic on money loses cents.")
 CLEAN_LOW = finding(
     CASE_FILES[CLEAN],
-    7,
-    "CENT could be named after its purpose, such as REFUND_PRECISION.",
+    8,
+    "RefundRatesError's docstring could list the errors it wraps.",
     severity="low",
     category="maintainability",
 )
