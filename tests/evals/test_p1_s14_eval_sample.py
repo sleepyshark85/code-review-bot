@@ -325,11 +325,21 @@ def test_p1_s14_ac1_no_recording_has_one_row_per_bug_ai_not_measured(
         assert "not measured" not in result.row(bug)
 
 
-def test_p1_s14_ac1_committed_cases_with_no_live_recording_exit_0(
-    replay: Callable[..., Replay],
+def test_p1_s14_ac1_committed_cases_without_their_live_recordings_exit_0(
+    replay: Callable[..., Replay], tmp_path: Path
 ) -> None:
-    """The repository's own cases directory, as CI would replay it: synthetic files are ignored."""
-    result = replay("--cases", CASES)
+    """A copy of the repository's cases with only rules to score: synthetic files are ignored.
+
+    P1-S17 commits live recordings, so the copy drops them; P1-S17's own tests replay them.
+    """
+    root = tmp_path / "committed"
+    shutil.copytree(CASES, root)
+    live = sorted(root.glob("*/recordings/live"))
+    assert live, "the copy should hold P1-S17's live recordings before they are removed"
+    for folder in live:
+        shutil.rmtree(folder)
+
+    result = replay("--cases", root)
 
     assert result.exit_code == 0, result.output
     for bug in AI_BUGS:

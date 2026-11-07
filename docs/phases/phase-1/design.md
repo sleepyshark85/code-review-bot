@@ -163,7 +163,7 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 | No invalid anchors survive | Verify tests, hostile and malformed input | Same code on real output |
 | Everything runs offline in CI | Whole suite, under Phase 0's guard | Not applicable |
 
-**The gate closes only with both columns.** CI can be green while AI recall and injection resistance stay unmeasured. "Everything runs offline in CI" is read as: nothing in CI needs a model.
+**The gate closes only with both columns.** *Phase 1 closed on 2026-11-07 with one exception the user accepted: `double-tax` was caught in 0 of 5 live runs and stays a documented miss ([test report](test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)).* CI can be green while AI recall and injection resistance stay unmeasured. "Everything runs offline in CI" is read as: nothing in CI needs a model.
 
 ### Known limits carried from Phase 0
 
@@ -180,6 +180,8 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 | The SDK's shutdown can put an asyncio traceback on stderr, breaking the one-line rule | [P1-S18](slices/p1-s18-clean-sdk-shutdown.md) addresses it |
 
 ## 3. Slices
+
+**All done:** every slice below is `Done`. P1-S17's PR sets the last one and carries the closing task.
 
 - [P1-S1: Run mock reviews without loading the Claude SDK](slices/p1-s1-mock-without-sdk.md)
 - [P1-S18: Get clean stderr when the Claude SDK shuts down](slices/p1-s18-clean-sdk-shutdown.md)
@@ -201,7 +203,7 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 - [P1-S16: Record a live eval run with one explicit command](slices/p1-s16-eval-live-command.md)
 - [P1-S17: Measure the real model and hold CI to the result](slices/p1-s17-measure-real-model.md)
 
-**Closing designer task, after the slices merge:** mark replaced Phase 0 criteria `Removed`, and correct Phase 0's "the bot never reads `ANTHROPIC_API_KEY`", which S5 makes untrue. README changes go through the main session, as each spec's Notes list.
+**Closing designer task, after the slices merge:** mark replaced Phase 0 criteria `Removed`, and correct Phase 0's "the bot never reads `ANTHROPIC_API_KEY`", which S5 makes untrue. README changes go through the main session, as each spec's Notes list. **Done (designer, 2026-11-07):** [P0-S1 AC1](../phase-0/slices/p0-s1-offline-review.md#acceptance-criteria) is `Removed`, P0-S1 AC3 and [P0-S3 AC5](../phase-0/slices/p0-s3-provider-failures.md#acceptance-criteria) note their Phase 1 changes, and [Phase 0's settings](../phase-0/design.md#settings) say when the credential variables are read.
 
 ## 4. Open questions
 
@@ -209,7 +211,7 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 
 **Q5.** **CLI stderr in the audit log. Decided: the default.** **Default:** a scrubbed tail, on failed calls only. **Limit:** a fragment shorter than a diff line, a reworded diff line, or an unlisted secret format can still pass. **Alternative:** keep discarding it, which leaves failed calls undiagnosable. This matters most if logs become shared CI artifacts.
 
-**Q9.** **Rejected and edited text. Decided: the default.** The log holds rationale hashes only. **Default:** JSON keeps rejected findings marked `reject`, and edits keep `original_rationale`. Text and Markdown runs store no rejected text, so Phase 2's feedback data requires saved JSON, joined by `run_id`. **Alternative:** keep the text in the log, which can quote the diff or an undetected secret.
+**Q9.** **Rejected and edited text. Decided: the default.** The log holds no rationale text, only whether it changed ([Label](slices/p1-s12-triage.md#interfaces)). **Default:** JSON keeps rejected findings marked `reject`, and edits keep `original_rationale`. Text and Markdown runs store no rejected text, so Phase 2's feedback data requires saved JSON, joined by `run_id`. **Alternative:** keep the text in the log, which can quote the diff or an undetected secret.
 
 **Decided by the user on 2026-11-05, approving P1-S17 with these defaults.** The account wasn't stated: the main session assumed the user's current Claude Code login and told the user, who didn't object. The user can change it before the run.
 

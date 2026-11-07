@@ -1,0 +1,72 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "clean",
+  "kind": "live",
+  "case_sha256": "f55124858122c768f8259f08a92a5ff4d1ed1a9d67e21151fb37a10da316bde2",
+  "diff_sha256": "6b75e551361dbfce02ebf73dab6d2e400e16795bf4c24d317cd9422716fdd750",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "90bc401a3f17a0cd167ce66a4c117649dd8db0af332db94cf28b900562c0c79d",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-07T16:19:55.338195Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/refunds.py",
+          "line": 16,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "A deeply nested JSON document, such as many '[' characters, makes json.load raise RecursionError. That is not a ValueError or an OSError, so it escapes as a raw RecursionError instead of the documented RefundRatesError. Callers that only handle RefundRatesError will crash on such a file. Catch RecursionError as well and wrap it in RefundRatesError, and add a test for deeply nested content.",
+          "confidence": 0.55
+        }
+      ],
+      "usage": {
+        "input_tokens": 3268,
+        "output_tokens": 843
+      },
+      "warnings": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/refunds.py",
+          "line": 16,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "`json.load` keeps only the last value when a key appears more than once. A rates file with a duplicated reason, such as two \"late\" entries, loads without error, and one rate is silently dropped. That kind of edit mistake is exactly what this validator should catch. Pass an `object_pairs_hook` that raises `RefundRatesError` on duplicate keys, and add a test for it.",
+          "confidence": 0.4
+        }
+      ],
+      "usage": {
+        "input_tokens": 3268,
+        "output_tokens": 1046
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 3268,
+        "output_tokens": 538
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 3268,
+        "output_tokens": 670
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 3268,
+        "output_tokens": 481
+      },
+      "warnings": []
+    }
+  ]
+}
