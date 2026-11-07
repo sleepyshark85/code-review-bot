@@ -755,7 +755,7 @@ def test_main_with_triage_reports_only_findings_not_rejected_after_the_prompts(
     assert exit_code == 1
     assert captured.out == "src/app.py:6 [high/logic] First. (confidence 0.90)\n"
     assert captured.err.startswith(
-        "Finding 1 of 2: src/app.py:6 [high/logic] First. (source: ai)\n[a]ccept [r]eject: "
+        "Finding 1 of 2: src/app.py:6 [high/logic] First. (source: ai)\n[a]ccept [r]eject [e]dit: "
     )
 
 

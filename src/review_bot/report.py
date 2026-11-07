@@ -64,15 +64,20 @@ class TriageDecision(StrEnum):
 
     ACCEPT = "accept"
     REJECT = "reject"
+    EDIT = "edit"
     UNDECIDED = "undecided"
 
 
 @dataclass(frozen=True, slots=True)
 class TriagedFinding:
-    """A reported finding and the call triage made on it."""
+    """A reported finding, with any edit applied, and the call triage made on it.
+
+    ``original_rationale`` is the rationale an edit replaced, or None if it wasn't changed.
+    """
 
     reviewed: ReviewedFinding
     decision: TriageDecision
+    original_rationale: str | None = None
 
 
 def not_rejected(triaged: Iterable[TriagedFinding]) -> tuple[ReviewedFinding, ...]:

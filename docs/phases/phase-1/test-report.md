@@ -1187,3 +1187,54 @@ Answered in review round 1 by the main session, and pinned in the spec's Interfa
 ### Coverage
 
 From this file alone: `triage` 100%. `console` 79%; the rest is pre-existing stream-failure handling, the non-Windows branch of the console check, and `get_osfhandle` failing. `cli` 78%; the rest is outside triage. Whole-suite coverage waits for the full gate.
+
+## P1-S13: Edit a finding during triage
+
+Spec: [p1-s13-triage-edit.md](slices/p1-s13-triage-edit.md). Tests: [`tests/integration/test_p1_s13_triage_edit.py`](../../../tests/integration/test_p1_s13_triage_edit.py), 80 cases. They reuse P1-S12's seam: `main` runs with an injected `MockProvider` under `test_p1_s12_triage`'s `run_bot` fixture and `FakeStream`s, and its fixtures are shared by name. AC7's line-splitting case uses a real `io.StringIO` stdin that says it's a terminal. Five cases call `run_triage` directly.
+
+**Status: every criterion passes: 80 passed, from this file alone, on the developer's uncommitted working tree** (base `bb02fcc`).
+
+**Before the code.** The developer's code was already on disk at the first run, so the file was also run against `HEAD` in a scratch worktree: **80 failed, 0 passed**. On a first pass 7 cases passed there. `HEAD` treats `e` as an invalid answer and asks again, and a later EOF leaves the finding undecided with its original values, which is also AC9's outcome. Each of those cases now also asserts that `e` starts an edit (the decision prompt is shown once, or the new text reaches the report), so none passes on pre-slice code. On the working tree, the first run had 3 failures, all test bugs. Two gave a `list_iterator.__next__` as `read_line`, which takes no prompt argument. In the third, AC6's "no new text in the log" check matched the two-letter word `in` in an unrelated record. Only words over 6 characters are checked now, as in P1-S12 AC8.
+
+### Gate
+
+The tester ran `ruff format --check` and `ruff check` on this file, and ran the file alone, as the coordinator asked. The full gate waits for the coordinator.
+
+### Criteria
+
+Test names drop the `test_p1_s13_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_edited_ai_finding_shows_the_new_severity_and_rationale` ×2 and `ac1_edited_rule_finding_shows_the_new_severity_and_rationale` ×2 (text, Markdown): the entry for that `file:line` has severity `low` and `Better text.`, and the old text is gone from stdout (AI case). `ac1_json_marks_edit_and_keeps_the_models_text`: `triage` `edit`, `low`, the new text, and `original_rationale` equal to the model's. `ac1_json_keeps_the_rules_text_and_leaves_the_accepted_one_alone`: a rule finding's `original_rationale` is the rule's text, and the accepted AI finding's is null. `ac1_the_prompt_offers_edit`: stderr holds `[a]ccept [r]eject [e]dit`. `ac1_e_is_matched_like_the_other_answers` ×3 (`E`, ` e `, `e\r`). `ac1_severity_is_matched_after_strip_and_lower` ×3 (`LOW`, ` low `, `Low\r`), with no second ask. `ac1_every_severity_can_be_chosen` ×4. `ac1_unicode_rationale_is_kept_exactly`. `ac1_the_next_finding_is_asked_as_usual_after_an_edit` | pass (19) |
+| AC2 | `ac2_two_empty_answers_keep_the_values_with_label_edit`: `edit`, severity and rationale unchanged, `original_rationale` null. `ac2_two_empty_answers_log_an_unchanged_edit`: label `edit`, `severity_before` equal to `severity_after`, `rationale_changed` false. `ac2_an_unchanged_edit_renders_like_an_accept` ×2: 3 reads, and stdout byte-identical to accepting. `ac2_a_blank_rationale_counts_as_empty` ×2 (spaces, tab). `ac2_severity_only_edit_keeps_the_rationale`. `ac2_rationale_only_edit_keeps_the_severity` | pass (8) |
+| AC3 | `ac3_unknown_severity_asks_again` ×6 (`urgent`, `info`, `crit`, `a`, `e`, `low!`): exactly one extra read, then `low` and the new text stand. `ac3_unknown_severity_leaves_the_other_findings_alone`: two invalid severities, then empty answers keep the values, and the next finding is accepted as usual. `ac3_unknown_severity_isnt_shown_back_in_full`: a megabyte severity, within 60 s, not echoed. `ac3_run_triage_asks_for_severity_again`: prompts 2 and 3 both name "severity" | pass (9) |
+| AC4 | `ac4_edit_keeps_the_frozen_fields` ×2 (rule, AI): the finding is found by its baseline `fingerprint`, and `file`, `line`, `source`, `rule`, `category`, `confidence` and `fingerprint` equal an untriaged run's. `ac4_an_edit_reads_only_severity_and_rationale`: 3 reads for one finding, with spare answers left unread. `ac4_edit_prompts_ask_for_severity_then_rationale_only`: the two edit prompts name "severity" and "rationale", and neither names `file`, `source`, `rule`, `category`, `confidence`, `fingerprint` or `anchor`. `ac4_run_triage_label_keeps_fingerprint_and_source` | pass (5) |
+| AC5 | `ac5_critical_lowered_to_low_stays_with_threshold_high` ×3 (formats): exit 1. Text and Markdown show `low`; JSON has `low`, `edit`, `reported` 1 and `below_threshold` 0. `ac5_a_finding_below_the_threshold_still_isnt_asked`: P1-S12 AC12 holds alongside an edit | pass (4) |
+| AC6 | `ac6_triage_record_holds_the_change_but_not_the_text`: the edit's record is `labelled`, with exactly P1-S12's 8 fields, `label` `edit`, `high` to `low` and `rationale_changed` true. No record of the run holds a word of the new text. `ac6_run_triage_label_records_the_change`: `critical` to `medium`, and the new text isn't in the label's `repr` | pass (2) |
+| AC7 | `ac7_a_newline_ends_the_answer_by_construction`: a real line-splitting stdin holding `StartMark\n## Forged EndMark`. The rationale is `StartMark`, the rest is the next finding's (invalid) answer, and the Markdown has only the `Review` heading. `ac7_escape_in_new_text_renders_safely` ×3 (formats): `\x1b[31m` and an OSC title. No raw control in stdout, JSON parses back to the exact text, and Markdown and text keep both markers in one entry. `ac7_limits_a_line_that_still_holds_a_newline_renders_safely` ×3: a fake stream that breaks the line contract gives `\x1b`, `\n## Forged`, `\r` and U+2028 in one answer. Still no raw control, no forged heading, and two entries. `ac7_escape_in_new_text_isnt_echoed_raw_to_stderr`. `ac7_markdown_in_new_text_is_inert` ×3 (`\n## Forged`, `<img …>`, a link) | pass (11) |
+| AC8 | `ac8_secret_in_new_text_is_redacted_in_the_report` ×6 (an assembled AWS key and GitHub token, × formats): the value isn't in stdout, and `[REDACTED]` is in that finding's entry. `ac8_secret_in_new_text_reaches_neither_stderr_nor_the_log`. `ac8_secret_in_new_text_doesnt_stop_the_report`: exit 1 and `edit`, not 16 | pass (8) |
+| AC9 | `ac9_stopping_part_way_leaves_it_undecided_and_unchanged` ×6 (EOF, Ctrl+C × at the severity prompt, at the rationale prompt, after an invalid severity): the decision prompt is shown once, both findings are `undecided` with their original severities and rationales, `original_rationale` is null, `counts.undecided` is 2, it exits 1, and there's no traceback and no `triage` record. `ac9_earlier_decisions_stand_when_an_edit_is_cut_short` ×2. `ac9_cut_short_edit_shows_the_original_in_text` ×2. `ac9_run_triage_drops_a_cut_short_edit`: no label, and `e` wasn't refused | pass (11) |
+| Limits | `limits_a_megabyte_rationale_finishes_within_the_bound`, and isn't echoed in full. `limits_hundreds_of_edits_within_the_bound`: 200 edits, 200 records. `limits_edit_then_stdout_failure_still_logs_the_label`: exit 14, and the `edit` label is logged | pass (3) |
+
+### Failures
+
+None on the current code.
+
+### Readings for the designer
+
+1. **"An empty answer keeps the current value" (spec preamble):** read to include a rationale that is blank after stripping (spaces, a tab), because `Finding.rationale` must hold a non-space. Pinned by `ac2_a_blank_rationale_counts_as_empty`.
+2. **The `e` and severity answers are matched after `.strip().lower()`,** extending P1-S12's pinned rule for `a` and `r`. Pinned by `ac1_e_is_matched_like_the_other_answers` and `ac1_severity_is_matched_after_strip_and_lower`. The rationale itself is kept as typed apart from leading and trailing whitespace, then redacted, so `ac1_unicode_rationale_is_kept_exactly` holds its case and quotes.
+3. **"The report shows … that rationale" (AC1):** read as text and Markdown showing only the new text. The old text survives only in JSON's `original_rationale`, per open question 9.
+4. **"No prompt offers them" (AC4):** read as an edit reading exactly two answers (one more per invalid severity), with prompts naming "severity" and "rationale" and none of the frozen fields. If the designer wants other wording, only `FROZEN_WORDS` and that test change.
+5. **AC7's "by construction"** rests on the CLI reading one line per answer. A `read_line` that returns embedded newlines (an injected one, not the CLI's) is outside the criterion. `ac7_limits_a_line_that_still_holds_a_newline_renders_safely` shows the renderers still hold the line in that case.
+6. **Decided in the spec notes (2026-11-07): an answer equal to the current rationale counts as unchanged,** so `rationale_changed` is false and `original_rationale` null. Pinned by the unit test `test_run_triage_edit_with_the_same_text_does_not_count_as_a_changed_rationale`.
+7. **Decided in the spec notes (2026-11-07): `original_rationale` is unredacted.** Only the new text is redacted. With `--format json`, `original_rationale` holds the model's or rule's text as it was (design.md: stdout isn't redacted). Not tested either way.
+
+### Gaps
+
+- **AC7 on a real terminal:** a test can't type into a real console, so line splitting is shown with an `io.StringIO` that says it's a terminal. It still goes through the CLI's own `readline`.
+
+### Coverage
+
+From this file alone: `triage` 100%. `render` 87% and `report` 70%; the rest is output this slice doesn't touch (skipped files, quoted paths, count wording), covered by P1-S10's and P1-S11's files. Whole-suite coverage waits for the full gate.
