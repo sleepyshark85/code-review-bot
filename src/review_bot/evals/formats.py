@@ -24,6 +24,7 @@ from review_bot.errors import ErrorCategory, ReviewBotError
 from review_bot.findings import Category, Finding, Severity, Source
 
 __all__ = [
+    "INTERNAL_ERROR",
     "Bug",
     "EvalCase",
     "EvalInputError",
@@ -33,6 +34,7 @@ __all__ = [
     "RecordedRun",
     "Recording",
     "RecordingKind",
+    "RunErrorCategory",
     "find_case_files",
     "load_case",
     "load_recording",
@@ -43,6 +45,10 @@ _CASE_FILE_NAME: Final = "case.json"
 type _Text = Annotated[str, Field(pattern=r"\S")]
 type LineWindow = tuple[PositiveInt, PositiveInt]
 type RecordingKind = Literal["live", "synthetic"]
+# A failed run's category: a provider's, or ``internal`` for an unexpected exception in its call.
+type RunErrorCategory = ErrorCategory | Literal["internal"]
+
+INTERNAL_ERROR: Final = "internal"
 
 
 class EvalInputError(ReviewBotError):
@@ -138,7 +144,7 @@ class EvalCase(_Strict):
 
 
 class _RunError(_Strict):
-    category: ErrorCategory
+    category: RunErrorCategory
 
 
 class _Usage(_Strict):
@@ -164,7 +170,7 @@ class RecordedRun(_Strict):
         return self
 
     @property
-    def error_category(self) -> ErrorCategory | None:
+    def error_category(self) -> RunErrorCategory | None:
         """The failed run's error category, or None if it returned findings."""
         return None if self.error is None else self.error.category
 
@@ -197,6 +203,11 @@ class LoadedCase:
     file: Path
     case_sha256: str
     diff_path: Path
+
+    @property
+    def live_recording_path(self) -> Path:
+        """Where the case's live recording is, whether or not it exists."""
+        return self.file.parent / "recordings" / "live" / "recording.json"
 
 
 def find_case_files(cases_dir: Path) -> list[Path]:
