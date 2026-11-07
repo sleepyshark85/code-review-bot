@@ -1,6 +1,6 @@
 # Phase 1 release notes
 
-Reviews can now be trusted, triaged and measured. Rules catch two bug classes with no model, secrets never leave the machine, made-up line references are dropped, and every run is traced. A developer accepts, rejects or edits each finding, and an offline eval scores the bot against a recorded live run.
+Reviews can now be trusted, triaged and measured. Rules catch two bug classes with no model, a detected secret is never sent to the model, made-up line references are dropped, and every run is traced. A developer accepts, rejects or edits each finding, and an offline eval scores the bot against a recorded live run.
 
 ## What you can run
 
@@ -8,7 +8,7 @@ Reviews can now be trusted, triaged and measured. Rules catch two bug classes wi
 review-bot <diff>                         # text, as before
 review-bot <diff> --format json           # or --format markdown
 review-bot <diff> --triage                # accept, reject or edit each finding (needs a terminal)
-python -m review_bot.evals replay --cases tests/evals/cases --require-live      # offline
+python -m review_bot.evals replay --cases tests/evals/cases --require-live      # offline; exits 1 on the documented double-tax miss
 python -m review_bot.evals live --cases tests/evals/cases --runs 5 --max-calls 25   # spends real tokens
 ```
 
@@ -24,7 +24,7 @@ python -m review_bot.evals live --cases tests/evals/cases --runs 5 --max-calls 2
 | **Identity** | None | A stable fingerprint per finding |
 | **Output** | Text | Text, JSON (`report/v1`) or Markdown |
 | **Triage** | None | `--triage`: accept, reject or edit each finding; each decision is logged as a label |
-| **Audit** | None | JSONL log of every stage decision, with no diff text or secrets (`.review-bot/audit.jsonl`) |
+| **Audit** | None | JSONL log of every stage decision, with no diff text; provider diagnostics are scrubbed (`.review-bot/audit.jsonl`) |
 | **Provider diagnostics** | Discarded | Warnings and a scrubbed tail of a failed call's stderr reach the audit log |
 | **Evals** | None | Planted-bug, clean and prompt-injection cases; `replay` offline in CI, `live` by hand |
 | **SDK shutdown** | Could print an asyncio traceback | stderr stays one line |

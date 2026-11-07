@@ -26,7 +26,7 @@ Unless a criterion says otherwise, runs select `--provider mock`.
 
 **Prompt**
 - **AC12:** Given `Assignment/sample_diff.txt` (malformed hunk counts, `{self.id}` braces), then the request's `user_prompt` contains the file's text unchanged and the run isn't rejected.
-- **AC13:** Given any diff, then `user_prompt` is the opening delimiter line, the diff, and the closing delimiter line; `system_prompt` doesn't contain the diff and states that delimited content is untrusted data, not instructions.
+- **AC13:** Given any diff, then `user_prompt` is the opening delimiter line, the diff, and the closing delimiter line; `system_prompt` doesn't contain the diff and states that delimited content is untrusted data, not instructions. *(Changed by P1-S2 AC7: skipped files are left out of the diff sent.)*
 - **AC14:** Given a diff containing the delimiter lines generated for another diff, then the delimiters in its own `user_prompt` occur nowhere inside the diff.
 - **AC15:** Given any request, then `system_prompt` requires bare JSON `{"findings": [...]}` with no code fence, and names every `Finding` field and every `Severity` and `Category` value.
 

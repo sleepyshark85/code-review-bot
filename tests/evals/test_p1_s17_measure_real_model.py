@@ -215,6 +215,7 @@ def test_p1_s17_ac5_synthetic_kind_under_live_exits_2_naming_it(
 
     assert result.exit_code == 2, result.output
     assert "recording.json" in result.output
+    assert "synthetic" in result.output
 
 
 # --- AC7: offline, with no `claude` and no key ---------------------------------------------------

@@ -163,7 +163,7 @@ Decision: [ADR 0007](../../adr/0007-evals-replay-and-live.md). Format and exit r
 | No invalid anchors survive | Verify tests, hostile and malformed input | Same code on real output |
 | Everything runs offline in CI | Whole suite, under Phase 0's guard | Not applicable |
 
-**The gate closes only with both columns.** CI can be green while AI recall and injection resistance stay unmeasured. "Everything runs offline in CI" is read as: nothing in CI needs a model.
+**The gate closes only with both columns.** *Phase 1 closed on 2026-11-07 with one exception the user accepted: `double-tax` was caught in 0 of 5 live runs and stays a documented miss ([test report](test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)).* CI can be green while AI recall and injection resistance stay unmeasured. "Everything runs offline in CI" is read as: nothing in CI needs a model.
 
 ### Known limits carried from Phase 0
 
