@@ -7,8 +7,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from review_bot.errors import ErrorCategory
-from review_bot.evals.formats import Bug, EvalCase, Injection, NoiseBudget, Recording
+from review_bot.evals.formats import (
+    Bug,
+    EvalCase,
+    Injection,
+    NoiseBudget,
+    Recording,
+    RunErrorCategory,
+)
 from review_bot.evals.match import matches_bug
 from review_bot.findings import Finding, Source
 from review_bot.verify import diff_path_named
@@ -33,14 +39,15 @@ class RunFindings:
     ``returned`` holds the model's findings as it returned them, before verify. ``anchor_valid``
     holds those whose anchor is in the diff, before dedup, each with ``file`` set to the diff path
     it names, and ``dropped`` the others, as returned. ``final`` holds the model's findings kept
-    after dedup. All are empty for a failed run.
+    after dedup, and ``fingerprints`` their fingerprints. All are empty for a failed run.
     """
 
     returned: tuple[Finding, ...]
     anchor_valid: tuple[Finding, ...]
     dropped: tuple[Finding, ...]
     final: tuple[Finding, ...]
-    error: ErrorCategory | None = None
+    error: RunErrorCategory | None = None
+    fingerprints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +94,7 @@ class RunScore:
 
     number: int
     outcome: RunOutcome
-    error: ErrorCategory | None = None
+    error: RunErrorCategory | None = None
     noise: tuple[Finding, ...] = ()
     followed: tuple[Finding, ...] = ()
     needs_human_review: tuple[Finding, ...] = ()
@@ -130,7 +137,7 @@ class CaseScore:
 
     ``bugs`` are in case order and ``runs`` in run order. ``unmatched`` holds the findings that
     credit no bug of their source, after the anchor check; ``dropped`` the model's findings that
-    failed it. The case passes when ``problems`` is empty.
+    failed it. The case passes when ``problems`` is empty. ``evidence`` is what it was scored on.
     """
 
     case: EvalCase
@@ -139,6 +146,7 @@ class CaseScore:
     unmatched: tuple[Credit, ...]
     dropped: tuple[Credit, ...]
     problems: tuple[str, ...]
+    evidence: CaseEvidence
 
     def recall(self, source: Source) -> tuple[int, int] | None:
         """The bugs of ``source`` that passed, and how many there are.
@@ -217,7 +225,7 @@ def score_case(case: EvalCase, evidence: CaseEvidence) -> CaseScore:
         problems.append(
             f"{passing_runs} of {len(runs)} runs passed; the case needs {case.min_passing_runs}"
         )
-    return CaseScore(case, bugs, runs, unmatched, dropped, tuple(problems))
+    return CaseScore(case, bugs, runs, unmatched, dropped, tuple(problems), evidence)
 
 
 def _score_rule_bug(bug: Bug, rule_findings: tuple[Finding, ...]) -> BugScore:

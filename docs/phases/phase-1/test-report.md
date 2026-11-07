@@ -1394,3 +1394,86 @@ None on the current code.
 ### Coverage
 
 From this file alone in round 0, `review_bot.evals` was at 88%. The misses were error paths for invalid input, staleness and `--require-live`, which P1-S14's file and the unit tests cover. Whole-suite coverage waits for the full gate.
+
+## P1-S16: Record a live eval run with one explicit command
+
+Spec: [p1-s16-eval-live-command.md](slices/p1-s16-eval-live-command.md). Tests: [`tests/evals/test_p1_s16_eval_live_command.py`](../../../tests/evals/test_p1_s16_eval_live_command.py), 22 cases. They were written from the spec, P1-S14's recording format and P1-S15's checks, in parallel with the developer. After the developer finished, they were tightened to the developer's reported messages and report lines.
+
+**No test makes a live call.** Each test runs `review_bot.evals.main(["live", ...], sdk_call=fake)` in process. That is the developer's seam: `live` builds `ClaudeAgentProvider(settings, sdk_call=sdk_call)`. The fake answers by case, from the one file each case's diff names (`billing/invoice.py`, `billing/refunds.py`, `billing/ledger.py`). It records each call's prompt and options before reading them, so a call for an unexpected case still counts. Its scripts were checked against `ClaudeAgentProvider` directly:
+- an answer gives 100 input and 10 output tokens;
+- the other scripts give `refusal`, `transient` (status 503) and `invalid_output`.
+
+Every test works in a `tmp_path` copy of committed cases, from a temporary working directory, with `CI` removed: CI sets `CI`, and AC6 refuses to run under it. An autouse check takes the existence, size and modification time of every file under `tests/evals/cases/*/recordings/live/`, and of the repository's `.review-bot/eval-live-audit.jsonl`, before each test. It fails the test if any of them changed. It compares stamps rather than requiring the files to be absent, because P1-S17's real run leaves both in the repository.
+
+**Status: every criterion passes. 22 passed, on the developer's uncommitted working tree** (base `8095b61`), including the AC3 `internal` test, which was written before the developer's change landed.
+- Before the developer's code existed, all 20 tests failed on the missing `sdk_call` keyword.
+- Tightening them found two test bugs, now fixed:
+  - the all-skipped case lacked the `noise_budget` that a case with no bugs needs;
+  - the final-lines check ignored the stderr progress lines that follow the report in the combined output.
+
+### Gate
+
+`ruff format --check` and `ruff check` pass on the file. Only this file was run, as memory is limited: 22 passed in about 6 s. The full gate waits for the coordinator.
+
+### Criteria
+
+Test names drop the `test_p1_s16_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_two_cases_two_runs_make_four_calls_and_one_recording_each`. Checks: 4 calls, 2 per case. Each `recordings/live/recording.json` has every Recording field, `kind: live`, today's four freshness values, the default model, an aware `recorded_at`, and 2 runs with the returned findings, `usage` and `warnings`. Nothing else is written under `--cases` | pass |
+| AC2 | `ac2_replay_scores_the_live_recording_as_live_printed`: the same exit code, the same `caught N/M` for every AI bug, and the same `rules`/`ai` recall | pass |
+| AC3 | `ac3_failed_run_is_recorded_by_category_and_the_others_continue`. Checks: run 2 of 3 has `error: {category: transient}`, and runs 1 and 3 hold findings. The output shows `caught 2/3`, `live: case sample run 2/3 ... failed (transient)`, `failed runs: 1 of 3 (invalid_output 0, refusal 0, transient 1)` and `total: 3 calls, failed 1 of 3 (...` | pass |
+| AC3 | `ac3_unexpected_provider_exception_is_recorded_as_internal_without_its_text`: the fake's stream raises `RuntimeError(sentinel)` on run 2 of 3. Expected: the run is recorded as `error: {category: internal}`, runs 1 and 3 hold findings, the output shows `live: case sample run 2/3 ... failed (internal)`, and the sentinel is in neither the recording, the output nor the live audit log | pass |
+| AC4 | `ac4_secret_in_a_finding_is_written_redacted_and_passes_the_scan`: an AWS-format key in a rationale is written as `[REDACTED]`, and the file passes `scan_secrets`. `ac4_invalid_output_is_recorded_without_the_raw_model_text`: a sentinel in non-JSON output is absent from the file, and the run is recorded as `invalid_output` | pass |
+| AC5 | `ac5_over_budget_exits_2_before_any_call_stating_the_planned_count` ×2: no `--max-calls`, and 6 planned over 5. Each checks the exact `review-bot evals: error: ...` line and that `--cases` gets no `recordings/`. `ac5_no_runs_exits_2_before_any_call` | pass (3) |
+| AC6 | `ac6_ci_set_exits_2_before_any_call_even_with_every_flag`: checks `live never runs in CI, and CI is set in the environment.` `ac6_replay_with_a_live_flag_exits_2_without_a_call` ×2: `--runs`/`--max-calls`, and `--provider claude`. `ac6_replay_under_live_like_variables_makes_no_call`: `REVIEW_BOT_PROVIDER=claude` and `REVIEW_BOT_MAX_RETRIES`; exits 0 with no call | pass (4) |
+| AC7 | `ac7_secret_in_a_case_diff_exits_2_before_any_call_naming_the_case`: `zz-leaky/case.json: its diff can't be reviewed: secret`. The leaky case sorts after `sample`, so a check made case by case would already have made a call. The key isn't echoed. `ac7_case_with_every_file_skipped_exits_2_before_any_call_naming_it` is the developer's new refusal, in AC7's spirit: a docs-only diff gives `case zz-docs-only: nothing to review: every file is skipped` | pass (2) |
+| AC8 | `ac8_interruption_keeps_the_unfinished_cases_old_file`: a `KeyboardInterrupt` on the second case's run 2. The first case's new file, holding its failed run, is already in place when the second case starts. The second case's old file is byte-identical. The test doesn't depend on the order cases run in | pass |
+| AC9 | `ac9_report_shows_every_measure`. 3 cases × 3 runs, scripted so each measure has a known value. Exact lines checked: the `Live run: ...` header; float-money `caught 3/3` with its three `run N:` rationale lines; `recall: rules 2/2, ai 1/6`; the clean case's noise budget line and `passing runs: 2 of 3, needs 5`; the canary's `needs human review` rationale and `no review: run 3 (invalid_output)`; `anchor drops: 1 of 6 returned findings`; `drift: float-money credited on lines 34, 40`; `fingerprint recurrence: 1 of 3 ...` (sample) and `1 of 1 fingerprint ...` (clean); `rule tags: 1 of 6 returned findings; deduped: 1`; `failed runs:` for each case; `findings per run: 3, 2, 1` and `1, 1, no review`; `tokens: input 300, output 30`; the `total: 9 calls, failed 2 of 9 (invalid_output 1, refusal 1); tokens: input 700, output 70` and `result: fail` lines; and both unmatched findings. Exit 1 | pass |
+| AC10 | `ac10_a_live_run_reaches_only_the_injected_sdk_call`, plus the suite's autouse `fail_on_real_query` on every test | pass |
+| AC11 | `ac11_every_call_has_retries_0_whatever_the_variable_says`: with `REVIEW_BOT_MAX_RETRIES=5`, each call's `options.env["CLAUDE_CODE_MAX_RETRIES"]` is `"0"`. `ac11_max_retries_flag_is_refused_before_any_call`: exit 2, no call | pass (2) |
+| AC12 | `ac12_appends_one_run_id_per_call_whatever_the_audit_setting`: 4 distinct `run_id`s in `.review-bot/eval-live-audit.jsonl` under the working directory, and its `.gitignore` is `*\n`. `REVIEW_BOT_AUDIT_LOG`'s file isn't created. `ac12_appends_to_an_existing_log_without_adding_a_gitignore` | pass (2) |
+
+### Failures
+
+None on the current code.
+
+**Fixed: `ac3_unexpected_provider_exception_is_recorded_as_internal_without_its_text`.** Before the developer's `internal` change, the reproduction below raised the `RuntimeError` out of `main`, so no run was recorded and the later runs never happened. It now records the run as `internal` and continues. The audit log keeps only the exception's class name.
+
+```python
+async def crash(prompt, options):
+    raise RuntimeError("SENTINEL")
+    yield  # an async generator, like the SDK's stream
+
+
+main(["live", "--cases", CASES_COPY, "--runs", "1", "--max-calls", "1"], sdk_call=crash)
+# before the fix: RuntimeError: SENTINEL, raised out of main
+# now: the run is recorded as {"category": "internal"}, without "SENTINEL"
+```
+
+**Review round 1, finding 2 (major).** The autouse teardown asserted that the repository's `.review-bot/eval-live-audit.jsonl` didn't exist, so the whole file would fail locally once P1-S17 runs `live` from the repository root. It now compares that file's stamp before and after each test, as it does for every recording under `recordings/live/`.
+
+### Readings for the designer
+
+1. **`--max-retries` on `live` (AC11) is refused with exit 2,** not accepted and ignored. Either way retries stay 0, which meets "whatever `--max-retries` says". The test asserts the refusal the developer reported.
+2. **`--audit-log` (AC12)** doesn't exist on `live`, and `REVIEW_BOT_AUDIT_LOG` is ignored. Only the variable is tested.
+3. **"`CI` set" (AC6)** is tested with `CI=true`. Whether an empty `CI` counts as set isn't stated.
+4. **"Default `replay`" (AC6)** is read as: `replay` takes no live flag, and no `REVIEW_BOT_*` variable makes it call.
+5. **The all-skipped refusal** isn't in the spec. It's tested under AC7, as another case that can't be reviewed and stops the run before any call. The designer may want to add it to the spec.
+6. **`--runs 0` and `--runs -1`** aren't in the spec. A probe outside the suite showed both exit 2 before any call (`isn't a whole number of at least 1`). No test was added.
+7. **A rule-tagged model finding that is deduped** is also listed under `unmatched findings`. The test accepts this, as AC9 asks for every unmatched finding.
+
+### Gaps
+
+- **A crash during the write itself (AC8)** isn't simulated, because that would mean patching the developer's write path. The test covers an interruption between cases. The developer writes `recording.json.partial`, then replaces.
+- **Some error paths in `live.py` aren't reached by this file:**
+  - an invalid fixed setting: lines 127-128;
+  - an unwritable live audit log: lines 177-178, 184 and 213;
+  - a diff that can't be reviewed for a reason other than a secret: line 186;
+  - a secret that survives redaction: line 244;
+  - an unwritable recording: lines 253-254.
+
+### Coverage
+
+From this file alone: `review_bot.evals` 86%, `live.py` 90%, and `metrics.py` 100%. The other misses are `replay`, `--require-live` and format-error paths, which P1-S14's, P1-S15's and the unit tests cover. Whole-suite coverage waits for the full gate.

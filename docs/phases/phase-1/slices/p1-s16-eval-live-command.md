@@ -1,6 +1,6 @@
 # P1-S16: Record a live eval run with one explicit command
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S5, P1-S15
 - **Touches:** `evals`
 
@@ -32,3 +32,6 @@ Command: `python -m review_bot.evals live --cases DIR --runs N --max-calls M`. T
 ## Notes
 - With retries at 0, a transient failure is recorded as a failed run. Re-running because of it is a user decision under P1-S17.
 - **README (main session):** describe the `live` command, and that it spends real tokens.
+- **Changed in build, developer, 2026-11-07:** the test seam is `review_bot.evals.main(argv, *, sdk_call=...)`, which builds `ClaudeAgentProvider` over it. `live` takes only the model, deadline and API timeout from the settings; it has no `--max-retries` flag, so passing one exits 2 before any call. It exits 0 or 1 by replay's exit rule, scoring each recording as replay reads it from disk. Each call's audit records end at `agent.called` or `agent.failed`, with no `run.end`. A string still holding a secret in its JSON form after redaction is written as `[REDACTED]` whole, and a recording that would still fail the secret scan isn't written (exit 2).
+- **Changed in build, main session's decision, 2026-11-07:** after each call, stderr gets one line, `live: case <case_id> run <n>/<runs> ... ok` or `... failed (<category>)`; stdout holds only the report. A case whose files are all skipped exits 2 before any call with `case <case_id>: nothing to review: every file is skipped, so no call would reach the model. Give the case a diff with a file that isn't skipped.` Once the calls end, `sys.unraisablehook` reports are discarded, as in the review CLI (P1-S18).
+- **Changed in review round 1, main session's decision, 2026-11-07:** an unexpected exception in a call is recorded as a failed run with category `internal`, which the recording format now allows, with its class name in the audit log and never its text; the other runs continue. Any other unexpected exception stops the command with exit 2 and the one line `review-bot evals: error: internal error. Its text isn't shown, as it can hold model or CLI output.` Every setting but the model, deadline and API timeout is fixed, so no other `REVIEW_BOT_*` variable is read.

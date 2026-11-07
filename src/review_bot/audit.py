@@ -21,15 +21,21 @@ from review_bot.secret_scan import redact
 
 __all__ = [
     "DEFAULT_AUDIT_LOG_PATH",
+    "EVAL_LIVE_AUDIT_LOG_PATH",
     "AuditLog",
     "JsonValue",
     "Stage",
     "file_fields",
     "scrub_diagnostics",
+    "utc_now",
 ]
 
 # Relative, so it lands under the working directory.
 DEFAULT_AUDIT_LOG_PATH: Final = Path(".review-bot") / "audit.jsonl"
+# The live eval's log, in the same directory, whatever the review's settings say (P1-S16).
+EVAL_LIVE_AUDIT_LOG_PATH: Final = DEFAULT_AUDIT_LOG_PATH.parent / "eval-live-audit.jsonl"
+# The logs whose directory, when a log creates it, gets a ``.gitignore``.
+_GITIGNORED_LOG_PATHS: Final = frozenset({DEFAULT_AUDIT_LOG_PATH, EVAL_LIVE_AUDIT_LOG_PATH})
 
 _SCHEMA: Final = "audit/v1"
 # Ignores everything in the default directory, itself included, in any repository.
@@ -75,8 +81,8 @@ class AuditLog:
     def __init__(self, path: Path, *, clock: Callable[[], datetime]) -> None:
         """Check that ``path`` can be appended to, creating its missing directories.
 
-        Creating the default directory also writes a ``.gitignore`` there, so the log is never
-        committed by accident.
+        Creating the default directory, for the review's log or the live eval's, also writes a
+        ``.gitignore`` there, so the log is never committed by accident.
 
         Args:
             path: The log file.
@@ -89,7 +95,7 @@ class AuditLog:
         self.run_id = str(uuid.uuid4())
         self._clock = clock
         try:
-            if self._create_directory() and path == DEFAULT_AUDIT_LOG_PATH:
+            if self._create_directory() and path in _GITIGNORED_LOG_PATHS:
                 (path.parent / ".gitignore").write_text(_IGNORE_EVERYTHING, encoding="utf-8")
             # Opening to append, unlike ``touch``, proves that an existing file is writable.
             with path.open("a", encoding="ascii"):
@@ -143,6 +149,11 @@ class AuditLog:
             f"Can't write the audit log {path}: {reason}. Pass a writable file with --audit-log "
             "or REVIEW_BOT_AUDIT_LOG."
         )
+
+
+def utc_now() -> datetime:
+    """The current time in UTC: the clock every real audit log uses."""
+    return datetime.now(UTC)
 
 
 def file_fields(path: str) -> dict[str, JsonValue]:

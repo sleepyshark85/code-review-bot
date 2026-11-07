@@ -3,6 +3,7 @@
 A failing stream can't change the exit code.
 """
 
+import logging
 import sys
 from typing import TextIO
 
@@ -12,7 +13,14 @@ if sys.platform == "win32":
     import ctypes
     import msvcrt
 
-__all__ = ["is_terminal", "read_answer", "write_diagnostic", "write_output"]
+__all__ = [
+    "discard_unraisable_reports",
+    "is_terminal",
+    "keep_library_logs_off_stderr",
+    "read_answer",
+    "write_diagnostic",
+    "write_output",
+]
 
 
 def write_output(text: str) -> None:
@@ -40,6 +48,31 @@ def write_diagnostic(text: str) -> None:
     except Exception:  # noqa: BLE001 - see above
         # See ``write_output``: the shutdown flush covers stderr too.
         sys.stderr = None
+
+
+def keep_library_logs_off_stderr() -> None:
+    """Give the root logger a handler, so library log records never reach stderr.
+
+    With no handler, ``logging.lastResort`` prints the SDK's and asyncio's error records to
+    stderr, and those can hold raw CLI output.
+    """
+    logging.getLogger().addHandler(logging.NullHandler())
+
+
+def discard_unraisable_reports() -> None:
+    """Discard ``sys.unraisablehook`` reports from now until the process exits (P1-S18).
+
+    The Claude SDK's ``close()`` waits for the Claude CLI to exit, not for its pipes to close, so
+    a helper that holds them open leaves a transport that raises from ``__del__`` once
+    ``asyncio.run`` has closed the loop. CPython would print that as ``Exception ignored in``,
+    which breaks the stderr contract. Call this only once the calls have ended, so reports during
+    them still show. It is never undone, because the process is about to exit.
+    """
+    sys.unraisablehook = _discard_unraisable
+
+
+def _discard_unraisable(_report: "sys.UnraisableHookArgs") -> None:
+    """Drop the report, since stderr may hold only the bot's own lines."""
 
 
 def read_answer(prompt: str) -> str:

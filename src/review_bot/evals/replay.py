@@ -1,7 +1,8 @@
 """Replay a case's recorded runs through today's pipeline, with ``MockProvider`` (ADR 0007).
 
 Nothing here calls a model. Each pipeline run's audit log goes to a temporary directory that is
-deleted afterwards, so replay writes nothing that outlives it.
+deleted afterwards, so replay writes nothing that outlives it. It also holds ``check_sendable``,
+``live``'s pre-flight check of each case.
 """
 
 import dataclasses
@@ -9,11 +10,10 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from review_bot.audit import AuditLog
+from review_bot.audit import AuditLog, utc_now
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import parse_diff
 from review_bot.errors import InputError
@@ -34,7 +34,13 @@ from review_bot.report import PipelineResult
 from review_bot.review import run_pipeline
 from review_bot.settings import Settings
 
-__all__ = ["freshness_fields", "replay_cases", "require_live"]
+__all__ = [
+    "check_sendable",
+    "freshness_fields",
+    "replay_cases",
+    "require_live",
+    "score_recording",
+]
 
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
 
@@ -98,7 +104,7 @@ async def replay_cases(cases_dir: Path, control: Path | None) -> list[CaseResult
                 f"{cases_dir}. Pass a recording of one of its cases."
             )
         recordings[recording.case_id] = recording
-    return [await _replay_scored(loaded, recordings[loaded.case.id]) for loaded in cases]
+    return [await score_recording(loaded, recordings[loaded.case.id]) for loaded in cases]
 
 
 def require_live(result: CaseResult, default_model: str) -> CaseResult:
@@ -116,7 +122,33 @@ def require_live(result: CaseResult, default_model: str) -> CaseResult:
     return dataclasses.replace(result, problems=(*result.problems, problem))
 
 
-async def _replay_scored(loaded: LoadedCase, recording: Recording | None) -> CaseResult:
+async def check_sendable(loaded: LoadedCase) -> None:
+    """Check that a review of the case's diff would call the model.
+
+    The diff runs through the pipeline with ``MockProvider``, so it meets the pipeline's own
+    checks, such as its secret scan, and nothing calls a real model.
+
+    Raises:
+        EvalInputError: If the diff can't be reviewed or holds a possible secret, naming the
+            case file, or if every file in it is skipped, naming the case.
+    """
+    with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
+        result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl")
+    if not result.model_called:
+        raise EvalInputError(
+            f"case {loaded.case.id}: nothing to review: every file is skipped, so no call would "
+            "reach the model. Give the case a diff with a file that isn't skipped."
+        )
+
+
+async def score_recording(loaded: LoadedCase, recording: Recording | None) -> CaseResult:
+    """Score the case on ``recording`` through today's pipeline, or on rules alone without one.
+
+    A stale recording fails the case without being scored.
+
+    Raises:
+        EvalInputError: If the case's diff can't be reviewed.
+    """
     case_id = loaded.case.id
     if recording is not None:
         today = _case_freshness(loaded)
@@ -145,7 +177,7 @@ def _refresh_advice(recording: Recording) -> str:
 
 
 def _live_recording(loaded: LoadedCase) -> Recording | None:
-    path = loaded.file.parent / "recordings" / "live" / "recording.json"
+    path = loaded.live_recording_path
     if not path.is_file():
         return None
     recording = load_recording(path)
@@ -212,6 +244,7 @@ async def _replay_run(loaded: LoadedCase, run: RecordedRun, audit_path: Path) ->
     # ``findings`` is set whenever ``error`` isn't (``RecordedRun``'s check).
     returned = run.findings or ()
     verification = (await _review(loaded, returned, audit_path)).verification
+    kept_ai = [reviewed for reviewed in verification.kept if reviewed.source is Source.AI]
     return RunFindings(
         returned=returned,
         anchor_valid=tuple(
@@ -219,16 +252,15 @@ async def _replay_run(loaded: LoadedCase, run: RecordedRun, audit_path: Path) ->
             for check in verification.ai_anchor_valid
         ),
         dropped=tuple(check.proposed for check in verification.dropped),
-        final=tuple(
-            reviewed.finding for reviewed in verification.kept if reviewed.source is Source.AI
-        ),
+        final=tuple(reviewed.finding for reviewed in kept_ai),
+        fingerprints=tuple(reviewed.fingerprint for reviewed in kept_ai),
     )
 
 
 async def _review(
     loaded: LoadedCase, findings: Sequence[Finding], audit_path: Path
 ) -> PipelineResult:
-    audit = AuditLog(audit_path, clock=lambda: datetime.now(UTC))
+    audit = AuditLog(audit_path, clock=utc_now)
     provider = MockProvider(findings=findings)
     try:
         return await run_pipeline(loaded.diff_path, _replay_settings(), provider, audit)

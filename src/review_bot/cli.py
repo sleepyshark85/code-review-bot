@@ -2,15 +2,20 @@
 
 import argparse
 import asyncio
-import logging
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, NoReturn, override
 
-from review_bot.audit import AuditLog, Stage
-from review_bot.console import is_terminal, read_answer, write_diagnostic, write_output
+from review_bot.audit import AuditLog, Stage, utc_now
+from review_bot.console import (
+    discard_unraisable_reports,
+    is_terminal,
+    keep_library_logs_off_stderr,
+    read_answer,
+    write_diagnostic,
+    write_output,
+)
 from review_bot.diff_parser import FileDiff
 from review_bot.errors import (
     AuditError,
@@ -167,16 +172,14 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         The exit code from the table in ``docs/phases/phase-0/design.md``, with the codes
         ``docs/phases/phase-1/design.md`` appends.
     """
-    # With no handler, ``logging.lastResort`` prints the SDK's and asyncio's error records to
-    # stderr, and those can hold raw CLI output.
-    logging.getLogger().addHandler(logging.NullHandler())
+    keep_library_logs_off_stderr()
     try:
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Opened before the diff is read, so an untraceable run never reaches a provider.
-        audit = AuditLog(settings.audit_log, clock=_utc_now)
+        audit = AuditLog(settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
         return _report_failure(exc)
     try:
@@ -312,29 +315,18 @@ def _render_report(
     return render_findings(findings, settings.threshold)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 async def _run_pipeline_then_discard_unraisable(
     diff_path: Path, settings: Settings, provider: LLMProvider, audit: AuditLog
 ) -> PipelineResult:
     """Run ``run_pipeline``, then discard ``sys.unraisablehook`` reports until the process exits.
 
-    The SDK's ``close()`` waits for the Claude CLI to exit, not for its pipes to close, so a
-    helper that holds them open leaves a transport that raises from ``__del__`` once
-    ``asyncio.run`` has closed the loop. CPython would print that as ``Exception ignored in``,
-    which breaks the stderr contract. The hook goes in only once the review has ended, so reports
-    during the review still show, and it is never restored because the process is about to exit.
+    The hook goes in only once the review has ended, so reports during the review still show
+    (``console.discard_unraisable_reports``).
     """
     try:
         return await run_pipeline(diff_path, settings, provider, audit)
     finally:
-        sys.unraisablehook = _discard_unraisable
-
-
-def _discard_unraisable(_report: "sys.UnraisableHookArgs") -> None:
-    """Drop the report, since stderr may hold only the bot's own lines."""
+        discard_unraisable_reports()
 
 
 def _nothing_reviewed_warning(skipped_files: Sequence[FileDiff]) -> str:
