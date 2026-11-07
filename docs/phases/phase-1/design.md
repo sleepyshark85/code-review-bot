@@ -24,8 +24,8 @@ New or changed modules under `src/review_bot/`; the rest of [Phase 0's map](../p
 | `policy` | Applies the threshold; `cli` exits 1 if anything stays reported | `decide`, `Decision` |
 | `render` | Text (unchanged), JSON, Markdown | `render_findings`, `render_json`, `render_markdown` |
 | `audit` | Append JSONL; scrub diagnostics ([ADR 0005](../../adr/0005-audit-log.md)) | `AuditLog`, `scrub_diagnostics` |
-| `report` | A review's result, and git C-quoting of [paths](#audit-log), with no redaction; used by `render`, `review`, `audit` and `cli` (changed in build, main session, 2026-11-06) | `PipelineResult` |
-| `triage` | Interactive accept / reject / edit | `run_triage`, `TriageResult`, `Label` |
+| `report` | A review's result, and git C-quoting of [paths](#audit-log), with no redaction; used by `render`, `review`, `audit` and `cli` (changed in build, main session, 2026-11-06) | `PipelineResult`; from P1-S12, `TriageDecision`, `TriagedFinding`, `not_rejected` (changed in build, main session, 2026-11-07) |
+| `triage` | Interactive accept / reject / edit; `cli` injects its streams from `console` (changed in build, main session, 2026-11-07) | `run_triage`, `TriageResult`, `Label` |
 | `prompt` | `rule` and anchor guidance; `PROMPT_VERSION` becomes `p1-v1` | `build_request` |
 | `findings` | The model's `rule` field, and the pipeline's wrapper type | `Finding`, `RuleId`, `ReviewedFinding` |
 | `providers/*` | Warnings and diagnostics as values ([ADR 0004](../../adr/0004-provider-notices-as-values.md)) | `ReviewResponse`, `ProviderError` |
@@ -130,7 +130,7 @@ One JSON object per line: `schema` (`audit/v1`), `run_id`, `ts` (UTC), `stage`, 
 | `agent` | `called`: tokens, duration. `skipped`: reason. `warning`: scrubbed text. `failed`: category, scrubbed diagnostics |
 | `verify` | `checked`, for each proposal: `fingerprint` or null, `file` (the diff path it matched) if it matches one, otherwise `file_sha256` and `file_length`; `line`, `severity`, `outcome` (`kept`, `dropped`, or from P1-S7 `duplicate`), `reason` (null when kept or `duplicate`), `rationale_sha256`; from P1-S7, `duplicate_of` (the fingerprint it duplicated, or null) (changed in build, main session, 2026-11-06) |
 | `policy` | `decided`, for each kept finding: `file`, `line`, `outcome` (`reported` or `below_threshold`) |
-| `triage` | [Labels](slices/p1-s12-triage.md#interfaces) |
+| `triage` | `labelled`, one per decision: the [Label fields](slices/p1-s12-triage.md#interfaces), plus `model` and `prompt_version` (changed in build, main session, 2026-11-07) |
 
 **Paths in `audit/v1`** (decided by the user, 2026-11-06). A diff path in a record's `file` is written so every line is pure ASCII JSON, with no lone surrogates, readable in any language:
 - **Valid UTF-8:** the plain path, JSON-escaped to ASCII, with no flag.

@@ -3,7 +3,14 @@
 import pytest
 
 from review_bot.diff_parser import FileDiff, SkipReason
-from review_bot.report import path_fields, section_path
+from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
+from review_bot.report import (
+    TriageDecision,
+    TriagedFinding,
+    not_rejected,
+    path_fields,
+    section_path,
+)
 
 # Assembled, so no key marker is written literally.
 KEY_END_MARKER = "-" * 5 + "END RSA " + "PRIVATE KEY" + "-" * 5
@@ -34,3 +41,24 @@ def test_path_fields_leaves_a_key_marker_in_a_path_unredacted() -> None:
     path = f"x{KEY_END_MARKER}.py"
 
     assert path_fields(path) == {"file": path}
+
+
+def test_not_rejected_keeps_accepted_and_undecided_findings_in_order() -> None:
+    finding = Finding(
+        file="a.py",
+        line=1,
+        severity=Severity.LOW,
+        category=Category.LOGIC,
+        rationale="R.",
+        confidence=0.5,
+    )
+    first, second, third = (
+        ReviewedFinding(finding, Source.AI, None, fingerprint) for fingerprint in ("1", "2", "3")
+    )
+    triaged = (
+        TriagedFinding(first, TriageDecision.UNDECIDED),
+        TriagedFinding(second, TriageDecision.REJECT),
+        TriagedFinding(third, TriageDecision.ACCEPT),
+    )
+
+    assert not_rejected(triaged) == (first, third)

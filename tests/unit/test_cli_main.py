@@ -4,6 +4,7 @@ import json
 import logging
 import runpy
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TextIO, cast, override
@@ -15,6 +16,7 @@ from diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIF
 from review_bot.cli import build_provider, main, parse_args
 from review_bot.errors import ConfigError, ErrorCategory, InputError, ProviderError
 from review_bot.findings import Finding, Severity
+from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -699,3 +701,154 @@ def test_main_with_markdown_format_and_no_findings_exits_0(
     assert main([str(diff_path), "--format", "markdown"], provider=MockProvider(findings=[])) == 0
 
     assert capsys.readouterr().out == "## Review\n\nNo findings at or above low.\n"
+
+
+def two_findings_provider() -> MockProvider:
+    first = Finding(**{**FINDING_FIELDS, "line": 6, "rationale": "First."})
+    second = Finding(**{**FINDING_FIELDS, "rationale": "Second."})
+    return MockProvider(findings=[first, second])
+
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """Make stdin and stderr pass as terminals, and return a setter for what stdin will answer."""
+    monkeypatch.setattr("review_bot.cli.is_terminal", lambda _stream: True)
+
+    def answer(text: str) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+
+    return answer
+
+
+@pytest.mark.parametrize("stream_name", ["stdin", "stderr"])
+def test_main_with_triage_and_no_terminal_exits_2_before_reading_the_diff(
+    tmp_path: Path,
+    audit_log_in_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stream_name: str,
+) -> None:
+    monkeypatch.setattr(
+        "review_bot.cli.is_terminal", lambda stream: stream is not getattr(sys, stream_name)
+    )
+
+    exit_code = main([str(tmp_path / "missing.diff"), "--triage"], provider=finding_provider())
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "review-bot: error: --triage needs a terminal: stdin and stderr must both be attached to "
+        "one. Run it from an interactive shell, or leave out --triage.\n"
+    )
+    assert not audit_log_in_tmp_path.exists()
+
+
+def test_main_with_triage_reports_only_findings_not_rejected_after_the_prompts(
+    diff_path: Path, terminal: Callable[[str], None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    terminal("a\nr\n")
+
+    exit_code = main([str(diff_path), "--triage"], provider=two_findings_provider())
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == "src/app.py:6 [high/logic] First. (confidence 0.90)\n"
+    assert captured.err.startswith(
+        "Finding 1 of 2: src/app.py:6 [high/logic] First. (source: ai)\n[a]ccept [r]eject: "
+    )
+
+
+def test_main_with_triage_and_every_finding_rejected_exits_0_with_no_findings(
+    diff_path: Path, terminal: Callable[[str], None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    terminal("r\nr\n")
+
+    exit_code = main([str(diff_path), "--triage"], provider=two_findings_provider())
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == NO_FINDINGS
+
+
+def test_main_with_triage_ended_early_exits_1_with_the_rest_undecided(
+    diff_path: Path, terminal: Callable[[str], None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    terminal("r\n")
+
+    exit_code = main(
+        [str(diff_path), "--triage", "--format", "json"], provider=two_findings_provider()
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert [finding["triage"] for finding in report["findings"]] == ["reject", "undecided"]
+    assert report["counts"]["undecided"] == 1
+
+
+def test_main_with_triage_logs_one_label_per_decision_without_its_text(
+    diff_path: Path, terminal: Callable[[str], None], audit_log_in_tmp_path: Path
+) -> None:
+    terminal("a\n")
+
+    main([str(diff_path), "--triage", "--provider", "mock"], provider=two_findings_provider())
+
+    records = read_records(audit_log_in_tmp_path)
+    first_fingerprint = next(r["data"]["fingerprint"] for r in records if r["stage"] == "verify")
+    labels = [record["data"] for record in records if record["stage"] == "triage"]
+    assert labels == [
+        {
+            "fingerprint": first_fingerprint,
+            "label": "accept",
+            "severity_before": "high",
+            "severity_after": "high",
+            "rationale_changed": False,
+            "source": "ai",
+            "model": "claude-opus-5-5",
+            "prompt_version": PROMPT_VERSION,
+        }
+    ]
+    assert events(audit_log_in_tmp_path)[-2:] == ["triage.labelled", "run.end"]
+    assert "First." not in audit_log_in_tmp_path.read_text(encoding="ascii")
+
+
+def test_main_without_triage_never_reads_stdin(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stdin = io.StringIO("r\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+    monkeypatch.setenv("REVIEW_BOT_TRIAGE", "true")
+
+    exit_code = main([str(diff_path), "--format", "json"], provider=finding_provider())
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert stdin.tell() == 0
+    assert [finding["triage"] for finding in report["findings"]] == [None]
+
+
+def test_parse_args_help_says_triage_has_no_variable(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--help"])
+
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--triage" in help_text
+    assert "Each option except --triage can also be set with REVIEW_BOT_<OPTION>" in help_text
+
+
+def test_main_with_triage_and_a_failing_stdout_still_logs_the_labels(
+    diff_path: Path,
+    terminal: Callable[[str], None],
+    audit_log_in_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_stream: TextIO,
+) -> None:
+    terminal("a\nr\n")
+    monkeypatch.setattr("sys.stdout", failing_stream)
+
+    exit_code = main([str(diff_path), "--triage"], provider=two_findings_provider())
+
+    assert exit_code == 14
+    labels = [
+        r["data"]["label"] for r in read_records(audit_log_in_tmp_path) if r["stage"] == "triage"
+    ]
+    assert labels == ["accept", "reject"]

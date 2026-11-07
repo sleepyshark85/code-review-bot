@@ -1,6 +1,6 @@
 # P1-S12: Accept or reject findings interactively, with labels logged
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S11
 - **Touches:** `triage` (new), `cli`, `render`, `audit`
 
@@ -31,9 +31,14 @@ A developer makes the final call on each finding, and each call becomes a label 
 ## Interfaces
 `run_triage(findings, *, read_line, write_line) -> TriageResult`, with `read_line` taking a prompt and returning a line, and `write_line` going to stderr. `TriageResult` holds the labels, plus each finding with its decision and any edits. Prompt: `[a]ccept [r]eject`. P1-S13 adds `[e]dit`.
 
-- `Label`: `fingerprint`, `label` (`accept`, `reject`, `edit`), `severity_before`, `severity_after`, `rationale_changed`; the record adds `source`, `model`, `prompt_version`. This is the Phase 2 feedback seam.
+- `Label`: `fingerprint`, `source`, `label` (`accept`, `reject`, `edit`), `severity_before`, `severity_after`, `rationale_changed`; the record adds `model` and `prompt_version`. This is the Phase 2 feedback seam. (`source` moved into `Label`: changed in build, main session, 2026-11-07.)
 - JSON `triage`: null when triage didn't run; otherwise `accept`, `reject`, `edit` or `undecided`.
 - Exit code with `--triage`: 1 if any reported finding wasn't rejected, including one undecided, otherwise 0.
+
+Changed in build, main session, 2026-11-07:
+- `read_line` raises `EOFError` at the end of input (AC6). `TriageResult` holds `findings` and `labels`.
+- Answers are matched after stripping surrounding whitespace and lowercasing, so ` A ` accepts.
+- Each label is a `triage`/`labelled` record ([audit log](../design.md#audit-log)). Labels are recorded right after triage, before the report is written, so a stdout failure doesn't lose them.
 
 ## Out of scope
 - Editing (P1-S13), persisting decisions between runs (Phase 2).
