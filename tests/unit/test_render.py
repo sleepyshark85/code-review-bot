@@ -568,3 +568,31 @@ def test_render_json_and_markdown_reject_triaged_findings_that_are_not_the_repor
         render_json(result, Settings(provider="mock"), "run-1", triaged=out_of_order)
     with pytest.raises(ValueError, match="reported findings, in order"):
         render_markdown(result, Severity.LOW, triaged=triaged[:2])
+
+
+def edited_pair() -> tuple[PipelineResult, TriagedFinding]:
+    """One reported finding, edited to a lower severity and new text."""
+    original = reviewed(make_finding(severity=Severity.CRITICAL, rationale="Model text."))
+    edited = reviewed(make_finding(severity=Severity.LOW, rationale="Better text."))
+    triaged = TriagedFinding(edited, TriageDecision.EDIT, original_rationale="Model text.")
+    return pipeline_result(reported=(original,)), triaged
+
+
+def test_render_json_with_an_edit_shows_the_new_values_and_the_original_rationale() -> None:
+    result, triaged = edited_pair()
+
+    report = json.loads(render_json(result, Settings(provider="mock"), "run-1", triaged=(triaged,)))
+
+    [finding] = report["findings"]
+    assert (finding["severity"], finding["rationale"]) == ("low", "Better text.")
+    assert (finding["triage"], finding["original_rationale"]) == ("edit", "Model text.")
+    assert report["counts"]["reported"] == 1
+
+
+def test_render_markdown_with_an_edit_shows_the_new_values_only() -> None:
+    result, triaged = edited_pair()
+
+    rendered = render_markdown(result, Severity.HIGH, triaged=(triaged,))
+
+    assert r"- **low** logic at `a.py:7`: Better text\." in rendered
+    assert "Model" not in rendered

@@ -1,6 +1,6 @@
 # P1-S13: Edit a finding during triage
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S12
 - **Touches:** `triage`, `render`, `audit`
 
@@ -26,3 +26,7 @@ With injected `read_line`. The prompt is `[a]ccept [r]eject [e]dit`; `e` then as
 - Editing `file` or `line`: an edited anchor would bypass verify.
 
 ## Notes
+Changed in build, main session, 2026-11-07:
+- `e` and the severity answer are matched after stripping and lowercasing, as in P1-S12. A blank or whitespace-only answer keeps the current value. The rationale is redacted first; text equal to the current rationale counts as unchanged.
+- `original_rationale` in JSON holds the model's or rule's text as it was, unredacted, because stdout isn't redacted ([design](../design.md)).
+- **README (main session):** describe `[e]dit` in Usage.

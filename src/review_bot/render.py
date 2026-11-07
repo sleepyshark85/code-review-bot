@@ -61,15 +61,15 @@ def render_json(
         result: The review.
         settings: The run's settings.
         run_id: The run's identifier, as in the audit log.
-        triaged: The reported findings with their triage decisions, or None if triage didn't
-            run, which makes every finding's ``triage`` null. Rejected findings stay listed,
-            but ``counts.reported`` leaves them out.
+        triaged: The reported findings with their triage decisions and any edits, or None if
+            triage didn't run, which makes every finding's ``triage`` null. Rejected findings
+            stay listed, but ``counts.reported`` leaves them out.
 
     Raises:
         ValueError: If ``triaged`` doesn't hold the reported findings, in order.
     """
-    findings = _with_decisions(result, triaged)
-    decisions = [decision for _, decision in findings]
+    findings = _findings_json(result, triaged)
+    decisions = [item.decision for item in triaged or ()]
     report: dict[str, object] = {
         "schema": _REPORT_SCHEMA,
         "run_id": run_id,
@@ -77,7 +77,7 @@ def render_json(
         "model": settings.model,
         "prompt_version": PROMPT_VERSION,
         "threshold": settings.threshold,
-        "findings": [_finding_json(reviewed, decision) for reviewed, decision in findings],
+        "findings": findings,
         "counts": {
             "reported": len(findings) - decisions.count(TriageDecision.REJECT),
             "below_threshold": len(result.decision.below_threshold),
@@ -98,18 +98,20 @@ def render_json(
     return json.dumps(report, ensure_ascii=True, allow_nan=False)
 
 
-def _with_decisions(
+def _findings_json(
     result: PipelineResult, triaged: Sequence[TriagedFinding] | None
-) -> list[tuple[ReviewedFinding, TriageDecision | None]]:
-    """The reported findings, each with its triage decision, or None if triage didn't run.
+) -> list[dict[str, object]]:
+    """The reported findings' objects, with ``triage`` null for each if triage didn't run.
 
     Raises:
         ValueError: If ``triaged`` doesn't hold the reported findings, in order.
     """
     if triaged is None:
-        return [(reviewed, None) for reviewed in result.decision.reported]
+        return [_finding_json(reviewed) for reviewed in result.decision.reported]
     _check_triaged(result, triaged)
-    return [(item.reviewed, item.decision) for item in triaged]
+    return [
+        _finding_json(item.reviewed, item.decision, item.original_rationale) for item in triaged
+    ]
 
 
 def _check_triaged(result: PipelineResult, triaged: Sequence[TriagedFinding]) -> None:
@@ -119,7 +121,11 @@ def _check_triaged(result: PipelineResult, triaged: Sequence[TriagedFinding]) ->
         raise ValueError("The triaged findings must be the reported findings, in order.")
 
 
-def _finding_json(reviewed: ReviewedFinding, decision: TriageDecision | None) -> dict[str, object]:
+def _finding_json(
+    reviewed: ReviewedFinding,
+    decision: TriageDecision | None = None,
+    original_rationale: str | None = None,
+) -> dict[str, object]:
     # Field by field, never ``model_dump_json``: a rule finding's path can hold lone surrogates,
     # which pydantic refuses to serialise.
     finding = reviewed.finding
@@ -134,8 +140,7 @@ def _finding_json(reviewed: ReviewedFinding, decision: TriageDecision | None) ->
         "rationale": finding.rationale,
         "confidence": finding.confidence,
         "triage": decision,
-        # Set by editing (P1-S13).
-        "original_rationale": None,
+        "original_rationale": original_rationale,
     }
 
 
