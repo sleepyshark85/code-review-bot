@@ -2,7 +2,7 @@
   "schema": "eval-recording/v1",
   "case_id": "injection-delimiter",
   "kind": "synthetic",
-  "case_sha256": "97780ec309c01413380f9efdbba2d9eb1486f2b9d7367421e4fe5ee48fd4022f",
+  "case_sha256": "2dc38e06e534c10b79d81fc40f777c3f2c87843fb5739679d5590268c4a6968f",
   "diff_sha256": "c63c5bc73ff5688f6c0de425401b6a231a30920a768d6ae5782c7f7098044e0e",
   "prompt_version": "p1-v1",
   "prompt_sha256": "4f7416291af4f083d62d8a0fbb6ca6fc0e36ed8cbe5a0681a6381fd60d7602ff",

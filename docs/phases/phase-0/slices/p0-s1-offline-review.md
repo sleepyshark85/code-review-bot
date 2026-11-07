@@ -10,9 +10,9 @@ A developer can run `python -m review_bot <diff> --provider mock` with no Claude
 ## Acceptance criteria
 Unless a criterion says otherwise, runs select `--provider mock`.
 
-- **AC1:** Given `Assignment/sample_diff.txt`, when `python -m review_bot Assignment/sample_diff.txt --provider mock` runs, then it exits 1, stdout is exactly the canned finding line below, and stderr warns that `MockProvider` output is canned and not a real review.
+- **AC1:** Removed: replaced by [P1-S6 AC11](../../phase-1/slices/p1-s6-verify-anchors.md#acceptance-criteria).
 - **AC2:** Given the same command with `--threshold critical`, then it exits 0 and stdout is exactly `No findings at or above critical.`
-- **AC3:** Given a diff containing `SENTINEL-DIFF-TEXT`, when a review succeeds, then stderr contains `provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0`, and the sentinel appears in neither stdout nor stderr.
+- **AC3:** Given a diff containing `SENTINEL-DIFF-TEXT`, when a review succeeds, then stderr contains `provider=mock model=claude-opus-5-5 prompt=p0-v1 input_tokens=0 output_tokens=0`, and the sentinel appears in neither stdout nor stderr. *(Changed by P1-S9: the prompt version is `p1-v1`.)*
 - **AC4:** Parametrised over `--provider`, `--model`, `--threshold` and `--max-diff-bytes` ([settings](../design.md#settings)): given only the variable, `parse_args` uses its value; given also the flag, the flag's; given neither, the table's default (`--provider`: see P0-S4 AC13). Given `--model flag-model`, the recorded request has `model="flag-model"`.
 - **AC5:** Given each of: no path; an unknown flag; `--provider nope`; `--threshold urgent`; `--max-diff-bytes 0` or `100000001`; `REVIEW_BOT_MAX_DIFF_BYTES=abc`; `--model=--dangerous`, then `main` returns 2 and stderr names the offending flag or variable.
 - **AC6:** Removed: replaced by P0-S4 AC13.

@@ -3,43 +3,27 @@
   "case_id": "clean",
   "kind": "live",
   "case_sha256": "f55124858122c768f8259f08a92a5ff4d1ed1a9d67e21151fb37a10da316bde2",
-  "diff_sha256": "908f8b92193a11ff621e1aef5f04a1652f96ca71faae7c4399ba6e22b21c247d",
+  "diff_sha256": "6b75e551361dbfce02ebf73dab6d2e400e16795bf4c24d317cd9422716fdd750",
   "prompt_version": "p1-v1",
-  "prompt_sha256": "ffc65f20aeffe495ee1f06c6564364b96ad9cda47093b0ffa4c1db3708102d6d",
+  "prompt_sha256": "90bc401a3f17a0cd167ce66a4c117649dd8db0af332db94cf28b900562c0c79d",
   "model": "claude-opus-5-5",
   "sdk_version": "0.2.178",
-  "recorded_at": "2026-11-07T15:17:52.831464Z",
+  "recorded_at": "2026-11-07T16:19:55.338195Z",
   "runs": [
     {
       "findings": [
         {
           "file": "billing/refunds.py",
-          "line": 25,
-          "severity": "medium",
-          "category": "logic",
-          "rationale": "The `dict[str, Decimal]` annotation is never checked, and the loaded rates are not validated. A JSON array, a nested object, string values, or out-of-range numbers like 1.5 or -0.2 load without error. `NaN` and `Infinity` also get through, because json uses `parse_constant` for them and returns floats, not Decimals. Bad rates then fail later, deep in `refund_amount`, or slip through to code that doesn't validate them. Check that the top level is an object, that every value is a Decimal, and that each fraction is between 0 and 1. Raise RefundError otherwise.",
-          "confidence": 0.75
-        },
-        {
-          "file": "billing/refunds.py",
           "line": 16,
           "severity": "low",
           "category": "reliability",
-          "rationale": "If `fraction` is `Decimal('NaN')`, the ordering comparison raises `decimal.InvalidOperation` instead of RefundError. A signaling or quiet NaN also bypasses the documented error type. Reject non-finite values first with `fraction.is_finite()`. `paid` is not validated either, so a negative or non-finite amount is accepted.",
+          "rationale": "A deeply nested JSON document, such as many '[' characters, makes json.load raise RecursionError. That is not a ValueError or an OSError, so it escapes as a raw RecursionError instead of the documented RefundRatesError. Callers that only handle RefundRatesError will crash on such a file. Catch RecursionError as well and wrap it in RefundRatesError, and add a test for deeply nested content.",
           "confidence": 0.55
-        },
-        {
-          "file": "billing/test_refunds.py",
-          "line": 13,
-          "severity": "low",
-          "category": "testing",
-          "rationale": "Only the upper bound is tested. Add tests for a negative fraction, for the boundary values 0 and 1, and for ROUND_HALF_EVEN on an exact half-cent tie, such as 0.125 rounding to 0.12. Add loader tests for invalid content: non-object JSON, out-of-range rates, and non-numeric values.",
-          "confidence": 0.6
         }
       ],
       "usage": {
-        "input_tokens": 2976,
-        "output_tokens": 1077
+        "input_tokens": 3268,
+        "output_tokens": 843
       },
       "warnings": []
     },
@@ -47,139 +31,40 @@
       "findings": [
         {
           "file": "billing/refunds.py",
-          "line": 25,
-          "severity": "medium",
-          "category": "reliability",
-          "rationale": "The parsed JSON is cast to dict[str, Decimal] without checking it. A top-level list, string values, nested objects, or out-of-range numbers all pass through unchanged. json.load also accepts NaN and Infinity by default, and parse_constant returns Python floats for those, not Decimals. These bad values only fail later in refund_amount, as TypeError or InvalidOperation rather than RefundError, or they are silently accepted. Check that the result is a dict of str to finite Decimal within [0, 1], raise RefundError otherwise, and pass parse_constant to reject NaN and Infinity.",
-          "confidence": 0.8
-        },
-        {
-          "file": "billing/refunds.py",
           "line": 16,
           "severity": "low",
           "category": "reliability",
-          "rationale": "A Decimal NaN fraction makes the ordered comparison raise InvalidOperation instead of RefundError. `paid` is never checked, so a negative or NaN paid amount yields a negative or invalid refund. Check `fraction.is_finite()` and `paid >= 0` and raise RefundError.",
-          "confidence": 0.55
-        },
-        {
-          "file": "billing/test_refunds.py",
-          "line": 13,
-          "severity": "low",
-          "category": "testing",
-          "rationale": "The tests cover only a fraction above one. They don't cover negative fractions, the 0 and 1 boundaries, half-even rounding ties such as 0.125 becoming 0.12, or rate files whose JSON is valid but malformed (a non-object, or non-numeric values). Add these cases.",
-          "confidence": 0.6
+          "rationale": "`json.load` keeps only the last value when a key appears more than once. A rates file with a duplicated reason, such as two \"late\" entries, loads without error, and one rate is silently dropped. That kind of edit mistake is exactly what this validator should catch. Pass an `object_pairs_hook` that raises `RefundRatesError` on duplicate keys, and add a test for it.",
+          "confidence": 0.4
         }
       ],
       "usage": {
-        "input_tokens": 2976,
-        "output_tokens": 1067
+        "input_tokens": 3268,
+        "output_tokens": 1046
       },
       "warnings": []
     },
     {
-      "findings": [
-        {
-          "file": "billing/refunds.py",
-          "line": 25,
-          "severity": "medium",
-          "category": "logic",
-          "rationale": "The JSON result is annotated as `dict[str, Decimal]` but its shape and values are never checked. A top-level list, string values, nested objects, `null`, `NaN` or `Infinity` (which the default `parse_constant` returns as floats), or fractions outside 0 to 1 all pass through. Callers then fail later with an unrelated TypeError or InvalidOperation, or carry a bad rate around. Check that the result is a dict of str to finite Decimal within [0, 1], and raise RefundError otherwise.",
-          "confidence": 0.75
-        },
-        {
-          "file": "billing/refunds.py",
-          "line": 24,
-          "severity": "low",
-          "category": "reliability",
-          "rationale": "Only `JSONDecodeError` is converted to `RefundError`. A missing or unreadable file raises a raw OSError, and a file that isn't valid UTF-8 raises a raw `UnicodeDecodeError`, which is a ValueError but not a RefundError. Callers that catch RefundError for bad rate files will miss these. Wrap OSError and UnicodeDecodeError too, or document that they propagate.",
-          "confidence": 0.45
-        },
-        {
-          "file": "billing/refunds.py",
-          "line": 16,
-          "severity": "low",
-          "category": "logic",
-          "rationale": "`fraction` is validated but `paid` is not. A negative or non-finite `paid` gives a negative or invalid refund amount, or an InvalidOperation from `quantize`, instead of a RefundError. Reject negative and non-finite paid amounts.",
-          "confidence": 0.45
-        },
-        {
-          "file": "billing/test_refunds.py",
-          "line": 10,
-          "severity": "low",
-          "category": "testing",
-          "rationale": "The tests don't cover the behaviour that matters most for money: a half-cent tie under ROUND_HALF_EVEN (for example 10.00 \u00d7 0.0125 \u2192 0.12, and 10.00 \u00d7 0.0135 \u2192 0.14), the 0 and 1 boundaries, a negative fraction, and loaded rate files with invalid values or a wrong shape. Add these cases.",
-          "confidence": 0.6
-        }
-      ],
+      "findings": [],
       "usage": {
-        "input_tokens": 2976,
-        "output_tokens": 1480
+        "input_tokens": 3268,
+        "output_tokens": 538
       },
       "warnings": []
     },
     {
-      "findings": [
-        {
-          "file": "billing/refunds.py",
-          "line": 25,
-          "severity": "medium",
-          "category": "reliability",
-          "rationale": "The parsed JSON is returned unchecked and cast as dict[str, Decimal]. A top-level list, string values such as \"0.5\", null, or bare NaN/Infinity (parsed as float, because parse_constant isn't set) all get through. Downstream they fail with TypeError or InvalidOperation in refund_amount instead of a clear RefundError at load time. Check that the result is a dict of str keys to finite Decimal values in [0, 1], and raise RefundError otherwise.",
-          "confidence": 0.75
-        },
-        {
-          "file": "billing/refunds.py",
-          "line": 16,
-          "severity": "low",
-          "category": "logic",
-          "rationale": "refund_amount checks fraction but not paid. A negative or NaN paid amount gives a negative or invalid refund without any error. Reject paid < 0 and non-finite values.",
-          "confidence": 0.5
-        },
-        {
-          "file": "billing/test_refunds.py",
-          "line": 13,
-          "severity": "low",
-          "category": "testing",
-          "rationale": "Tests cover only a fraction above 1. They don't cover a negative fraction, the boundary values 0 and 1, a half-cent rounding case for ROUND_HALF_EVEN, or rate files with the wrong shape (a non-object, or non-numeric values). Add these so the validation behavior is pinned down.",
-          "confidence": 0.6
-        }
-      ],
+      "findings": [],
       "usage": {
-        "input_tokens": 2976,
-        "output_tokens": 1258
+        "input_tokens": 3268,
+        "output_tokens": 670
       },
       "warnings": []
     },
     {
-      "findings": [
-        {
-          "file": "billing/refunds.py",
-          "line": 25,
-          "severity": "medium",
-          "category": "reliability",
-          "rationale": "`load_refund_rates` trusts the JSON shape. The annotation says `dict[str, Decimal]`, but a list, nested objects, or string values such as `\"late\": \"0.25\"` all pass through. Rates are also never checked to be in 0 to 1, so a bad config only fails later, inside `refund_amount`. Check that the top level is a dict and that each value is a Decimal in [0, 1]. Raise `RefundError` when the file doesn't meet this.",
-          "confidence": 0.75
-        },
-        {
-          "file": "billing/refunds.py",
-          "line": 16,
-          "severity": "low",
-          "category": "logic",
-          "rationale": "Only `fraction` is validated, not `paid`. A negative paid amount gives a negative refund, which would charge the customer. Reject a negative `paid`, or document why it's allowed.",
-          "confidence": 0.5
-        },
-        {
-          "file": "billing/test_refunds.py",
-          "line": 10,
-          "severity": "low",
-          "category": "testing",
-          "rationale": "The rounding test has no tie case, so `ROUND_HALF_EVEN` is never actually exercised; it would pass with `ROUND_HALF_UP` too. Add a tie, for example `Decimal(\"1.00\") * Decimal(\"0.125\")`, which should give 0.12. Also add tests for a negative fraction and for the boundaries 0 and 1.",
-          "confidence": 0.6
-        }
-      ],
+      "findings": [],
       "usage": {
-        "input_tokens": 2976,
-        "output_tokens": 1015
+        "input_tokens": 3268,
+        "output_tokens": 481
       },
       "warnings": []
     }
