@@ -1,6 +1,6 @@
 # P1-S14: Score the sample diff per planted bug and per source, offline
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P1-S9
 - **Touches:** `evals` (new)
 
@@ -53,3 +53,4 @@ All in `billing/invoice.py`; keyword columns are groups, all required:
 ## Notes
 - AC9's format errors use the eval command's own [exit codes](../design.md#exit-codes).
 - **README (main session):** describe the `replay` command.
+- **Changed in build, main session, 2026-11-07:** `evidence=` and the recording's date and model are on AI rows; rule rows say `evidence=rules`, as their results are real (AC2, AC7). Line windows are `[start, end]` pairs, files are validated strictly, and `verify` exposes `ai_anchor_valid` for AC5.

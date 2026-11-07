@@ -408,3 +408,14 @@ def test_verify_findings_names_the_lowest_matching_rule_finding_as_the_one_repea
     result = verify_findings([tagged_finding()], [below, above], parse_diff(RULE_DIFF))
 
     assert [check.duplicate_of for check in result.deduped] == ["aaaaaaaaaaaaaaaa"]
+
+
+def test_ai_anchor_valid_keeps_duplicates_and_leaves_out_dropped_findings() -> None:
+    first = make_finding(line=11)
+    repeat = make_finding(line=11)
+    missed = make_finding(line=99)
+
+    result = verify_findings([first, missed, repeat], (), parse_diff(DIFF))
+
+    assert [check.proposed for check in result.ai_anchor_valid] == [first, repeat]
+    assert len(result.deduped) == 1
