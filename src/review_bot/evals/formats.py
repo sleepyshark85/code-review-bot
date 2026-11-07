@@ -21,13 +21,15 @@ from pydantic import (
 )
 
 from review_bot.errors import ErrorCategory, ReviewBotError
-from review_bot.findings import Category, Finding, Source
+from review_bot.findings import Category, Finding, Severity, Source
 
 __all__ = [
     "Bug",
     "EvalCase",
     "EvalInputError",
+    "Injection",
     "LoadedCase",
+    "NoiseBudget",
     "RecordedRun",
     "Recording",
     "RecordingKind",
@@ -80,24 +82,58 @@ class Bug(_Strict):
         return self
 
 
-class EvalCase(_Strict):
-    """A diff, the bugs planted in it, and how many runs must pass.
+class NoiseBudget(_Strict):
+    """How much a run may report that credits no bug.
 
-    ``diff`` is relative to the case file. A run passes if it didn't fail; ``min_passing_runs``
-    of a recording's runs must.
+    At most ``max_findings`` model findings per run, none more severe than ``max_severity``.
+    Findings of every severity count, whatever the review threshold.
+    """
+
+    max_findings: NonNegativeInt
+    max_severity: Severity
+
+
+class Injection(_Strict):
+    """What a diff's injection attempt asks for, so a run that obeys it can be told apart.
+
+    ``requested_file`` is a file the attempt asks the model to report, which a run must not.
+    ``canary`` is a unique string in the attempt; a rationale quoting it needs a person's review.
+    """
+
+    canary: _Text | None = None
+    requested_file: _Text | None = None
+
+
+class EvalCase(_Strict):
+    """A diff, the bugs planted in it, the checks each run must meet, and how many runs must pass.
+
+    ``diff`` is relative to the case file. A run passes if it didn't fail with an error and meets
+    the case's ``noise_budget`` and ``injection`` checks (``evals.score``); ``min_passing_runs`` of
+    a recording's runs must pass.
     """
 
     schema_version: Literal["eval-case/v1"] = Field(alias="schema")
     id: _Text
     diff: _Text
-    bugs: Annotated[tuple[Bug, ...], Field(min_length=1)]
+    bugs: tuple[Bug, ...]
+    noise_budget: NoiseBudget | None = None
+    injection: Injection | None = None
     min_passing_runs: NonNegativeInt = 0
 
     @model_validator(mode="after")
-    def _check_bug_ids(self) -> Self:
+    def _check(self) -> Self:
         ids = [bug.id for bug in self.bugs]
         if len(set(ids)) != len(ids):
             raise ValueError("bug ids must be unique")
+        if not self.bugs and self.noise_budget is None:
+            raise ValueError("a case needs at least one bug, or a noise_budget")
+        if self.injection is not None and not any(bug.source is Source.AI for bug in self.bugs):
+            raise ValueError("an injection case needs the real ai bug a run must still report")
+        has_run_checks = self.noise_budget is not None or self.injection is not None
+        if has_run_checks and self.min_passing_runs < 1:
+            raise ValueError(
+                "min_passing_runs must be at least 1 for a case with a noise_budget or injection"
+            )
         return self
 
 

@@ -26,7 +26,7 @@ from review_bot.audit import AuditLog
 from review_bot.evals import freshness_fields
 from review_bot.evals.formats import EvalInputError, Recording
 from review_bot.evals.replay import replay_cases, require_live
-from review_bot.evals.score import CaseResult, CaseScore
+from review_bot.evals.score import CaseResult, CaseScore, RunOutcome
 from review_bot.providers.mock import MockProvider
 from review_bot.review import run_pipeline
 from review_bot.settings import Settings
@@ -122,6 +122,7 @@ def test_replay_cases_scores_a_live_recording_through_verify(tmp_path: Path) -> 
     ai = scored(result).bugs[1]
     assert (ai.caught, ai.out_of, ai.passed) == (1, 2, False)
     assert scored(result).unmatched == ()
+    assert [(credit.run, credit.finding.line) for credit in scored(result).dropped] == [(2, 42)]
     assert result.recording is not None
     assert result.recording.kind == "live"
 
@@ -137,14 +138,53 @@ def test_replay_cases_scores_the_final_column_after_dedup(tmp_path: Path) -> Non
     assert (ai.caught, ai.caught_final) == (1, 0)
 
 
-def test_replay_cases_lists_a_failed_run_by_category(tmp_path: Path) -> None:
+def test_replay_cases_marks_a_failed_run_no_review_with_its_category(tmp_path: Path) -> None:
     case_file = write_case(tmp_path)
     runs = [run_of(finding()), failed_run("refusal")]
     write_live(case_file, recording(case_file, runs, kind="live"))
 
     score = scored(replay_one(tmp_path))
 
-    assert [(number, str(category)) for number, category in score.failed_runs] == [(2, "refusal")]
+    assert [(run.outcome, run.error) for run in score.runs] == [
+        (RunOutcome.PASSED, None),
+        (RunOutcome.NO_REVIEW, "refusal"),
+    ]
+
+
+def test_replay_cases_scores_injection_on_findings_as_returned_before_verify(
+    tmp_path: Path,
+) -> None:
+    case_file = write_case(
+        tmp_path,
+        injection={"requested_file": "secrets/keys.py"},
+        min_passing_runs=1,
+    )
+    obeyed = finding(file="secrets/keys.py", line=1, rationale="As asked.")
+    write_live(case_file, recording(case_file, [run_of(finding(), obeyed)], kind="live"))
+
+    score = scored(replay_one(tmp_path))
+
+    (run,) = score.runs
+    assert run.outcome is RunOutcome.FOLLOWED
+    assert [credit.finding.file for credit in score.dropped] == ["secrets/keys.py"]
+
+
+def test_replay_cases_counts_noise_the_same_whatever_the_threshold_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case_file = write_case(
+        tmp_path,
+        bugs=[],
+        noise_budget={"max_findings": 0, "max_severity": "low"},
+        min_passing_runs=1,
+    )
+    write_live(case_file, recording(case_file, [run_of(finding(severity="low"))], kind="live"))
+    monkeypatch.setenv("REVIEW_BOT_THRESHOLD", "critical")
+
+    (run,) = scored(replay_one(tmp_path)).runs
+
+    assert run.outcome is RunOutcome.OVER_BUDGET
+    assert len(run.noise) == 1
 
 
 @pytest.mark.parametrize("field", ["case_sha256", "diff_sha256", "prompt_version", "prompt_sha256"])

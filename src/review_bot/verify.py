@@ -15,7 +15,7 @@ from review_bot.diff_parser import Hunk, ParsedDiff
 from review_bot.findings import Finding, ReviewedFinding, RuleId, Source
 from review_bot.fingerprint import Fingerprinter
 
-__all__ = ["DropReason", "ProposalCheck", "VerifyResult", "verify_findings"]
+__all__ = ["DropReason", "ProposalCheck", "VerifyResult", "diff_path_named", "verify_findings"]
 
 # A finding's ``file`` may carry one of these before a diff path (Phase 1 design, Line anchors).
 _PATH_PREFIXES: Final = ("./", "a/", "b/")
@@ -160,8 +160,11 @@ def _drop_reason(
     return None
 
 
-def _diff_path_named(file: str, known_paths: Collection[str]) -> str | None:
-    """Match ``file`` exactly, then once more without one leading ``./``, ``a/`` or ``b/``."""
+def diff_path_named(file: str, known_paths: Collection[str]) -> str | None:
+    """The path in ``known_paths`` that ``file`` names, or None.
+
+    ``file`` matches exactly, or once more without one leading ``./``, ``a/`` or ``b/``.
+    """
     if file in known_paths:
         return file
     for prefix in _PATH_PREFIXES:
@@ -189,7 +192,7 @@ def _check_all(
     kept_fingerprints: dict[tuple[str, str, int, str], str] = {}
     checks: list[ProposalCheck] = []
     for finding in proposed:
-        diff_path = _diff_path_named(finding.file, known_paths)
+        diff_path = diff_path_named(finding.file, known_paths)
         reason = _drop_reason(finding, diff_path, anchor_lines)
         # ``diff_path is None`` always has a reason; it is tested only so mypy narrows the type.
         if reason is not None or diff_path is None:

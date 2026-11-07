@@ -1,0 +1,56 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "clean",
+  "kind": "synthetic",
+  "case_sha256": "f55124858122c768f8259f08a92a5ff4d1ed1a9d67e21151fb37a10da316bde2",
+  "diff_sha256": "908f8b92193a11ff621e1aef5f04a1652f96ca71faae7c4399ba6e22b21c247d",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "ffc65f20aeffe495ee1f06c6564364b96ad9cda47093b0ffa4c1db3708102d6d",
+  "model": "claude-opus-5-5",
+  "sdk_version": "synthetic",
+  "recorded_at": "2026-11-07T09:30:00Z",
+  "runs": [
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "warnings": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "warnings": []
+    },
+    {
+      "error": {
+        "category": "refusal"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "warnings": []
+    }
+  ]
+}

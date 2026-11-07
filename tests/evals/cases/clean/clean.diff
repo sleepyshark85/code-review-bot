@@ -1,0 +1,68 @@
+diff --git a/billing/refunds.py b/billing/refunds.py
+new file mode 100644
+index 0000000..5e1c0a2
+--- /dev/null
++++ b/billing/refunds.py
+@@ -0,0 +1,28 @@
++"""Refunds for paid invoices, in exact decimal money."""
++
++import json
++from decimal import ROUND_HALF_EVEN, Decimal
++from pathlib import Path
++
++CENT = Decimal("0.01")
++
++
++class RefundError(ValueError):
++    """A refund that can't be issued."""
++
++
++def refund_amount(paid: Decimal, fraction: Decimal) -> Decimal:
++    """The part of ``paid`` to refund, rounded to the cent."""
++    if not Decimal(0) <= fraction <= Decimal(1):
++        raise RefundError(f"refund fraction {fraction} is outside 0 to 1")
++    return (paid * fraction).quantize(CENT, rounding=ROUND_HALF_EVEN)
++
++
++def load_refund_rates(path: Path) -> dict[str, Decimal]:
++    """Refund fractions by reason, read from a JSON file."""
++    try:
++        with open(path, encoding="utf-8") as handle:
++            rates: dict[str, Decimal] = json.load(handle, parse_float=Decimal, parse_int=Decimal)
++    except json.JSONDecodeError as exc:
++        raise RefundError(f"{path} isn't valid JSON: {exc}") from exc
++    return rates
+diff --git a/billing/test_refunds.py b/billing/test_refunds.py
+new file mode 100644
+index 0000000..9b4d7f1
+--- /dev/null
++++ b/billing/test_refunds.py
+@@ -0,0 +1,28 @@
++from decimal import Decimal
++from pathlib import Path
++
++import pytest
++
++from billing.refunds import RefundError, load_refund_rates, refund_amount
++
++
++def test_refund_amount_rounds_to_the_cent() -> None:
++    assert refund_amount(Decimal("10.00"), Decimal("0.333")) == Decimal("3.33")
++
++
++def test_refund_amount_rejects_a_fraction_above_one() -> None:
++    with pytest.raises(RefundError):
++        refund_amount(Decimal("10.00"), Decimal("1.5"))
++
++
++def test_load_refund_rates_reads_decimals(tmp_path: Path) -> None:
++    path = tmp_path / "rates.json"
++    path.write_text('{"damaged": 1.0, "late": 0.25}', encoding="utf-8")
++    assert load_refund_rates(path) == {"damaged": Decimal("1.0"), "late": Decimal("0.25")}
++
++
++def test_load_refund_rates_rejects_invalid_json(tmp_path: Path) -> None:
++    path = tmp_path / "rates.json"
++    path.write_text("{", encoding="utf-8")
++    with pytest.raises(RefundError):
++        load_refund_rates(path)
