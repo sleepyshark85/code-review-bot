@@ -1,6 +1,6 @@
 # 0009: Keep comment state on the PR, pair comments with current findings, and resolve only when the anchored line is gone
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-08
 - **Phase:** 2
 

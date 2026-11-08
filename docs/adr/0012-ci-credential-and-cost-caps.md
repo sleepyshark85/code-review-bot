@@ -1,6 +1,6 @@
 # 0012: Give CI one repo-secret model key, never to forks, and bound every run by calls and size
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-08
 - **Phase:** 2
 
