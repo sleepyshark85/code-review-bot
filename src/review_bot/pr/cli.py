@@ -1,5 +1,7 @@
 """Command line for pull requests: ``python -m review_bot.pr shadow|run ... --out DIR``.
 
+``run --mode`` accepts only ``shadow``, its default, until comment mode arrives (P2-S5, P2-S6).
+
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
 with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusable event or git
 command exits 19 (Phase 2 design, Commands and exit codes).
@@ -139,6 +141,12 @@ def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand:
     run.add_argument(
         "--repo", type=Path, required=True, help="the clone holding the base and head commits"
     )
+    run.add_argument(
+        "--mode",
+        choices=["shadow"],
+        default="shadow",
+        help="shadow (default), the only mode for now",
+    )
     flags = vars(parser.parse_args(argv))
     name, out_dir = flags.pop("command"), flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
@@ -146,6 +154,7 @@ def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand:
     if name == "shadow":
         diff_path = Path(flags.pop("diff_path"))
         return _ShadowCommand(diff_path, out_dir, load_settings(flags))
+    del flags["mode"]
     event_path, repo_dir = flags.pop("event"), flags.pop("repo")
     return _RunCommand(event_path, repo_dir, out_dir, load_settings(flags))
 

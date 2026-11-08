@@ -281,6 +281,42 @@ def test_run_writes_the_pull_requests_shadow_report_and_audit_log_in_out(
     assert not any("canary-5d1a" in path.read_text("utf-8") for path in out.iterdir())
 
 
+@pytest.mark.parametrize("flags", [[], ["--mode", "shadow"]], ids=["default", "explicit"])
+def test_run_in_shadow_mode_reviews_and_reports_mode_shadow(
+    flags: list[str], clone: tuple[Path, str, str], tmp_path: Path
+) -> None:
+    repo, base, head = clone
+    out = tmp_path / "out"
+    event = pull_request_event(repo, base, head)
+
+    exit_code = run_pr(event, repo, out, *flags, provider=MockProvider(findings=[]))
+
+    document = shadow_json(out)
+    assert exit_code == 0
+    assert (document["mode"], document["outcome"]) == ("shadow", "reviewed")
+
+
+@pytest.mark.parametrize("mode", ["comment", "off", ""])
+def test_run_with_a_mode_other_than_shadow_exits_2_with_one_line_before_any_work(
+    mode: str, clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, base, head = clone
+    out = tmp_path / "out"
+    provider = MockProvider()
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head), repo, out, "--mode", mode, provider=provider
+    )
+
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert err.count("\n") == 1
+    assert f"argument --mode: invalid choice: {mode!r}" in err
+    assert "Run with --help for usage." in err
+    assert not out.exists()
+    assert provider.requests == []
+
+
 def test_run_with_an_unusable_event_exits_19_with_one_line_and_no_report(
     clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
