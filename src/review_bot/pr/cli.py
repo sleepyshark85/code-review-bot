@@ -1,4 +1,7 @@
-"""Command line for pull requests: ``python -m review_bot.pr shadow|run ... --out DIR``.
+"""Command line for pull requests: ``python -m review_bot.pr shadow|run|label ...``.
+
+``shadow`` and ``run`` write a shadow report in ``--out DIR``; ``label`` judges what downloaded
+shadow reports would post.
 
 ``run --mode`` accepts only ``shadow``, its default, until comment mode arrives (P2-S5, P2-S6).
 
@@ -7,6 +10,7 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusabl
 command exits 19 (Phase 2 design, Commands and exit codes).
 """
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -27,10 +31,16 @@ from review_bot.cli import (
     then_discard_unraisable,
     uses_own_claude,
 )
-from review_bot.console import keep_library_logs_off_stderr, write_diagnostic
+from review_bot.console import (
+    is_terminal,
+    keep_library_logs_off_stderr,
+    read_answer,
+    write_diagnostic,
+)
 from review_bot.errors import ConfigError, ProviderError
 from review_bot.pr.event import read_event
 from review_bot.pr.git import GitRepo
+from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
 from review_bot.pr.outcome import Reason
 from review_bot.pr.runner import run_pull_request
 from review_bot.pr.shadow import (
@@ -57,6 +67,10 @@ _NO_CREDENTIAL_HINT: Final = (
     "review-bot pr: ANTHROPIC_API_KEY is unset or empty in CI, so nothing was reviewed. Add it "
     "as a repository secret to review pull requests."
 )
+_NO_TERMINAL_FOR_LABEL: Final = (
+    "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
+    "interactive shell."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +88,12 @@ class _RunCommand:
     settings: Settings
 
 
+@dataclass(frozen=True, slots=True)
+class _LabelCommand:
+    reports_dir: Path
+    labels_path: Path
+
+
 def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
     """Run one subcommand and return the process exit code.
 
@@ -86,11 +106,14 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
         failure, such as 2 for a usage error or an unwritable ``--out``, 3 for a missing diff,
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
-        written, and 19 for an unusable event or git command.
+        written, and 19 for an unusable event or git command. ``label`` returns 0 when done or
+        interrupted, and 2 with no terminal or an invalid labels file.
     """
     keep_library_logs_off_stderr()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
+        if isinstance(command, _LabelCommand):
+            return _label(command)
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
         audit = AuditLog(command.settings.audit_log, clock=utc_now)
@@ -110,7 +133,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         return exit_code
 
 
-def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand:
+def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand | _LabelCommand:
     """Parse the command line into the subcommand, its paths and the settings.
 
     The audit log goes in the output directory unless ``REVIEW_BOT_AUDIT_LOG`` names one.
@@ -147,8 +170,27 @@ def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand:
         default="shadow",
         help="shadow (default), the only mode for now",
     )
+    label = commands.add_parser(
+        "label",
+        help="accept or reject, on the terminal, each comment the shadow reports would post",
+        description="Ask about each would-be comment not yet labelled, appending each verdict "
+        "to the labels file at once.",
+        allow_abbrev=False,
+    )
+    label.add_argument(
+        "--reports",
+        type=Path,
+        required=True,
+        help="the directory holding the downloaded shadow.json files, at any depth",
+    )
+    label.add_argument(
+        "--labels", type=Path, required=True, help="the feedback/v1 JSONL file to append to"
+    )
     flags = vars(parser.parse_args(argv))
-    name, out_dir = flags.pop("command"), flags.pop("out")
+    name = flags.pop("command")
+    if name == "label":
+        return _LabelCommand(flags["reports"], flags["labels"])
+    out_dir = flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
     if name == "shadow":
@@ -175,6 +217,41 @@ def _add_command(
     )
     add_setting_arguments(command)
     return command
+
+
+def _label(command: _LabelCommand) -> int:
+    """Judge the would-be comments on the terminal, then show what the session did.
+
+    Ctrl+C before the first question, or after the last, stops it with no counts, since
+    ``run_labelling`` handles one during the questions and nothing is judged outside them.
+
+    Raises:
+        ConfigError: If stdin or stderr isn't a terminal, checked before anything is read, or
+            as ``run_labelling`` raises it.
+    """
+    if not (is_terminal(sys.stdin) and is_terminal(sys.stderr)):
+        raise ConfigError(_NO_TERMINAL_FOR_LABEL)
+    try:
+        result = run_labelling(
+            command.reports_dir,
+            command.labels_path,
+            read_line=read_answer,
+            write_line=write_diagnostic,
+            clock=utc_now,
+        )
+        write_diagnostic(_labelled_line(result))
+    except KeyboardInterrupt:
+        # A second Ctrl+C only loses this notice.
+        with contextlib.suppress(KeyboardInterrupt):
+            write_diagnostic(LABELLING_STOPPED)
+    return 0
+
+
+def _labelled_line(result: LabellingResult) -> str:
+    return (
+        f"review-bot pr: label: judged={result.judged} skipped={result.skipped} "
+        f"remaining={result.remaining} files_skipped={result.files_skipped}"
+    )
 
 
 def _require_writable_directory(out_dir: Path) -> None:

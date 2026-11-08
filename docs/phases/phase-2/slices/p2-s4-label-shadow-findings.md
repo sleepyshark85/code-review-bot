@@ -1,8 +1,8 @@
 # P2-S4: Judge would-be comments from shadow reports, and keep the labels
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S1
-- **Touches:** `pr` (`label`, `feedback`, `cli`), `console`
+- **Touches:** `pr` (`label`, `feedback`, `units`, `cli`), `console`
 
 ## Value
 The user turns downloaded shadow reports into accept and reject labels. These are the data the gate's precision is computed from.
@@ -34,3 +34,12 @@ Reports are files the user downloaded, so they are treated as untrusted. Each is
 
 ## Notes
 - **README (main session):** describe `label`, and downloading artifacts with `gh run download`.
+
+Changed in build, main session, 2026-11-08:
+- The `shadow/v1` reader and the unit rule (grouping, indexing, `run_id` dedupe, the mode, outcome and PR filter) live in the pure module `pr.units`, so P2-S10 reuses them; `label` keeps only file reading, prompting and appending (review round 1).
+- Only `*.json` files in `DIR` are read, so an artifact's `shadow.md` and `audit.jsonl` aren't reported as skipped.
+- Field checks: `fingerprint` and `anchor` are 16 lowercase hex digits, `pr.repo` is `owner/name`, `pr.number` and `line` are at least 1, `file` and `rule_part` aren't empty, `severity` and `source` are known values, and a `reviewed` report holds its `report` object. Other keys are ignored. A file that fails is skipped as in AC11.
+- Reports with `origin` `local` have no PR, so they contribute nothing.
+- A report downloaded twice (same `run_id`) counts once.
+- Ctrl+C at any point, report loading included, stops with `Labelling stopped.` and exits 0. Before the first question no counts are known, so none are shown.
+- Schema scope is S4's: `channel` is only `shadow` and `index` is never null; S8 widens both.
