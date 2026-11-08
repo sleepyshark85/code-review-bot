@@ -1,6 +1,6 @@
 """The GitHub API a pull request run uses, behind a ``Protocol`` (Phase 2 design, Interfaces).
 
-Only ``FakeGitHubClient`` implements it for now; the real client arrives with P2-S6.
+``RestGitHubClient`` implements it against GitHub, and ``FakeGitHubClient`` in memory for tests.
 """
 
 from collections.abc import Sequence

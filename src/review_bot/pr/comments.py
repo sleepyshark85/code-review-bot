@@ -2,7 +2,7 @@
 
 Model and diff text reaches these bodies only through ``render.escape_markdown`` and
 ``render.markdown_path``, so it can't mention, link, reference or hide anything (Phase 2 design,
-Safety on the PR path). ``read_marker`` reads a posted body back.
+Safety on the PR path). ``read_marker`` and ``is_summary`` read posted bodies back.
 """
 
 import re
@@ -21,9 +21,11 @@ __all__ = [
     "Marker",
     "blocked_summary",
     "comment_body",
+    "is_summary",
     "not_reviewed_summary",
     "read_marker",
     "reviewed_summary",
+    "with_summary_marker",
 ]
 
 _MAX_RATIONALE_CHARS: Final = 2_000
@@ -42,6 +44,10 @@ _SEVERITY_HEADING: Final = re.compile(rf"\*\*({'|'.join(Severity)})\*\* ")
 _MARKER: Final = re.compile(
     r"<!-- review-bot:v1 fingerprint=([0-9a-f]{16}) rule=(\S+) anchor=([0-9a-f]{16}) -->"
 )
+# The summary's last line (ADR 0009). P2-S7 records the commit reviewed in it; until then it says
+# ``none``, which isn't a SHA, so no run takes it for one.
+_SUMMARY_MARKER: Final = "<!-- review-bot:v1 summary reviewed=none -->"
+_ANY_SUMMARY_MARKER: Final = re.compile(r"<!-- review-bot:v1 summary reviewed=\S+ -->")
 _RULE_PARTS: Final = frozenset((*RuleId, *(f"ai:{category}" for category in Category)))
 
 
@@ -93,6 +99,19 @@ def read_marker(body: str) -> Marker | None:
     if rule_part not in _RULE_PARTS:
         return None
     return Marker(fingerprint, rule_part, anchor, Severity(heading.group(1)))
+
+
+def with_summary_marker(body: str) -> str:
+    """Return the summary ``body`` as posted: its last line is the summary marker."""
+    return f"{body}{_NEW_PARAGRAPH}{_SUMMARY_MARKER}"
+
+
+def is_summary(body: str) -> bool:
+    """Say whether ``body``'s last line is exactly a summary marker.
+
+    Call it only on the bot's own comments, as ``read_marker``.
+    """
+    return _ANY_SUMMARY_MARKER.fullmatch(body.rsplit("\n", maxsplit=1)[-1]) is not None
 
 
 def _shown_rationale(rationale: str) -> str:

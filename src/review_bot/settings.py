@@ -11,10 +11,11 @@ from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
 
-__all__ = ["Settings", "in_ci", "load_settings"]
+__all__ = ["GITHUB_TOKEN_VARIABLE", "Settings", "in_ci", "load_settings", "take_github_token"]
 
 # Set by GitHub Actions and most CI services.
 _CI_VARIABLE: Final = "CI"
+GITHUB_TOKEN_VARIABLE: Final = "GITHUB_TOKEN"  # noqa: S105 - the variable's name, not a token
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
 
@@ -47,6 +48,16 @@ class Settings(BaseModel):
 def in_ci(environ: Mapping[str, str]) -> bool:
     """Whether ``environ`` is a CI run's: ``CI`` is set, whatever its value."""
     return _CI_VARIABLE in environ
+
+
+def take_github_token() -> str | None:
+    """Remove ``GITHUB_TOKEN`` from this process's environment, and return it, or None if unset.
+
+    The Claude CLI subprocess inherits this process's environment, and the SDK can only add to
+    it, so every entry point calls this before any provider is built: the model's process never
+    holds the token (Phase 2 design, Safety on the PR path). Only comment mode uses the value.
+    """
+    return os.environ.pop(GITHUB_TOKEN_VARIABLE, None)
 
 
 def load_settings(flags: Mapping[str, str | bool | None]) -> Settings:

@@ -9,9 +9,11 @@ from review_bot.pr.comments import (
     Marker,
     blocked_summary,
     comment_body,
+    is_summary,
     not_reviewed_summary,
     read_marker,
     reviewed_summary,
+    with_summary_marker,
 )
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import (
@@ -259,3 +261,27 @@ def test_read_marker_refuses_a_body_that_isnt_exactly_the_bots(
     change: Callable[[str], str],
 ) -> None:
     assert read_marker(change(body_of(reviewed()))) is None
+
+
+def test_a_summary_with_its_marker_is_recognised_as_the_summary() -> None:
+    body = with_summary_marker("**Review bot:** `reviewed`.")
+
+    assert body.endswith("\n\n<!-- review-bot:v1 summary reviewed=none -->")
+    assert is_summary(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "**Review bot:** `reviewed`.",
+        "<!-- review-bot:v1 summary reviewed=none -->\n\ntext after it",
+        "text\n<!-- review-bot:v1 summary reviewed= -->",
+        "text\n<!-- review-bot:v1 summary reviewed=none --> ",
+    ],
+)
+def test_a_body_without_a_summary_marker_on_its_last_line_is_not_the_summary(body: str) -> None:
+    assert not is_summary(body)
+
+
+def test_a_summary_marker_with_a_sha_is_recognised_for_the_run_that_records_one() -> None:
+    assert is_summary(f"text\n\n<!-- review-bot:v1 summary reviewed={'a' * 40} -->")

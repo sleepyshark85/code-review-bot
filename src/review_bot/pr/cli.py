@@ -4,8 +4,8 @@
 pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
 post.
 
-``run --mode comment`` also posts on the pull request, through a GitHub client that only tests
-inject until the real one arrives (P2-S6); without one it exits 2.
+``run --mode comment`` also posts on the pull request, through GitHub's API with the token in
+``GITHUB_TOKEN``; without it, it exits 2.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
 with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusable event or git
@@ -48,6 +48,11 @@ from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
 from review_bot.pr.outcome import Outcome, Reason
+from review_bot.pr.rest_github import (
+    API_URL_VARIABLE,
+    RestGitHubClient,
+    github_access,
+)
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
@@ -63,7 +68,7 @@ from review_bot.pr.units import ShadowFile
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, in_ci, load_settings
+from review_bot.settings import Settings, in_ci, load_settings, take_github_token
 
 __all__ = ["main"]
 
@@ -80,11 +85,6 @@ _NO_CREDENTIAL_HINT: Final = (
 _BACKFILL_IN_CI: Final = (
     "backfill doesn't run in CI (CI is set): it spends the budget you approved, with your own "
     "login or key. Run it from your own shell."
-)
-# Replaced by building the real client from GITHUB_TOKEN (P2-S6 AC1).
-_NO_GITHUB_CLIENT: Final = (
-    "--mode comment needs the GitHub client, which this version doesn't have yet, so nothing "
-    "was reviewed. Run with --mode shadow."
 )
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
@@ -136,7 +136,9 @@ def main(
         argv: The arguments; None means the process's own.
         provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
             from the settings, and only if the run calls one.
-        github: The GitHub client ``run --mode comment`` uses; ``--mode shadow`` never uses it.
+        github: The GitHub client ``run --mode comment`` uses; None means a
+            ``RestGitHubClient`` from ``GITHUB_TOKEN`` and ``GITHUB_API_URL``. ``--mode shadow``
+            uses none, and builds no client.
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
@@ -144,12 +146,16 @@ def main(
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
         written, 18 for a failed GitHub call, whose report is still written unless listing the
         bot's comments failed, and 19 for an unusable event, pulls file or git command. A
-        ``run --mode comment`` with no ``github`` exits 2. ``backfill`` returns
-        the first provider failure's code, an error's code if one stops it, and 2 in CI or over
-        ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
-        an invalid labels file.
+        ``run --mode comment`` with no ``github`` exits 2 if ``GITHUB_TOKEN`` is missing or
+        ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
+        code, an error's code if one stops it, and 2 in CI or over ``--max-calls``. ``label``
+        returns 0 when done or interrupted, and 2 with no terminal or an invalid labels file.
+
+    Every subcommand first removes ``GITHUB_TOKEN`` from the environment
+    (``take_github_token``); ``run --mode comment`` keeps it for its client.
     """
     keep_library_logs_off_stderr()
+    github_token = take_github_token()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
         if isinstance(command, _LabelCommand):
@@ -157,8 +163,9 @@ def main(
         # Before --out is created: in CI, backfill touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci()
+        make_github: Callable[[str], GitHubClient] | None = None
         if isinstance(command, _RunCommand):
-            _require_client_for_comment_mode(command.mode, github)
+            make_github = _github_for(command.mode, github, github_token)
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
         if isinstance(command, _BackfillCommand):
@@ -171,7 +178,7 @@ def main(
             case _ShadowCommand():
                 shadow = _shadow(command, provider, audit)
             case _RunCommand():
-                shadow = _run(command, provider, github, audit)
+                shadow = _run(command, provider, make_github, audit)
         _write_report(shadow, command.out_dir)
         return _finish(shadow, command.out_dir, audit)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
@@ -359,10 +366,24 @@ def _refuse_backfill_in_ci() -> None:
         raise ConfigError(_BACKFILL_IN_CI)
 
 
-def _require_client_for_comment_mode(mode: Mode, github: GitHubClient | None) -> None:
-    """Raise ``ConfigError`` for comment mode with no GitHub client, before anything runs."""
-    if mode is Mode.COMMENT and github is None:
-        raise ConfigError(_NO_GITHUB_CLIENT)
+def _github_for(
+    mode: Mode, github: GitHubClient | None, github_token: str | None
+) -> Callable[[str], GitHubClient] | None:
+    """What makes a run's GitHub client for its repository: none in shadow mode.
+
+    In comment mode it is ``github`` if given, else a ``RestGitHubClient`` with
+    ``github_token``, the one ``main`` took from the environment, and ``GITHUB_API_URL``,
+    checked now, before anything runs.
+
+    Raises:
+        ConfigError: If ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
+    """
+    if mode is Mode.SHADOW:
+        return None
+    if github is not None:
+        return lambda _repo: github
+    access = github_access(github_token, os.environ.get(API_URL_VARIABLE))
+    return lambda repo: RestGitHubClient(repo, access)
 
 
 def _require_writable_directory(out_dir: Path) -> None:
@@ -402,10 +423,13 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
 def _run(
     command: _RunCommand,
     provider: LLMProvider | None,
-    github: GitHubClient | None,
+    make_github: Callable[[str], GitHubClient] | None,
     audit: AuditLog,
 ) -> ShadowReport:
-    """Review the pull request in the event file, and in comment mode apply it with ``github``.
+    """Review the pull request in the event file, and in comment mode apply it on GitHub.
+
+    ``make_github`` makes the client for the pull request's repository; it is None in shadow
+    mode.
 
     Raises:
         EventError: If the event file is unusable; nothing else runs.
@@ -419,7 +443,7 @@ def _run(
         mode=command.mode,
         git=GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S),
         make_provider=lambda: build_provider(settings) if provider is None else provider,
-        github=github if command.mode is Mode.COMMENT else None,
+        github=None if make_github is None else make_github(pr.repo),
         settings=settings,
         audit=audit,
         environ=os.environ,

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import runpy
 import sys
 from collections.abc import Iterator
@@ -16,6 +17,8 @@ from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding
 from review_bot.pr.cli import main
 from review_bot.pr.fake_github import FakeGitHubClient
+from review_bot.pr.rest_github import GitHubAccess
+from review_bot.providers.base import ReviewRequest, ReviewResponse
 from review_bot.providers.mock import MockProvider
 
 # Assembled, so no key is written literally.
@@ -395,9 +398,13 @@ def test_run_in_shadow_mode_never_calls_an_injected_github_client(
     assert github.calls == []
 
 
-def test_run_in_comment_mode_without_a_github_client_exits_2_before_any_work(
-    clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_run_in_comment_mode_without_github_token_exits_2_naming_it_before_any_work(
+    clone: tuple[Path, str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     repo, base, head = clone
     out = tmp_path / "out"
     provider = MockProvider()
@@ -409,9 +416,64 @@ def test_run_in_comment_mode_without_a_github_client_exits_2_before_any_work(
     err = capsys.readouterr().err
     assert exit_code == 2
     assert err == (
-        "review-bot: error: --mode comment needs the GitHub client, which this version doesn't "
-        "have yet, so nothing was reviewed. Run with --mode shadow.\n"
+        "review-bot: error: --mode comment needs GITHUB_TOKEN, which is unset or empty, so "
+        "nothing was reviewed. Run it in the comment job, which sets it, or run with --mode "
+        "shadow.\n"
     )
+    assert not out.exists()
+    assert provider.requests == []
+
+
+def test_run_in_comment_mode_with_github_token_posts_through_the_rest_client(
+    clone: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+    made: list[tuple[str, GitHubAccess]] = []
+    fake = FakeGitHubClient()
+
+    def rest_client(repo: str, access: GitHubAccess) -> FakeGitHubClient:
+        made.append((repo, access))
+        return fake
+
+    monkeypatch.setattr("review_bot.pr.cli.RestGitHubClient", rest_client)
+    repo, base, head = clone
+    flags = ("--mode", "comment")
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head),
+        repo,
+        tmp_path / "out",
+        *flags,
+        provider=MockProvider(),
+    )
+
+    assert exit_code == 0
+    assert made == [("owner/repo", GitHubAccess("https://api.github.com", "ghs_canary"))]
+    assert [call.name for call in fake.calls][-1] == "write_summary"
+
+
+def test_run_in_comment_mode_with_a_remote_http_api_url_exits_2_naming_it_before_any_work(
+    clone: tuple[Path, str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    monkeypatch.setenv("GITHUB_API_URL", "http://api.example.com")
+    repo, base, head = clone
+    out = tmp_path / "out"
+    provider = MockProvider()
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head), repo, out, "--mode", "comment", provider=provider
+    )
+
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert err.count("\n") == 1
+    assert "GITHUB_API_URL must be an https:// URL" in err
+    assert "ghs_canary" not in err
     assert not out.exists()
     assert provider.requests == []
 
@@ -565,3 +627,52 @@ def test_label_interrupted_while_loading_reports_stops_cleanly_and_exits_0(
     assert exit_code == 0
     assert capsys.readouterr().err == "Labelling stopped.\n"
     assert not labels.exists()
+
+
+class EnvironmentRecordingProvider(MockProvider):
+    """A ``MockProvider`` that records whether ``GITHUB_TOKEN`` was set when it was called."""
+
+    def __init__(self) -> None:
+        super().__init__(findings=[])
+        self.saw_token: list[bool] = []
+
+    async def review(self, request: ReviewRequest) -> ReviewResponse:
+        self.saw_token.append("GITHUB_TOKEN" in os.environ)
+        return await super().review(request)
+
+
+@pytest.mark.parametrize("mode", ["comment", "shadow"])
+def test_run_removes_github_token_from_the_environment_before_the_provider(
+    mode: str, clone: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    fake = FakeGitHubClient()
+    monkeypatch.setattr("review_bot.pr.cli.RestGitHubClient", lambda _repo, _access: fake)
+    provider = EnvironmentRecordingProvider()
+    repo, base, head = clone
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head),
+        repo,
+        tmp_path / "out",
+        "--mode",
+        mode,
+        provider=provider,
+    )
+
+    assert exit_code == 0
+    assert provider.saw_token == [False]
+    assert "GITHUB_TOKEN" not in os.environ
+
+
+def test_shadow_removes_github_token_from_the_environment_before_the_provider(
+    diff_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    provider = EnvironmentRecordingProvider()
+
+    exit_code = run(diff_path, tmp_path / "out", provider=provider)
+
+    assert exit_code == 0
+    assert provider.saw_token == [False]
+    assert "GITHUB_TOKEN" not in os.environ

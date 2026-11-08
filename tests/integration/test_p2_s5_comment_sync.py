@@ -1387,19 +1387,8 @@ def test_p2_s5_ac14_the_same_draft_in_shadow_mode_is_still_reviewed(session):
     assert run.shadow["outcome"] == "reviewed"
 
 
-# AC15: comment mode needs the client; shadow mode builds none and reads no token.
-
-
-def test_p2_s5_ac15_comment_mode_without_a_client_exits_2_before_any_provider_call(session):
-    session.push({APP: text(APP_V1)})
-    provider = MockProvider(findings=[ai(EVAL_LINE)])
-
-    run = session.run(provider=provider, with_client=False)
-
-    assert run.exit_code == 2, run.stderr
-    assert re.search(r"--mode comment|comment mode", run.stderr, re.IGNORECASE), run.stderr
-    assert re.search(r"GitHub", run.stderr), run.stderr
-    assert provider.requests == []
+# AC15: shadow mode builds no client and reads no token. Its interim exit 2 for comment mode
+# with no client is replaced by P2-S6 AC1 (test_p2_s6_comments_on.py).
 
 
 class WatchedEnviron(dict[str, str]):

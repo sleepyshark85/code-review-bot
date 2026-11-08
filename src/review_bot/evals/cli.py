@@ -17,7 +17,7 @@ from review_bot.evals.render import render_live, render_replay
 from review_bot.evals.replay import replay_cases, require_live
 from review_bot.evals.score import CaseResult
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings
+from review_bot.settings import Settings, take_github_token
 
 if TYPE_CHECKING:
     from review_bot.providers.claude_agent import SdkCall
@@ -51,6 +51,8 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
             never calls a model, so it never uses it.
     """
     keep_library_logs_off_stderr()
+    # Before any provider is built, so the Claude CLI never inherits it.
+    take_github_token()
     try:
         args = _parse_args(argv)
         results = asyncio.run(_run(args, sdk_call))

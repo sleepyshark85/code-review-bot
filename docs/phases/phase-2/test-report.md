@@ -401,3 +401,96 @@ The developer fixed it after the first run: a created comment now takes the next
 ### Coverage
 
 From this file plus P2-S13's, with `--cov=review_bot.pr`: `pr/plan.py` 97%, `pr/runner.py` 96%, `pr/fake_github.py` 94%, `pr/comments.py` 91%, `pr/cli.py` 85%. `cli.py` also holds `label` and parts of `backfill`, which these files don't exercise.
+
+## P2-S6: Turn comments on with one repository variable
+
+Spec: [p2-s6-comments-on.md](slices/p2-s6-comments-on.md). Tests: [`tests/integration/test_p2_s6_comments_on.py`](../../../tests/integration/test_p2_s6_comments_on.py), 37 tests, 110 cases, and the stub [`tests/integration/github_stub.py`](../../../tests/integration/github_stub.py). They were written from the spec, design.md (Interfaces, Comment state, Safety on the PR path) and ADRs 0008 and 0012 while the developer built `RestGitHubClient`. Of the developer's code, only the client's public constructor was read, to fix the seam. They ran against the developer's uncommitted work on `feat/p2-s6-comments-on` (base `094cf2b`). They ran again after the developer fixed both findings below, with AC8 rewritten for the main session's decision. They ran a third time after review round 1, which links threads by `fullDatabaseId` and removes `GITHUB_TOKEN` in every entry point.
+
+**Status: AC1 to AC11 pass, so all 110 cases pass on Windows. AC12 is manual and still pending. With the P0-S2 lockdown, P2-S3 and P2-S5 files, 291 of 291 cases pass. P2-S2's `ac7_both_caps_unset_leave_the_claude_env_as_before` passes again too.**
+
+### Seam and set-up
+
+- **Seam:** `review_bot.pr.rest_github.RestGitHubClient(repo, GitHubAccess(api_url, token), *, timeout_s=30.0)`, built only in `make_client`. The tests first assumed `RestGitHubClient(token=, api_url=, repo=)`. The repository has to come from somewhere, because `update_comment` takes no PR.
+- **Command-line runs:** `python -m review_bot.pr run --mode comment` runs in process with `--provider mock` (AC8 uses `claude` over the fake SDK) and no injected client, over a real git PR.
+  - `GITHUB_TOKEN` and `GITHUB_API_URL` are set as Actions sets them.
+  - `GITHUB_GRAPHQL_URL`, `GITHUB_REPOSITORY`, the proxy variables and `CI` are unset, so the run reads only the variables the spec names.
+  - `REVIEW_BOT_AUDIT_LOG` is unset, so the audit log goes to `--out`.
+- **The stub** is a `ThreadingHTTPServer` on `127.0.0.1:0`.
+  - **It serves:**
+    - REST review comments with GitHub's paging (`per_page`, `page`, `Link`);
+    - GraphQL review threads, paged by `first` and `after`, with `resolvedBy`. Each comment's `fullDatabaseId` is a string, as GitHub's BigInt is, and its `databaseId` is null above 2^31 - 1, as GitHub's 32-bit field is;
+    - review creation, comment edits, the `resolveReviewThread` mutation, and issue comments.
+  - **It records** every request with its headers and body.
+  - **Its objects** carry many more fields than a client needs.
+  - **`fail(route, kind)`** fails every request to one route, so a retry shows up as a second request.
+- **Timeouts are tested without waiting.** The held-response cases build the client with `timeout_s=0.5`, and the stub holds its answer for 20 s, 40 times longer. Every other case keeps the client's default timeout, so it can't time out. The 30 s default is checked separately: `socket.socket.settimeout` is wrapped to record the values the client sets, without changing them. An earlier version capped every socket timeout at 1 s instead, and the developer saw those cases fail once. The current version passed 8 runs in a row.
+- **AC7's default URL:** `socket.getaddrinfo` records each lookup and fails any non-loopback one. The test sees `api.github.com:443`, and nothing leaves the machine.
+- **AC8:** a full `run --mode comment` through `main`, with no injected client. `GITHUB_TOKEN` is set, and `GITHUB_API_URL` points at the stub. The provider is `ClaudeAgentProvider` over the fake SDK. When the provider runs, the fake SDK's script step builds the environment the way `SubprocessCLITransport.connect` does in SDK 0.2.178: the inherited `os.environ` without `CLAUDECODE`, with `options.env` laid on top. The token is restored when the test ends, because `monkeypatch` set it.
+- **Workflow:** AC9 to AC11 reuse P2-S3's helpers and `if:` evaluator. P2-S3's AC6, AC9 and AC10 tests walk every job, so they cover the comment job without changes.
+- **Earlier suites changed:**
+  - **P2-S3** (`test_p2_s3_shadow_workflow.py`), all 60 cases pass:
+    - `shadow_job` is now the job that runs `--mode shadow`, because two jobs now run `review_bot.pr run`.
+    - Two whole-file AC5 checks are scoped to that job. The key must be in that job's run step `env` and nowhere else in the job. That is stricter than before, because the step is now named. Neither `GITHUB_TOKEN` nor `github.token` may appear anywhere in the job, keys included.
+    - The helpers now take a job, so S6 can reuse them.
+  - **P2-S5** (`test_p2_s5_comment_sync.py`): `ac15_comment_mode_without_a_client_exits_2_before_any_provider_call` is removed, because AC1 replaces that interim exit. The other two AC15 tests stay.
+
+### Criteria
+
+| AC | Tests (`test_p2_s6_` prefix) | Result |
+|---|---|---|
+| AC1 | `ac1_comment_mode_with_a_token_posts_through_the_rest_client`: no client is injected. The stub sees the listing, one review holding both comments, and one summary write, and each request carries the token. `shadow.json` is `comment`, with both entries `done`. `ac1_no_token_exits_2_naming_it_before_the_provider` ×2 (unset, empty): exit 2 naming `GITHUB_TOKEN`, with no provider request and no request to the stub | pass (3) |
+| AC2 | `ac2_lists_only_own_marked_comments_over_three_pages_with_their_threads`: 250 comments in pages of 100, 100 and 50, and 249 threads served in reverse order, so threads must be matched by comment ID. Excluded: a person with a valid marker, the bot's login with `type: User`, GraphQL's login `github-actions` used as the REST login, the bot with no marker, an unknown rule part, text after the marker, and a person's reply carrying a marker. Read back from page 3: an outdated comment (`line` None), a thread resolved by the bot, one resolved by a person, a comment with another path and severity, and comment `2^31 + 1250`, which only `fullDatabaseId` links to its thread. Before review round 1, the client failed on that last one with `no review thread holds comment 2147484898`. The test compares all nine `BotComment` fields | pass (1) |
+| AC3 | `ac3_post_review_sends_one_comment_review_with_path_line_side_and_body`: exactly one request, `POST .../pulls/7/reviews`, with `event: COMMENT`, the head SHA, and each comment's path, line, `side: RIGHT` and body, in order | pass (1) |
+| AC4 | `ac4_update_comment_sends_one_edit` (`PATCH .../pulls/comments/1001` with `{"body": ...}`). `ac4_resolve_thread_sends_one_resolve_mutation`. `ac4_write_summary_creates_one_when_the_bot_has_none`. `ac4_write_summary_edits_the_bots_existing_one_in_place`: the summary is on page 2 of 120 issue comments, after two decoys (another workflow's bot comment, and a person quoting the summary with its marker). The client makes exactly one write, to the summary's ID | pass (4) |
+| AC5 | `ac5_failure_is_one_github_error_line_naming_call_and_status_and_isnt_retried` ×50, one case for each of the 10 responses below on each of the 5 operations. Each raises `GitHubError` as one line naming the operation, and makes one request to the failing route. The message gives the status in the 7 status cases, and says the request timed out in the held case. The 10 responses: 401, 403, 404, 422, 500, a 403 with `X-RateLimit-Remaining: 0`, a 429 with `Retry-After`, a held response, HTML, and a well-formed JSON body of 5 MB + 4 KB. `ac5_failed_call_in_a_run_exits_18_naming_call_and_status` ×2 (listing 500, review 422) | pass (52) |
+| AC6 | `ac6_token_is_sent_only_in_the_authorization_header`: all five operations. Every request carries the token in `Authorization`, and no path, query, body or other header holds it. `ac6_token_is_in_no_error_even_when_github_quotes_it_back` ×10: the stub's REST failure bodies quote the `Authorization` header back. `ac6_token_is_in_no_stderr_line_audit_record_or_report` ×2 (a posted review, and a review that fails with 500 from the quoting stub): checks stderr and every file in `--out` (`shadow.json`, `shadow.md`, `audit.jsonl`) | pass (13) |
+| AC6 | `ac6_token_is_in_no_error_from_a_graphql_error_quoting_it`: the GraphQL `errors[0].message` quotes the `Authorization` header back | pass (1), after the fix below |
+| AC7 | `ac7_unset_api_url_sends_requests_to_api_github_com`: a lookup of `api.github.com:443`, then exit 18. `ac7_plain_http_to_a_host_other_than_loopback_exits_2_naming_the_variable` ×6: `api.github.com`, a private IP, `127.0.0.1.evil.example`, `localhost.evil.example`, `127.0.0.1@evil.example` (userinfo) and `evil.example#@127.0.0.1` (fragment). `ac7_plain_http_to_localhost_is_accepted` | pass (8) |
+| AC8 | `ac8_shadow_run_with_a_token_set_keeps_it_from_claude_too`: the same check over a `run --mode shadow`, with `GITHUB_TOKEN` set. It failed before review round 1, which removes the token in every entry point. `ac8_claude_subprocess_environment_has_no_github_token`: a comment-mode run with `GITHUB_TOKEN=ghs_canary`. The stub sees the token on every request, so the client read it. `GITHUB_TOKEN` is absent from the merged environment the Claude CLI would get, and no value holds the canary. To check that the test can fail, a throwaway run replaced the CLI's token removal (`_take_github_access`) with a plain read; the test failed as it should | pass (2) |
+| AC9 | `ac9_comment_job_runs_for_a_same_repo_pr_when_mode_is_comment`. `ac9_comment_job_doesnt_run_for_any_other_mode` ×4 (unset, `off`, `shadow`, `bogus`). `ac9_comment_job_doesnt_run_for_a_fork` ×3 (a fork, a similar name, a deleted fork). `ac9_at_most_one_review_job_runs_per_mode` ×4. P2-S3's AC3 tests, still green, cover the shadow half | pass (12) |
+| AC10 | `ac10_comment_job_permissions_are_exactly_contents_read_and_pull_requests_write`. `ac10_run_step_gets_both_credentials_and_passes_mode_comment_and_out`. `ac10_no_other_step_gets_either_credential`: in every job, each key or value naming `secrets.`, `github.token`, `GITHUB_TOKEN` or `ANTHROPIC_API_KEY` sits in the `env` of either the comment run step (both credentials) or the shadow run step (the key only). There is no workflow or job `env`. S3's rules, checked for this job: `ac10_comment_job_runs_only_for_the_shadow_jobs_four_actions` (AC1), `ac10_comment_job_runs_the_bot_from_the_base_and_only_fetches_the_head` (AC4), `ac10_comment_job_has_the_design_caps_timeout_and_concurrency` (AC7), `ac10_comment_job_shows_the_report_and_uploads_it_always` (AC8, running the summary script with bash), and `ac10_run_command_and_caps_are_accepted_by_the_cli` (the step's argv and env get as far as the event, exit 19). S3's whole-file tests cover AC6, AC9 and AC10 | pass (8) |
+| AC11 | `ac11_shadow_job_permissions_are_still_contents_read_only`, with S3's `ac2_shadow_job_sets_exactly_contents_read` | pass (1) |
+| AC12 | Manual, for the user: set `REVIEW_BOT_MODE=comment` on a test PR and check the comments and summary. Then push three changes, one at a time: an edit next to a commented line, an edit to the commented line itself, and lines inserted above it. After each, record GitHub's outdated flag and what the bot did. Finally, reset the variable | **pending** |
+| Limits | `limits_more_than_10_pages_of_comments_exits_18_naming_the_limit` (an endless listing, at most 11 requests). `limits_every_request_has_a_timeout_of_at_most_30_s`. `limits_a_comment_missing_a_field_is_a_github_error` (no `user`). `limits_a_graphql_error_answer_is_a_github_error`. Every stub object carries extra fields, so every test also shows unknown fields are ignored | pass (4) |
+
+### Failures
+
+None open. Both findings from the first run were fixed in build.
+
+**Fixed: AC6. A GraphQL error message carried the token into the error.** `RestGitHubClient._graphql` copied GitHub's `errors[0].message` into the `GitHubError` it raised. It collapsed whitespace and cut the length, but didn't redact anything. A message quoting the request's `Authorization` header therefore reached the error, and a run writes that error to stderr. GitHub isn't known to echo credentials, so this needed a hostile or broken endpoint.
+
+Minimal reproduction:
+1. Start `GitHubStub` with `state.echo_authorization = True`. For an unknown thread, its `resolveReviewThread` answer is `{"data": {"resolveReviewThread": null}, "errors": [{"message": "Could not resolve to a node. Bearer ghs_canary"}]}`.
+2. Call `resolve_thread("PRRT_missing")`.
+3. The message ended `... Could not resolve to a node. Bearer ghs_canary. Nothing was retried; run the job again.`
+
+The developer now removes the token from every message built from a response. The test stays as the regression check.
+
+**Fixed: AC8's first build broke earlier suites.** The provider passed `GITHUB_TOKEN: ""` in `options.env`, because the SDK can't remove an inherited variable. That broke 5 integration cases:
+- 4 in `test_p0_s2_lockdown.py`, whose AC3 says `options.env` is *exactly* the retry and timeout keys;
+- 1 in `test_p2_s2_review_pr_event.py` (`ac7_both_caps_unset_leave_the_claude_env_as_before`).
+
+The main session decided the fix: in comment mode, `pr/cli.py` reads `GITHUB_TOKEN` for the client, then deletes it from `os.environ` before any provider is built. `options.env` is exact again, and all 5 cases pass. The AC8 test was rewritten to go through `main`, because the provider alone no longer hides the token.
+
+### Readings for the designer
+
+1. **"Naming the status" when there is no failing status.** A timeout has no status, and a non-JSON or oversized body comes with 200. The tests require the timeout case to say it timed out (`no response within N s`), and require only the operation's name in the other two. The build's messages for those two say `the response isn't JSON` and `the response is over 5 MB`.
+2. **An empty `GITHUB_TOKEN` counts as missing** (exit 2). AC1 says "no `GITHUB_TOKEN`". The tests read that as including an empty value, and the build agrees.
+3. **AC7 doesn't say when a rejected URL exits**, so the tests don't check whether it happens before the provider call. In the build, the URL is checked alongside AC1's token check, before anything else runs.
+4. **P2-S5 AC15 and the token removal now disagree.** AC15 says shadow mode reads no token. Since review round 1, every entry point calls `take_github_token()`, which does `os.environ.pop("GITHUB_TOKEN")`. `test_p2_s5_ac15_shadow_mode_reads_no_token` still passes, but only because its watched environment records `__getitem__`, `get` and `__contains__`, not `pop`. AC15 should be reworded, for example "shadow mode removes the token and never uses it". The test should then follow the new wording, rather than pass by accident.
+5. **Behaviour outside the ACs**, from the build notes and not tested here:
+   - The client refuses redirects.
+   - A malformed token exits 2.
+   - The summary is recognised by `reviewed=\S+` on its last line, and the first summary carries `reviewed=none`.
+   - REST paging stops at the first page that isn't full, so a full 10th page exits 18 even when nothing follows it.
+   - A resolved thread whose `resolvedBy` is null counts as resolved by the bot. This is a guess about GitHub's data, and AC12 is where it gets checked.
+
+### Gaps
+
+- **The stub can't reproduce GitHub's outdated logic or real permissions.** That is AC12's job, and what it observes goes into the known limits.
+- **AC8 is checked against the SDK's merge rule, not a spawned CLI.** The rule is copied from SDK 0.2.178. The fix now removes the token from the process environment, which every merge rule inherits from, so an SDK upgrade is less of a risk than before. AC8 is covered only for runs through `python -m review_bot.pr run`. A caller that builds the provider some other way, with the token in its environment, isn't covered.
+- **The whole-project 90% coverage threshold** fails on any run of a single file, so it says nothing about this slice.
+
+### Coverage
+
+From this file alone, with `--cov=review_bot.pr`: `pr/rest_github.py` is at 95%, and `pr/cli.py` at 61%. The uncovered branches are a malformed token, a URL that doesn't parse, a PR from another repository, GraphQL `data` that fails its schema, and a comment that has no thread. `pr/cli.py` is low because it also holds `shadow`, `backfill` and `label`.
