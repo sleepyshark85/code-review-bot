@@ -1,6 +1,6 @@
 # 0008: Run as a `pull_request` Action with `GITHUB_TOKEN`, with only the diff taken from the PR
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-08
 - **Phase:** 2
 

@@ -1,6 +1,6 @@
 # 0010: Publish each shadow run as a versioned JSON artifact plus a job summary
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-08
 - **Phase:** 2
 
