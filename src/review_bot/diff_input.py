@@ -5,6 +5,7 @@ from pathlib import Path
 from review_bot.errors import (
     DiffEmptyError,
     DiffNotFoundError,
+    DiffNotUtf8Error,
     DiffTooLargeError,
     DiffUnreadableError,
 )
@@ -22,7 +23,8 @@ def load_diff(path: Path, *, max_bytes: int) -> str:
 
     Raises:
         DiffNotFoundError: If the path doesn't exist.
-        DiffUnreadableError: If the path can't be read, or isn't valid UTF-8.
+        DiffUnreadableError: If the path can't be read.
+        DiffNotUtf8Error: If the file isn't valid UTF-8; a ``DiffUnreadableError`` too.
         DiffTooLargeError: If the file is over ``max_bytes``.
         DiffEmptyError: If the file is empty or contains only whitespace.
     """
@@ -48,7 +50,7 @@ def load_diff(path: Path, *, max_bytes: int) -> str:
     try:
         diff = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise DiffUnreadableError(
+        raise DiffNotUtf8Error(
             f"Diff {shown_path} is not valid UTF-8. Re-save it as UTF-8."
         ) from exc
 

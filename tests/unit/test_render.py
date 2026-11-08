@@ -4,12 +4,19 @@ import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from review_bot.diff_parser import FileDiff, SkipReason
+from review_bot.diff_parser import FileDiff, ParsedDiff, SkipReason
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
 from review_bot.policy import Decision
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
-from review_bot.render import escape_unprintable, render_findings, render_json, render_markdown
+from review_bot.render import (
+    escape_markdown,
+    escape_unprintable,
+    render_findings,
+    render_json,
+    render_markdown,
+    report_document,
+)
 from review_bot.report import PipelineResult, TriageDecision, TriagedFinding
 from review_bot.settings import Settings
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult
@@ -61,6 +68,7 @@ def pipeline_result(
         Decision(reported=reported, below_threshold=below_threshold),
         usage,
         skipped_files,
+        parsed=ParsedDiff(files=(), reviewable_text="", decoded_paths=()),
         model_called=True,
     )
 
@@ -596,3 +604,39 @@ def test_render_markdown_with_an_edit_shows_the_new_values_only() -> None:
 
     assert r"- **low** logic at `a.py:7`: Better text\." in rendered
     assert "Model" not in rendered
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["#12", "GH-3", "gh-3", "owner/repo#4", "deadbeef1", "0123abc", "(#12).", "DEADBEEF12"],
+)
+def test_render_markdown_puts_each_issue_pr_or_commit_reference_in_a_code_span(word: str) -> None:
+    result = pipeline_result(reported=(reviewed(make_finding(rationale=f"See {word} now")),))
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    assert code_spans(rendered) == ["a.py:7", word]
+
+
+@pytest.mark.parametrize(
+    "word", ["abc123", "a" * 41 + "1", "1234567x", "xdeadbeef1", "GH-x", "#x", "plain"]
+)
+def test_render_markdown_escapes_a_word_that_is_no_reference(word: str) -> None:
+    result = pipeline_result(reported=(reviewed(make_finding(rationale=word)),))
+
+    assert code_spans(render_markdown(result, Severity.LOW)) == ["a.py:7"]
+
+
+def test_escape_markdown_spans_a_forged_markers_opener_and_hex_word() -> None:
+    rendered = escape_markdown("<!-- review-bot:v1 fingerprint=0000000000000000 -->")
+
+    assert rendered == (r"`<!--` review\-bot\:v1 `fingerprint=0000000000000000` \-\-\>")
+    assert "html_block" not in [token.type for token in markdown_tokens(rendered)]
+    assert inline_types(rendered) == {"text", "code_inline"}
+
+
+def test_report_document_is_the_object_render_json_writes() -> None:
+    result = pipeline_result(reported=(reviewed(make_finding()),))
+    settings = Settings(provider="mock")
+
+    assert report_document(result, settings, "run-1") == json.loads(render(result))

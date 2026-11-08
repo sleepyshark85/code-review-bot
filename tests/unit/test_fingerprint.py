@@ -1,8 +1,9 @@
+import hashlib
 import re
 
 import pytest
 
-from review_bot.fingerprint import Fingerprinter, fingerprint_for
+from review_bot.fingerprint import Fingerprinter, anchor_for, fingerprint_for
 
 BASE = {"file": "app.py", "rule": "swallowed-exception", "anchor_text": "except E:", "ordinal": 0}
 
@@ -102,3 +103,9 @@ def test_fingerprinter_ignores_taken_fingerprints_of_other_parts() -> None:
     first = Fingerprinter(taken=taken).fingerprint(file="app.py", rule="r", anchor_text="pass")
 
     assert first == fingerprint_for(file="app.py", rule="r", anchor_text="pass", ordinal=0)
+
+
+def test_anchor_for_is_the_first_16_hex_digits_of_the_collapsed_line_hash() -> None:
+    expected = hashlib.sha256(b"except Exception:").hexdigest()[:16]
+
+    assert anchor_for("    except   Exception:  ") == expected

@@ -3,12 +3,15 @@
 from collections.abc import Sequence
 from enum import StrEnum, auto
 
+from review_bot.secret_scan import SecretHit
+
 __all__ = [
     "AuditError",
     "ConfigError",
     "DiffEmptyError",
     "DiffNotFoundError",
     "DiffNotParsableError",
+    "DiffNotUtf8Error",
     "DiffTooLargeError",
     "DiffUnreadableError",
     "ErrorCategory",
@@ -36,7 +39,11 @@ class DiffNotFoundError(InputError):
 
 
 class DiffUnreadableError(InputError):
-    """The diff path exists but can't be read as UTF-8 text."""
+    """The diff path exists but the system can't read it."""
+
+
+class DiffNotUtf8Error(DiffUnreadableError):
+    """The diff file was read, but its bytes aren't valid UTF-8."""
 
 
 class DiffEmptyError(InputError):
@@ -52,7 +59,15 @@ class DiffNotParsableError(InputError):
 
 
 class SecretDetectedError(InputError):
-    """The diff file's text holds a possible secret, so it must not be sent to the model."""
+    """The diff file's text holds a possible secret, so it must not be sent to the model.
+
+    ``hits`` say where, never what, so they can be reported safely.
+    """
+
+    def __init__(self, message: str, *, hits: Sequence[SecretHit]) -> None:
+        """Record where the possible secrets are alongside the message."""
+        super().__init__(message)
+        self.hits = tuple(hits)
 
 
 class AuditError(ReviewBotError):

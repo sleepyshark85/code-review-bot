@@ -4,7 +4,15 @@ import pytest
 from pydantic import ValidationError
 
 from review_bot.errors import ErrorCategory, ProviderError
-from review_bot.findings import Category, Finding, RuleId, Severity, parse_findings
+from review_bot.findings import (
+    Category,
+    Finding,
+    ReviewedFinding,
+    RuleId,
+    Severity,
+    Source,
+    parse_findings,
+)
 
 
 def valid_fields(**overrides: object) -> dict[str, object]:
@@ -143,3 +151,22 @@ def test_parse_findings_rejects_a_rule_that_is_not_a_rule_id(rule: str) -> None:
 
 def test_severity_rank_follows_the_ascending_order() -> None:
     assert [severity.rank for severity in Severity] == [0, 1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("rule", "expected"),
+    [(RuleId.SWALLOWED_EXCEPTION, "swallowed-exception"), (None, "ai:security")],
+)
+def test_reviewed_finding_rule_part_is_its_rule_else_ai_and_its_category(
+    rule: RuleId | None, expected: str
+) -> None:
+    finding = Finding(
+        file="a.py",
+        line=1,
+        severity=Severity.LOW,
+        category=Category.SECURITY,
+        rationale="Why.",
+        confidence=0.5,
+    )
+
+    assert ReviewedFinding(finding, Source.AI, rule, "0" * 16).rule_part == expected

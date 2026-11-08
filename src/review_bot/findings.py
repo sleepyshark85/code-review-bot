@@ -93,6 +93,11 @@ class ReviewedFinding:
     rule: RuleId | None
     fingerprint: str
 
+    @property
+    def rule_part(self) -> str:
+        """Its fingerprint's rule part: ``rule``, or ``ai:<category>`` if it has none (ADR 0003)."""
+        return self.rule or f"ai:{self.finding.category}"
+
 
 class _FindingsEnvelope(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

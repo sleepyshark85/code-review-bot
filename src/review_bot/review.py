@@ -93,6 +93,7 @@ async def run_pipeline(
             decide((), settings.threshold),
             TokenUsage(0, 0),
             skipped,
+            parsed=parsed,
             model_called=False,
         )
 
@@ -107,6 +108,7 @@ async def run_pipeline(
         decision,
         response.usage,
         skipped,
+        parsed=parsed,
         model_called=True,
         warnings=response.warnings,
     )
@@ -174,7 +176,7 @@ def _stop_on_secrets(hits: Sequence[SecretHit], audit: AuditLog) -> None:
     if hits:
         audit.record(Stage.STATIC, "secrets", _secrets_data(hits))
         audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.SECRET_DETECTED})
-        raise SecretDetectedError(_secrets_message(hits))
+        raise SecretDetectedError(_secrets_message(hits), hits=hits)
 
 
 def _scan_decoded_paths(paths: Iterable[DecodedPath]) -> tuple[SecretHit, ...]:

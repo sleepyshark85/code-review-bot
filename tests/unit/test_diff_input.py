@@ -8,6 +8,7 @@ from review_bot.diff_input import load_diff
 from review_bot.errors import (
     DiffEmptyError,
     DiffNotFoundError,
+    DiffNotUtf8Error,
     DiffTooLargeError,
     DiffUnreadableError,
 )
@@ -45,15 +46,17 @@ def test_load_diff_with_file_used_as_directory_raises_not_found(tmp_path: Path) 
 
 
 def test_load_diff_with_directory_raises_unreadable(tmp_path: Path) -> None:
-    with pytest.raises(DiffUnreadableError, match=tmp_path.name):
+    with pytest.raises(DiffUnreadableError, match=tmp_path.name) as raised:
         load_diff(tmp_path, max_bytes=LIMIT)
+
+    assert not isinstance(raised.value, DiffNotUtf8Error)
 
 
 def test_load_diff_with_invalid_utf8_raises_unreadable_naming_path(tmp_path: Path) -> None:
     path = tmp_path / "utf16.diff"
     path.write_bytes(b"\xff\xfeA\x00")
 
-    with pytest.raises(DiffUnreadableError, match=r"utf16\.diff"):
+    with pytest.raises(DiffNotUtf8Error, match=r"utf16\.diff"):
         load_diff(path, max_bytes=LIMIT)
 
 

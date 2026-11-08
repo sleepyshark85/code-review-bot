@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from review_bot.diff_parser import FileDiff
+from review_bot.diff_parser import FileDiff, ParsedDiff
 from review_bot.findings import ReviewedFinding
 from review_bot.policy import Decision
 from review_bot.providers.base import TokenUsage
@@ -46,15 +46,16 @@ _NO_PATH: Final = "/dev/null"
 class PipelineResult:
     """A review's verified and decided findings, and what it skipped.
 
-    ``model_called`` is False when every file was skipped; ``verification`` and ``decision`` are
-    then empty, as are ``warnings``. ``warnings`` are the provider's, already written to stderr
-    and the audit log.
+    ``parsed`` is the reviewed diff, which every finding is anchored in. ``model_called`` is
+    False when every file was skipped; ``verification`` and ``decision`` are then empty, as are
+    ``warnings``. ``warnings`` are the provider's, already written to stderr and the audit log.
     """
 
     verification: VerifyResult
     decision: Decision
     usage: TokenUsage
     skipped_files: tuple[FileDiff, ...]
+    parsed: ParsedDiff
     model_called: bool
     warnings: tuple[str, ...] = ()
 
