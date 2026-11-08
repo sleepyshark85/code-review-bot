@@ -8,22 +8,31 @@ design, Safety on the PR path).
 import os
 import subprocess
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import IO, Final
 
 from review_bot.errors import (
     DiffEmptyError,
     DiffNotUtf8Error,
     DiffTooLargeError,
     GitError,
+    GitTimeoutError,
+    ListingTooLargeError,
     NotARegularFileError,
+)
+from review_bot.git_output import (
+    REGULAR_FILE_MODES,
+    GrepReader,
+    GrepResult,
+    TreeEntry,
+    find_tree_entry,
+    parse_tree_entry,
 )
 from review_bot.secret_scan import redact
 
-__all__ = ["GIT_FATAL_EXIT_CODE", "GIT_TIMEOUT_S", "GitRepo", "TreeEntry"]
+__all__ = ["GIT_TIMEOUT_S", "GitRepo"]
 
 # How long each git command may take.
 GIT_TIMEOUT_S: Final = 60
@@ -44,33 +53,17 @@ _DIFF_OPTIONS: Final = (
 # isn't an ancestor of the second.
 _NOT_FOUND_EXIT_CODE: Final = 1
 # ``git ls-tree`` modes: a regular file, plain or executable, and what else a path can name.
-_REGULAR_FILE_MODES: Final = frozenset({b"100644", b"100755"})
-_OTHER_ENTRY_KINDS: Final = {b"120000": "symbolic link", b"160000": "submodule"}
+_OTHER_ENTRY_KINDS: Final = {"120000": "symbolic link", "160000": "submodule"}
 # One ``ls-tree`` entry: mode, type, a SHA of up to 64 hex digits, a tab and the path.
 _MAX_TREE_ENTRY_BYTES: Final = 4096
 # A whole listing's byte cap, per entry allowed: an entry is about 80 bytes plus its path. Lower
 # than ``_MAX_TREE_ENTRY_BYTES``, because a read allocates its whole cap up front.
 _MAX_LISTING_BYTES_PER_ENTRY: Final = 512
-_LISTING_FIELD_COUNT: Final = 4  # mode, type, SHA and size, before the tab and the path
 _SUCCESS: Final = frozenset({0})
 _SUCCESS_OR_NOT_FOUND: Final = frozenset({0, _NOT_FOUND_EXIT_CODE})
 # What git exits with on any fatal error, such as being run outside a repository.
-GIT_FATAL_EXIT_CODE: Final = 128
-_SUCCESS_OR_FATAL: Final = frozenset({0, GIT_FATAL_EXIT_CODE})
-
-
-@dataclass(frozen=True, slots=True)
-class TreeEntry:
-    """One entry of a commit's tree.
-
-    ``path`` is the repository path, ``/`` separated, as git stores it: bytes that aren't UTF-8
-    are lone surrogates (``surrogateescape``). ``mode`` is git's, such as ``100644``, ``120000``
-    for a symbolic link or ``160000`` for a submodule. ``size`` is None for a submodule.
-    """
-
-    path: str
-    mode: str
-    size: int | None
+_FATAL_EXIT_CODE: Final = 128
+_SUCCESS_OR_FATAL: Final = frozenset({0, _FATAL_EXIT_CODE})
 
 
 class GitRepo:
@@ -131,8 +124,10 @@ class GitRepo:
     def read_file(self, commit: str, path: str, *, max_bytes: int) -> bytes | None:
         """Return the regular file at ``path`` in ``commit``, or None if nothing is there.
 
-        Only ``max_bytes`` plus one bytes of it are ever read, so a longer result means the file
-        is over ``max_bytes``. Its bytes are git's, with no filter or textconv applied.
+        Only the tree entry whose path is exactly ``path`` is read: ``path`` is never a pattern,
+        and the clone's case folding doesn't apply. Only ``max_bytes`` plus one bytes of it are
+        ever read, so a longer result means the file is over ``max_bytes``. Its bytes are git's,
+        with no filter or textconv applied.
 
         Args:
             commit: The commit's SHA.
@@ -140,25 +135,24 @@ class GitRepo:
             max_bytes: The most bytes wanted.
 
         Raises:
-            GitError: If the commit isn't in the clone, or git fails, times out or can't start.
+            GitError: If the commit isn't in the clone, git's listing can't be read, or git
+                fails, times out or can't start.
             NotARegularFileError: If ``path`` is a directory, symbolic link or submodule.
         """
         self._require_commit(commit)
         listing = self._read_output(
-            ["ls-tree", "-z", commit, "--", path], max_bytes=_MAX_TREE_ENTRY_BYTES
+            ["ls-tree", "-z", "--full-tree", commit, "--", path], max_bytes=_MAX_TREE_ENTRY_BYTES
         )
-        entry = listing.split(b"\0", maxsplit=1)[0]
-        if not entry:
+        entry = find_tree_entry(listing, path, max_bytes=_MAX_TREE_ENTRY_BYTES)
+        if entry is None:
             return None
-        mode, kind, object_id = entry.partition(b"\t")[0].split(b" ")
-        if mode not in _REGULAR_FILE_MODES:
-            what = "directory" if kind == b"tree" else _OTHER_ENTRY_KINDS.get(mode, "special entry")
+        mode, kind, object_id = entry
+        if mode not in REGULAR_FILE_MODES:
+            what = "directory" if kind == "tree" else _OTHER_ENTRY_KINDS.get(mode, "special entry")
             raise NotARegularFileError(
                 f"{path} in commit {commit} is a {what}, not a regular file.", kind=what
             )
-        return self._read_output(
-            ["cat-file", "blob", object_id.decode("ascii")], max_bytes=max_bytes
-        )
+        return self._read_output(["cat-file", "blob", object_id], max_bytes=max_bytes)
 
     def list_files(self, commit: str, *, max_entries: int) -> tuple[TreeEntry, ...]:
         """Return the entries of ``commit``'s tree at any depth, without its directories.
@@ -168,36 +162,45 @@ class GitRepo:
             max_entries: The most entries accepted. A larger listing is rejected, never cut.
 
         Raises:
-            GitError: If the listing is over ``max_entries`` entries, or over 512 bytes per
-                entry allowed; if git's output can't be read; or if git fails, times out or
-                can't start.
+            ListingTooLargeError: If the listing is over ``max_entries`` entries, or over 512
+                bytes per entry allowed.
+            GitError: If git's output can't be read, or git fails, times out or can't start.
         """
         max_bytes = max_entries * _MAX_LISTING_BYTES_PER_ENTRY
         raw = self._read_output(["ls-tree", "-r", "-z", "-l", commit], max_bytes=max_bytes)
         records = raw.split(b"\0")[:-1]  # git ends every record with a NUL
         if len(raw) > max_bytes or len(records) > max_entries:
-            raise GitError(
+            raise ListingTooLargeError(
                 f"Commit {commit} in {self._shown_path} lists more than {max_entries} files, or "
                 f"more than {max_bytes} bytes of them: too many to list."
             )
-        return tuple(self._tree_entry(record) for record in records)
+        return tuple(parse_tree_entry(record) for record in records)
 
-    def grep(self, commit: str, literal: str, *, ignore_case: bool, max_bytes: int) -> bytes:
-        """Return git's matches of ``literal`` in ``commit``'s text files, as ``-z`` writes them.
+    def grep(
+        self,
+        commit: str,
+        literal: str,
+        *,
+        ignore_case: bool,
+        keep: Callable[[str], bool],
+        max_bytes: int,
+    ) -> GrepResult:
+        """Return git's matches of ``literal`` in the files of ``commit`` that ``keep`` accepts.
 
-        Each match is ``<commit>:<path>``, a NUL, the line number, a NUL, the line and a line
-        feed, ordered by path, then line. ``literal`` is a fixed string, never a pattern or an
-        option, and no pathspec is passed. Only ``max_bytes`` plus one bytes are ever read, so a
-        longer result means there was more.
+        ``literal`` is a fixed string, never a pattern or an option, and no pathspec is passed:
+        ``keep`` is asked about each match's path as git's output streams by. Matches come by
+        path, then line. Once the matches kept are over ``max_bytes`` of git's output, git is
+        stopped and the result is cut; the bytes of matches not kept don't count.
 
         Raises:
-            GitError: If git fails, times out or can't start.
+            GitError: If git's output can't be read, or git fails, times out or can't start.
         """
         case_options = ["-i"] if ignore_case else []
         options = ["-F", "-n", "-z", "-I", "--no-textconv", "--no-color", "--no-column"]
         args = ["grep", *options, *case_options, "-e", literal, commit, "--"]
+        reader = GrepReader(commit, keep=keep, max_bytes=max_bytes)
         # ``git grep`` exits 1 when nothing matches.
-        return self._read_output(args, max_bytes=max_bytes, exit_codes=_SUCCESS_OR_NOT_FOUND)
+        return self._run_git(args, reader.read, exit_codes=_SUCCESS_OR_NOT_FOUND)
 
     def resolve_commit(self, revision: str) -> str | None:
         """Return the SHA of the commit ``revision`` names, or None if it names none.
@@ -303,6 +306,29 @@ class GitRepo:
             GitError: If git can't start, times out, or exits with a code not in ``exit_codes``
                 before its output is over the limit.
         """
+
+        def read(stdout: IO[bytes]) -> tuple[bytes, bool]:
+            output = stdout.read(max_bytes + 1)
+            return output, len(output) > max_bytes
+
+        return self._run_git(args, read, exit_codes=exit_codes)
+
+    def _run_git[T](
+        self,
+        args: Sequence[str],
+        read: Callable[[IO[bytes]], tuple[T, bool]],
+        *,
+        exit_codes: AbstractSet[int],
+    ) -> T:
+        """Run git and return what ``read`` makes of its output.
+
+        ``read`` also says whether it stopped early, and git is then killed. git is killed too
+        when the timeout passes.
+
+        Raises:
+            GitError: If git can't start, times out, or exits with a code not in ``exit_codes``
+                before ``read`` stops early.
+        """
         try:
             process = subprocess.Popen(  # noqa: S603 - a fixed argument list, no shell
                 self._command(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -321,49 +347,28 @@ class GitRepo:
             with process:
                 # ``Popen`` with ``stdout=PIPE`` always has a ``stdout``.
                 assert process.stdout is not None  # noqa: S101 - see above
-                output = process.stdout.read(max_bytes + 1)
-                if len(output) > max_bytes:
+                value, is_stopped = read(process.stdout)
+                if is_stopped:
                     process.kill()
         finally:
             timer.cancel()
-        # Over the limit, git was killed on purpose, and its exit code means nothing.
-        if len(output) > max_bytes:
-            return output
+        # Stopped early, git was killed on purpose, and its exit code means nothing.
+        if is_stopped:
+            return value
         # Before the exit code: a killed git can exit with one ``exit_codes`` allows, such as 1
         # on Windows, which would pass a cut-short output off as complete.
         if timed_out.is_set():
             raise self._timed_out(args[0])
         if process.returncode not in exit_codes:
             raise self._failed(args[0], process.returncode)
-        return output
-
-    def _tree_entry(self, record: bytes) -> TreeEntry:
-        """Parse one ``ls-tree -l -z`` record: mode, type, SHA, padded size, a tab and the path.
-
-        Raises:
-            GitError: If the record isn't in that form.
-        """
-        meta, tab, path = record.partition(b"\t")
-        fields = meta.split()
-        if not tab or len(fields) != _LISTING_FIELD_COUNT:
-            raise self._unreadable_listing()
-        mode, _kind, _sha, size = fields
-        if size != b"-" and not size.isdigit():
-            raise self._unreadable_listing()
-        return TreeEntry(
-            path=path.decode("utf-8", "surrogateescape"),
-            mode=mode.decode("ascii"),
-            size=None if size == b"-" else int(size),
-        )
-
-    def _unreadable_listing(self) -> GitError:
-        return GitError(f"git ls-tree wrote a listing that can't be read in {self._shown_path}.")
+        return value
 
     def _command(self, args: Sequence[str]) -> list[str]:
-        return ["git", "-C", str(self._path), *args]
+        # So a path given to git is never a pattern, nor magic such as ``:(icase)``.
+        return ["git", "-C", str(self._path), "--literal-pathspecs", *args]
 
-    def _timed_out(self, subcommand: str) -> GitError:
-        return GitError(
+    def _timed_out(self, subcommand: str) -> GitTimeoutError:
+        return GitTimeoutError(
             f"git {subcommand} took longer than {self._timeout_s:g} seconds in {self._flag} "
             f"{self._shown_path}. Check the clone, then run again."
         )
@@ -372,8 +377,7 @@ class GitRepo:
         return GitError(
             f"git {subcommand} failed with exit code {exit_code} in {self._flag} "
             f"{self._shown_path}. Check that {self._flag} is a git clone of the repository "
-            "under review.",
-            exit_code=exit_code,
+            "under review."
         )
 
 

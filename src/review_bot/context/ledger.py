@@ -40,11 +40,17 @@ class RefusalReason(StrEnum):
     INVALID_ARGUMENTS = "invalid_arguments"
     UNKNOWN_TOOL = "unknown_tool"
     INVALID_PATH = "invalid_path"
+    DENIED_PATH = "denied_path"
     NOT_FOUND = "not_found"
     DIRECTORY = "directory"
     SYMLINK = "symlink"
     SUBMODULE = "submodule"
+    BINARY = "binary"
     TOO_LARGE = "too_large"
+    LISTING_TOO_LARGE = "listing_too_large"
+    POSSIBLE_SECRET = "possible_secret"  # noqa: S105 - a reason's name, not a secret
+    TIMEOUT = "timeout"
+    GIT_FAILED = "git_failed"
     CALL_LIMIT = "call_limit"
     BYTE_LIMIT = "byte_limit"
 

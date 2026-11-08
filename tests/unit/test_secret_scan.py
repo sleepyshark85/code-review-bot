@@ -7,7 +7,15 @@ import time
 
 import pytest
 
-from review_bot.secret_scan import SecretHit, SecretKind, redact, scan_secrets
+from review_bot.secret_scan import (
+    SecretHit,
+    SecretKind,
+    SecretSpan,
+    path_holds_secret,
+    redact,
+    scan_secrets,
+    secret_line_spans,
+)
 from review_bot.secret_scan import _Span as Span
 from review_bot.secret_scan import _spans_clear_of as spans_clear_of
 
@@ -384,3 +392,93 @@ def test_redact_with_no_secret_returns_the_input_unchanged() -> None:
     text = f'token = get_token()\r\npassword = "short"\n{LINE_SEPARATOR}'
 
     assert redact(text) == text
+
+
+def test_secret_line_spans_cover_each_hit_line() -> None:
+    text = f"a\nkey = {AWS_KEY}\nb\ntoken {GITHUB_TOKEN}\n"
+
+    assert secret_line_spans(text) == (SecretSpan(2, 2), SecretSpan(4, 4))
+
+
+def test_secret_line_spans_cover_a_private_key_block_from_begin_to_end() -> None:
+    text = "a\n" + PEM_BEGIN + "\nbody\nbody\n" + PEM_END + "\nb\n"
+
+    assert secret_line_spans(text) == (SecretSpan(2, 5),)
+
+
+def test_secret_line_spans_run_an_unclosed_block_to_the_end() -> None:
+    text = "a\n" + PEM_BEGIN + "\nbody\nbody"
+
+    assert secret_line_spans(text) == (SecretSpan(2, 4),)
+
+
+def test_secret_line_spans_run_an_end_without_begin_from_the_previous_block() -> None:
+    text = "a\n" + PEM_BEGIN + "\n" + PEM_END + "\nb\nc\n" + PGP_END + "\n"
+
+    assert secret_line_spans(text) == (SecretSpan(2, 6),)
+
+
+def test_secret_line_spans_run_an_end_without_begin_from_line_1() -> None:
+    assert secret_line_spans("a\nb\n" + PEM_END) == (SecretSpan(1, 3),)
+
+
+def test_secret_line_spans_merge_spans_that_overlap() -> None:
+    text = PEM_BEGIN + f"\nkey = {AWS_KEY}\n" + PEM_END + f"\nkey = {AWS_KEY}\nok\n"
+
+    assert secret_line_spans(text) == (SecretSpan(1, 3), SecretSpan(4, 4))
+
+
+def test_secret_line_spans_of_text_without_secrets_are_empty() -> None:
+    assert secret_line_spans("nothing\nhere\n") == ()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [f"{AWS_KEY}/notes.txt", f"cfg_{AWS_KEY}.txt", f"a/b-{AWS_KEY}", f"x.{AWS_KEY}.json"],
+)
+def test_path_holds_secret_finds_a_key_anywhere_in_a_path(path: str) -> None:
+    assert path_holds_secret(path)
+
+
+PATH_KEYS = {
+    "aws": AWS_KEY,
+    "github": GITHUB_TOKEN,
+    "github_pat": GITHUB_PAT,
+    "anthropic": ANTHROPIC_KEY,
+    "openai": OPENAI_KEY,
+    "slack": SLACK_TOKEN,
+}
+
+
+@pytest.mark.parametrize("form", ["cfg_{}.txt", "cfg-{}.txt", "d/{}"])
+@pytest.mark.parametrize("key", PATH_KEYS.values(), ids=PATH_KEYS.keys())
+def test_path_holds_secret_finds_every_key_format_a_name_embeds(key: str, form: str) -> None:
+    assert path_holds_secret(form.format(key))
+
+
+def test_path_holds_secret_finds_an_assigned_credential() -> None:
+    assert path_holds_secret(f'notes/password="{CREDENTIAL}"')
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "billing/invoice.py",
+        "akia/notes.txt",
+        "task-runner-2024-abcdefghijkl.py",
+        "id_rsa.pub",
+        "cfg-sk-" + "a" * 30 + ".txt",  # an OpenAI-like run with no digit
+    ],
+)
+def test_path_holds_secret_leaves_ordinary_paths_alone(path: str) -> None:
+    assert not path_holds_secret(path)
+
+
+@pytest.mark.parametrize(
+    "path", ["a_" * 2000, "sk-" * 1333, "ghp_" * 1000, "github_pat" * 400, "-" * 4000]
+)
+def test_path_holds_secret_on_a_4000_character_path_is_quick(path: str) -> None:
+    started = time.perf_counter()
+    path_holds_secret(path)
+
+    assert time.perf_counter() - started < 0.05

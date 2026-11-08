@@ -12,6 +12,7 @@ from typing import Final
 from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import FileDiff, ParsedDiff
 from review_bot.findings import ReviewedFinding
+from review_bot.path_quoting import c_quoted, has_lone_surrogate
 from review_bot.policy import Decision
 from review_bot.providers.base import TokenUsage
 from review_bot.verify import VerifyResult
@@ -20,25 +21,11 @@ __all__ = [
     "PipelineResult",
     "TriageDecision",
     "TriagedFinding",
-    "has_lone_surrogate",
     "not_rejected",
     "path_fields",
     "section_path",
 ]
 
-# Git's C-quoting: these bytes get a short escape, other control and non-ASCII bytes an octal one.
-_SHORT_ESCAPES: Final = {
-    ord("\a"): r"\a",
-    ord("\b"): r"\b",
-    ord("\t"): r"\t",
-    ord("\n"): r"\n",
-    ord("\v"): r"\v",
-    ord("\f"): r"\f",
-    ord("\r"): r"\r",
-    ord('"'): r"\"",
-    ord("\\"): r"\\",
-}
-_PRINTABLE_ASCII: Final = range(0x20, 0x7F)
 # What a section's headers name when they say /dev/null for both the old and the new file.
 _NO_PATH: Final = "/dev/null"
 
@@ -114,26 +101,5 @@ def path_fields(path: str) -> dict[str, str | bool]:
         UnicodeEncodeError: If ``path`` holds a surrogate that ``surrogateescape`` can't produce.
     """
     if has_lone_surrogate(path):
-        return {"file": _c_quoted(path.encode("utf-8", "surrogateescape")), "path_quoted": True}
+        return {"file": c_quoted(path.encode("utf-8", "surrogateescape")), "path_quoted": True}
     return {"file": path}
-
-
-def has_lone_surrogate(text: str) -> bool:
-    """Whether ``text`` holds a lone surrogate, the only thing that stops it encoding as UTF-8."""
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        return True
-    return False
-
-
-def _c_quoted(raw: bytes) -> str:
-    return '"' + "".join(_c_escaped(byte) for byte in raw) + '"'
-
-
-def _c_escaped(byte: int) -> str:
-    if byte in _SHORT_ESCAPES:
-        return _SHORT_ESCAPES[byte]
-    if byte in _PRINTABLE_ASCII:
-        return chr(byte)
-    return f"\\{byte:03o}"

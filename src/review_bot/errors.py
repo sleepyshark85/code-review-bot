@@ -18,7 +18,9 @@ __all__ = [
     "EventError",
     "GitError",
     "GitHubError",
+    "GitTimeoutError",
     "InputError",
+    "ListingTooLargeError",
     "NotARegularFileError",
     "ProviderError",
     "RepoConfigError",
@@ -80,15 +82,15 @@ class EventError(InputError):
 
 
 class GitError(InputError):
-    """A git command in a clone failed, timed out or couldn't start.
+    """A git command in a clone failed, timed out or couldn't start."""
 
-    ``exit_code`` is git's when it ran and failed, and None otherwise.
-    """
 
-    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
-        """Record git's exit code, if any, alongside the message."""
-        super().__init__(message)
-        self.exit_code = exit_code
+class GitTimeoutError(GitError):
+    """A git command took longer than its timeout, so it was stopped."""
+
+
+class ListingTooLargeError(GitError):
+    """A commit's tree lists more entries, or more bytes of them, than the caller accepts."""
 
 
 class NotARegularFileError(InputError):
