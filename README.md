@@ -2,7 +2,7 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 next · **Owner:** _TBD (see [Ownership](#ownership))_ · **Last updated:** 2026-11-07
+> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 in shadow mode (12 of 13 slices merged) · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) (see [Ownership](#ownership)) · **Last updated:** 2026-11-08
 
 ## Usage
 
@@ -189,6 +189,10 @@ Capability will arrive well before operational maturity. A track record, re-eval
 ### Ownership
 
 `review_bot.py` became a silent liability because nobody owned it. A named owning team, a support channel, and funding are prerequisites for going live in Phase 2.
+
+- **Owner:** [@sleepyshark85](https://github.com/sleepyshark85), who funds the model key.
+- **Spend:** capped by a dedicated Anthropic workspace limit; the key is the `ANTHROPIC_API_KEY` repository secret.
+- **Support:** open an issue labelled `review-bot`.
 
 ## 4. Risks and non-goals
 
