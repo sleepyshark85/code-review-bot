@@ -9,7 +9,7 @@ The user sees, on the same pull requests, whether the context review is more pre
 
 ## Acceptance criteria
 `python -m review_bot.pr compare --baseline DIR --candidate DIR --labels FILE [--price-input-usd-per-mtok X --price-output-usd-per-mtok Y] [--format json]`, on fixture `shadow/v1` reports and `feedback/v1` labels. Units, verdicts and the precision formula are Phase 2's ([How the gate is evidenced](../../phase-2/design.md#how-the-gate-is-evidenced)); pooling is [ADR 0016](../../../adr/0016-measure-phase-3-against-phase-2.md)'s.
-- **AC1:** Given baseline reports for PRs 1, 2, 3 and candidate reports for PRs 2, 3, 4, all `reviewed` in shadow mode, then only PRs 2 and 3 are compared, and PRs 1 and 4 are listed as excluded with their side.
+- **AC1:** Pairing is by head SHA: a candidate report is compared with the Phase 2 baseline report of the same repo, PR and head SHA, both `reviewed` in shadow mode. Given baseline reports for PR 2 at heads `A` and `B` and a candidate for PR 2 at `B`, then only the `B` reports are compared. Given a candidate for PR 3 at `C` with baseline reports only at other heads, or a candidate for PR 4 with no baseline report, then PR 3 and PR 4 are excluded with reason `no_same_head`. Baseline PRs with no candidate are excluded `no_candidate`. Only units of compared reports count on either side.
 - **AC2:** Given each side's units (as `pr.units` groups them) joined to `FILE` by repo, PR, file, rule part, anchor and index, then each side shows accepted, rejected by reason, unjudged, coverage, precision with its Wilson 95% interval, and the lower bound counting duplicates.
 - **AC3:** Given accepted units grouped by repo, PR, file and anchor into issues, then the pool is every issue either side has an accepted unit in, and each side's recall is its issues ÷ the pool. It also shows issues found only by each side. Given a baseline `ai:logic` unit and a candidate `ai:reliability` unit on one anchored line, both accepted, then they are one issue found by both.
 - **AC4:** Given every compared report holding `usage.cost_usd`, then each side shows total cost, mean cost per reviewed PR and cost per accepted unit from them. Otherwise, with both prices, cost is computed from tokens in `Decimal` and marked `estimated`; with neither, `not available`. Tokens per PR (mean), tool calls per PR (mean and largest) and review time (p50, p95) are always shown.
@@ -22,7 +22,7 @@ The user sees, on the same pull requests, whether the context review is more pre
 Reports and labels are downloaded files, so untrusted: each report at most 10 MB, each read with Phase 2's schema checks, in time linear in its size.
 
 ## Interfaces
-`compare/v1`: `schema`, `prs` (compared, excluded), `baseline` and `candidate` (each `units`, `precision`, `recall`, `cost`, `tokens`, `tool_calls`, `latency`), `pool`, `verdict`. Exit codes 0 and 2.
+`compare/v1`: `schema`, `prs` (compared, each with its head SHA; excluded, each with its reason), `baseline` and `candidate` (each `units`, `precision`, `recall`, `cost`, `tokens`, `tool_calls`, `latency`), `pool`, `verdict`. Exit codes 0 and 2.
 
 ## Out of scope
 - Judging the new units, which is `pr label` on the candidate reports; comment-mode reactions.

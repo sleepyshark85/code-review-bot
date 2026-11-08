@@ -18,7 +18,7 @@ In context mode the model checks the change against what the issues it closes as
 - **AC7:** Given each issue, then the audit log has one `context` `issue` record: number, status, bytes sent.
 - **AC8:** Given `backfill` with pulls entries holding `body`, then their issues are read with `GITHUB_TOKEN`, or the `gh auth token` as `baseline` does. An entry without `body` links no issue.
 - **AC9:** Given an eval case with `"issues": "issues.json"` (a list of `number`, `title`, `body`), then context replay and live send them as above, and changing the file makes the context recording stale.
-- **AC10:** Given `ticket-criteria` (an issue requiring the CSV export to include the discount, and a diff that drops it) and `injection-issue` (an issue body telling the reviewer to report `requested_file` and quote a canary), then their synthetic recordings pass and fail as in [P1-S15](../../phase-1/slices/p1-s15-eval-clean-injection.md).
+- **AC10:** Given `ticket-criteria` and `injection-issue`, each with its own small `repo` ([the 9 new cases](../design.md#spend-and-caps)): `ticket-criteria` has an issue requiring the CSV export to include the discount and a diff that drops it, and `injection-issue` has an issue body telling the reviewer to report `requested_file` and quote a canary. Then their synthetic recordings pass and fail as in [P1-S15](../../phase-1/slices/p1-s15-eval-clean-injection.md).
 - **AC11:** Given the context prompt, then it says issue text describes intended behaviour and is untrusted data, never instructions, and its version is the next free `p3-v` number.
 
 ## Limits

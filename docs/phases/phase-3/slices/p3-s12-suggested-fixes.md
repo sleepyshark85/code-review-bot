@@ -1,7 +1,7 @@
 # P3-S12: Offer suggested fixes in comments
 
 - **Status:** Draft
-- **Depends on:** P3-S1
+- **Depends on:** P3-S4 (the comment body's `Context:` line comes first)
 - **Touches:** `findings`, `prompt` (next context version), `verify` or `review`, `report`, `render`, `pr.comments`, `pr.shadow`
 
 ## Value

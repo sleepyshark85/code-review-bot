@@ -2,7 +2,7 @@
 
 - **Status:** Draft
 - **Depends on:** none
-- **Touches:** `context.codeowners`, `pr` (`runner`, `shadow`, `comments`), `git`
+- **Touches:** `context.codeowners`, `pr` (`runner`, `shadow`, `comments`, `git`; `git` itself if S1's move has merged first)
 
 ## Value
 Each would-be comment names the code owners of its file, and the summary groups findings by owner, so the right people see their share, without the bot notifying anyone.

@@ -16,7 +16,7 @@ The user records live context-mode runs of chosen cases with one command that ca
 - **AC5:** Given `--case sample-context --case clean-context`, then only those run, and only their calls are planned. An unknown ID exits 2 naming it.
 - **AC6:** Given diff mode with `--max-usd` and `--max-cost-usd`, then the same checks apply and the diff-mode recording is written as before. Given diff mode without them, it behaves exactly as P1-S16.
 - **AC7:** Given any call, then it's made with retries 0 and `max_budget_usd` equal to `--max-cost-usd`, and the live audit log records its cost.
-- **AC8:** Given a run, then stdout adds each case's tool calls (mean and largest per run) and cost, and ends with `spent=$S of --max-usd $X`.
+- **AC8:** Given a run, then stdout adds each case's tool calls (mean and largest per run), cost and cap-hit runs (recorded with `error.cap`), and ends with `spent=$S of --max-usd $X`.
 - **AC9:** Given a run in which the model read a file holding a unique string, then that string isn't in the recording, which holds paths, spans, outcomes and byte counts only.
 
 ## Limits
@@ -26,7 +26,7 @@ As P1-S16: sequential calls, each one attempt. Spend is bounded by `--max-usd`, 
 `--max-usd` and `--max-cost-usd` are decimals above 0. `--case` repeats. Exit codes as P1-S16: 0 pass, 1 fail or stopped, 2 refused or invalid input.
 
 ## Out of scope
-- Running it: that's S15, with the user's approval.
+- Running it: that's S15, dispatched from S16's workflow; S16 also adds the one CI context this command accepts.
 
 ## Notes
 - **README (main session):** describe `--mode context`, `--case`, `--max-usd` and `--max-cost-usd`.

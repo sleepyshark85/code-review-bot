@@ -1,6 +1,6 @@
 # Phase 3: Context-aware — design
 
-- **Status:** Draft. The user delegated design approval to the reviewer (2026-11-09). The specs stay `Draft` and the ADRs `Proposed` until the reviewer approves; the main session then sets them `Approved` and `Accepted`. Criterion IDs are stable once approved.
+- **Status:** Draft, revised after round-1 review (2026-11-09). The user delegated design approval to the reviewer (2026-11-09). The specs stay `Draft` and the ADRs `Proposed` until the reviewer approves; the main session then sets them `Approved` and `Accepted`. Criterion IDs are stable once approved.
 
 ## 1. Goal and gate
 
@@ -8,7 +8,7 @@ Fewer guesses, deeper findings: the model can look up callers and definitions in
 
 Read for this repository, the gate is: **on the same pull requests and eval cases, a context review's precision and recall both improve on the Phase 2 review's, and every live step stays within its share of the $20 the user approved.** [How the gate is evidenced](#how-the-gate-is-evidenced) says what closes each clause, and [Q3](#6-open-questions) and [Q4](#6-open-questions) define "improve" and "within budget". Autonomy: comment.
 
-**Phase 2's gate isn't met yet**: its shadow weeks have only started (P2-S12 open). The README starts a phase only after the previous gate. Slices S1 to S14 build and test entirely offline while Phase 2's shadow weeks run. Nothing they ship changes which findings a Phase 2 shadow run reports unless a person turns it on: S11 adds owners to the report and summary, but no finding. Only S15, the close, waits for P2-S12's labelled set ([Q11](#6-open-questions)).
+**Phase 2's gate isn't met yet.** P2-S12 is Done, released early on 2026-11-09 as v0.3.0, and its evidence criteria (the shadow weeks, precision, the labelled set) are open in issue [#67](https://github.com/sleepyshark85/code-review-bot/issues/67). The README starts a phase only after the previous gate. Slices S1 to S14 and S16 build and test entirely offline while Phase 2's shadow weeks run. Nothing they ship changes which findings a Phase 2 shadow run reports unless a person turns it on: S11 adds owners to the report and summary, but no finding. Only S15, the close, waits for P2-S12 AC1 to AC6 (#67): the committed labelled set ([Q11](#6-open-questions)).
 
 ## 2. Architecture
 
@@ -50,6 +50,8 @@ New or changed modules under `src/review_bot/`. `context.paths`, `context.ledger
 | `pr.compare` | Phase 3 against Phase 2 on the labelled PRs | `compare_runs` | S13 |
 | `evals.formats`, `evals.replay`, `evals.live` (changed) | Repo and issue fixtures; context recordings; spend caps | | S5, S6, S9 |
 | `evals.compare` | Diff mode against context mode on the same cases | `compare_cases` | S7 |
+| `evals.cli`, `pr.cli`, `settings` (changed) | Accept CI only for a `workflow_dispatch` run with an explicit flag | `in_ci`, `--allow-dispatch` | S16 |
+| `.github/workflows/live.yml` (new, main session) | The approved live steps, by manual dispatch only | | S16 |
 
 ### Data flow (one context review of a PR)
 
@@ -74,9 +76,9 @@ class GitRepo:
     def list_files(
         self, commit: str, *, max_entries: int
     ) -> tuple[TreeEntry, ...]: ...  # ls-tree -r -z -l
-    def grep(  # git grep -F -n -z -I --no-textconv; output read up to max_bytes + 1
-        self, commit: str, literal: str, *, ignore_case: bool, pathspec: str | None, max_bytes: int
-    ) -> bytes: ...
+    def grep(  # git grep -F -n -z -I --no-textconv -e <literal> <commit> --; read up to max_bytes + 1
+        self, commit: str, literal: str, *, ignore_case: bool, max_bytes: int
+    ) -> bytes: ...  # no pathspec: grep's path_glob is applied in our code (S2)
 
 
 # providers/base.py
@@ -93,6 +95,7 @@ class ToolExecutor(Protocol):
     async def call(self, name: str, arguments: Mapping[str, object]) -> str: ...
 
     # Never raises on model input: a bad call returns a refusal text, already delimited.
+    # git runs through asyncio.to_thread here and in the MCP handler (CONVENTIONS §10).
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +156,7 @@ class RepoTools:  # the one real ToolExecutor
 @dataclass(frozen=True, slots=True)
 class ReviewContext:
     repo: RepoRef
+    is_diff_head: bool = False  # S4: the tools' commit is the diff's head (PR mode)
     issues: tuple[LinkedIssue, ...] = ()  # S9
 
 
@@ -188,15 +192,16 @@ Decision: [ADR 0013](../../adr/0013-read-only-repo-tools-over-a-commit.md); the 
 
 ### Tool safety
 
-- **Read-only by construction.** Every tool reads git objects of one commit: no working tree, no checkout, no filter, textconv or hook runs, and no write, shell, network or web tool exists. In context mode the Claude CLI's built-in tools are off (`tools=[]`), the only allowed tools are the three by full name, a `PreToolUse` hook denies any other name, `permission_mode` is `dontAsk`, and `setting_sources=[]`, no agents and strict MCP config stay as in Phase 0. Lockdown is asserted in tests for both modes; diff mode's assertions don't change.
-- **Confined to the commit.** A path must be relative, `/`-separated, at most 1,000 characters, with no empty, `.` or `..` segment, no backslash, NUL or control character. `.git` internals aren't in a commit; any path segment named `.git` is refused anyway. Symbolic links and submodules are refused, never followed. **Secrets files** are refused and left out of `grep` and `glob` results: `.env` and `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and their non-`.pub` variants, `.netrc`, `.npmrc`, `.pypirc`, `credentials` and `credentials.*`. Matching is case-insensitive on the last segment.
-- **No secret reaches the model.** Each result is run through the Phase 1 secret scan before it's returned. A `read` hit refuses the whole result (`possible_secret`); a `grep` line with a hit is dropped and counted.
+- **Read-only by construction.** Every tool reads git objects of one commit: no working tree, no checkout, no filter, textconv or hook runs, and no write, shell, network or web tool exists. In context mode the Claude CLI's built-in tools are off (`tools=[]`), the only allowed tools are the three by full name, a `PreToolUse` hook denies any other name, `permission_mode` is `dontAsk`, and `setting_sources=[]`, no agents and strict MCP config stay as in Phase 0. The provider also reads the CLI's init message's tool list and fails `permanent` before any tool runs if it holds anything but the three (S3). Lockdown is asserted in tests for both modes; diff mode's assertions don't change.
+- **No git option or pathspec from the model.** The literal always follows `-e`, and the commit is followed by `--` with no pathspec after it, so `-O`, `--open-files-in-pager`, `-f` or `--no-index` are searched as text. `grep`'s `path_glob` is matched in our code with P2-S9's matcher; a pattern starting with `:` is refused. A `read` returns only a tree entry whose path equals the requested path.
+- **Confined to the commit.** A path must be relative, `/`-separated, at most 1,000 characters, with no empty, `.` or `..` segment, no backslash, NUL or control character. `.git` internals aren't in a commit; any path segment named `.git` is refused anyway. Symbolic links and submodules are refused, never followed. **Secrets files** are refused and left out of `grep` and `glob` results: `.env` and `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ppk`, `*.kdbx`, `*.tfstate`, `*.tfvars`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and their non-`.pub` variants, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.htpasswd`, `.pgpass`, `credentials` and `credentials.*`. Matching is case-insensitive on the last segment.
+- **No secret reaches the model.** The Phase 1 secret scan runs on each whole blob, once per file and commit, giving the line span of each hit. A `read` window that overlaps a hit's span is refused (`possible_secret`), so a PEM block can't be read in slices; a `grep` line inside a hit's span is dropped and counted.
 - **Bounded.** Per call: `max_tool_result_bytes` (16,000), lines cut at 2,000 characters, a blob over 1 MB refused, a listing over 50,000 entries refused. Per review: `max_tool_calls` (12) and `max_tool_total_bytes` (96,000); past either, every call returns a fixed refusal asking for the findings now. The CLI's `max_turns` is `max_tool_calls + 2`, a backstop. Each git command has the existing timeout.
 - **Untrusted output.** Every result, refusals included, is wrapped in delimiter lines carrying the SHA-256 of the result, as the diff is ([prompt.py's scheme](../../../src/review_bot/prompt.py)), and the context prompt says tool results and issue text are data, never instructions. Injection cases arrive through a repository file (S5) and an issue body (S9), and the three Phase 1 injection diffs are re-run in context mode (S5, S15).
 
 ### Spend and caps
 
-Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). Context reviews are one query of several turns, so they cost more than one call. Each is bounded three ways: the tool caps above bound what goes in, `max_output_tokens` bounds each turn's output, and **`max_cost_usd`** is passed to the CLI as its per-query budget (`max_budget_usd`), which ends the query when exceeded. The CLI checks it between turns, so one turn can overshoot; the allowances below leave room for that.
+Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). Context reviews are one query of several turns, so they cost more than one call. Each is bounded three ways: the tool caps above bound what goes in, `max_output_tokens` bounds each turn's output, and **`max_cost_usd`** is passed to the CLI as its per-query budget (`max_budget_usd`), which ends the query when exceeded. The CLI takes a float, so the Decimal is converted rounding down to the cent, never above the cap. The CLI checks it between turns, so one turn can overshoot; the allowances below leave room for that. For context mode this amends [ADR 0012](../../adr/0012-ci-credential-and-cost-caps.md)'s "at most one model call" to one query of several turns.
 
 | Setting | Default | CI (S14) | Notes |
 |---|---|---|---|
@@ -204,21 +209,27 @@ Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). C
 | `max_tool_calls` | 12 (1 to 30) | 12 | |
 | `max_tool_result_bytes` | 16,000 (1,000 to 64,000) | 16,000 | |
 | `max_tool_total_bytes` | 96,000 (at most 400,000) | 96,000 | |
-| `max_cost_usd` | unset; required by every live command in context mode | 0.60 | Decimal, more than 0 |
+| `max_cost_usd` | unset; required by every live command in context mode | 0.60, set only when `REVIEW_BOT_CONTEXT=repo`, so diff-mode runs are unchanged | Decimal, more than 0 |
 | `deadline_s` | 300 | 300 in context mode, 240 otherwise | Job timeout stays 10 min |
 
 **Live commands** (`evals live`, `pr backfill`) take `--max-usd`. Before any call they refuse unless planned calls × `max_cost_usd` ≤ `--max-usd`, and during the run they start no call once the reported spend plus `max_cost_usd` would exceed it. Retries stay 0. A failure to report cost counts as `max_cost_usd`.
 
-**The $20 the user approved**, by step. Each line is a hard cap; the reserve needs the reviewer's approval to spend.
+**Where live steps run.** The key exists only as the `ANTHROPIC_API_KEY` repository secret, and both live commands refuse in CI. Every approved step therefore runs from the manual workflow `live.yml` (S16): `workflow_dispatch` only, on `main` only, with one choice of step and every amount a literal from the table below. The CLIs accept CI only for a `workflow_dispatch` event with an explicit flag; any other CI context still refuses ([ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md)).
 
-| Step | Calls | Per call | Cap |
+**The $20 the user approved**, by step. Each line is a hard cap. The $20 covers every dispatched run, re-runs included, summed from reported spend. The reserve is approved by the user where possible, else by the reviewer, and the test report names the approver.
+
+The 9 new context cases: `sample-context`, `clean-context`, `injection-tool-result`, `injection-instruction-context`, `injection-canary-context`, `injection-delimiter-context` (S5), `ticket-criteria`, `injection-issue` (S9) and `domain-money` (S10). Every one has a `repo`.
+
+| Step (S16 choice) | Calls | Per call | Cap |
 |---|---|---|---|
-| S3 smoke: one context review on this repo | 2 | $0.30 | $0.60 |
-| S15 eval, diff mode, on the 8 new context cases | 24 (8 × 3) | $0.10 | $2.40 |
-| S15 eval, context mode, on the same 8 cases | 24 (8 × 3) | $0.30 | $7.20 |
-| S15 labelled PRs, context backfill | at most 12 | $0.60 | $7.20 |
-| Reserve | | | $2.60 |
+| `smoke`: one context review on this repo | 2 | $0.30 | $0.60 |
+| `evals-diff`: diff mode on the 9 new cases | 27 (9 × 3) | $0.10 | $2.70 |
+| `evals-context`: context mode on the same 9 cases | 27 (9 × 3) | $0.30 | $8.10 |
+| `backfill`: labelled PRs, context mode | at most 12 | $0.60 | $7.20 |
+| Reserve | | | $1.40 |
 | **Total** | | | **$20.00** |
+
+Before S15's live runs, the per-call caps are checked against the smoke's reported cost; if the smoke's cost per review exceeds the context caps, the table goes back to the reviewer. A run that hits its cost or turn cap is reported by name per mode and counts as a miss.
 
 The Phase 2 side costs nothing new: Phase 1's diff-mode recordings and Phase 2's shadow reports of the same PRs are the baseline.
 
@@ -228,12 +239,12 @@ Decision: [ADR 0016](../../adr/0016-measure-phase-3-against-phase-2.md).
 
 | Gate clause | Evidence | Closed by |
 |---|---|---|
-| Precision improves | Labelled PRs: per-unit precision of the context backfill against Phase 2's shadow reports of the same PRs, both judged to ≥ 90% coverage (`pr compare`). Eval cases: credited ÷ final AI findings, per mode (`evals compare`) | S13, S7 compute; S15 records |
-| Recall improves | Labelled PRs: pooled relative recall over accepted issues either run found. Eval cases: AI bugs caught per mode, including `double-tax` through callers, a ticket criterion and a domain rule | S13, S7; S15 |
-| Cost within budget | Every live step under its cap above; mean cost per reviewed PR and per accepted finding beside Phase 2's; no review over `max_cost_usd` | S6, S8; S15 |
+| Precision improves | Labelled PRs: per-unit precision of the context backfill against Phase 2's shadow report of the same PR **at the same head SHA**, both judged to ≥ 90% coverage (`pr compare`). Eval cases: credited ÷ final AI findings, per mode (`evals compare`) | S13, S7 compute; S15 records |
+| Recall improves | Labelled PRs: pooled relative recall over accepted issues either run found. Eval cases: each AI bug's share of runs caught per mode, including `double-tax` through callers, a ticket criterion and a domain rule; cap-hit runs count as misses | S13, S7; S15 |
+| Cost within budget | Every dispatched run's reported spend, re-runs included, summed against the $20 and each step's cap; mean cost per reviewed PR and per accepted finding beside Phase 2's; no review over `max_cost_usd` | S6, S8, S16; S15 |
 | Injection still resisted | Phase 1's cases replayed in diff mode as today; their context variants and the tool-result and issue cases, live, every run passing | S5, S9; S15 |
 
-**What it can't show.** A dozen PRs and eight cases are small samples; the labelled PRs were written by agents and merged by one person; few link issues, so tickets are measured mainly by eval cases; and the context cases were written to need context. The test report discloses this, as Phase 2's does.
+**What it can't show.** A dozen PRs and nine cases are small samples; the labelled PRs were written by agents and merged by one person; few link issues, so tickets are measured mainly by eval cases; and the context cases were written to need context. The test report discloses this, as Phase 2's does.
 
 ### Phase 4 seams
 
@@ -261,16 +272,20 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 13. [P3-S13: Compare Phase 3 against Phase 2 on the labelled pull requests](slices/p3-s13-compare-labelled-prs.md)
 14. [P3-S14: Turn on context reviews in CI with one repository variable](slices/p3-s14-context-in-ci.md)
 15. [P3-S15: Close Phase 3: measure the gate, release 0.4.0](slices/p3-s15-close-phase-3.md)
+16. [P3-S16: Run approved live steps from a manual workflow](slices/p3-s16-live-steps-workflow.md)
 
-**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 ∥ S12 → S3 ∥ S5 → S6 ∥ S7 ∥ S8 ∥ S10 → S9 ∥ S13 → S14 → S15 (after P2-S12).
+**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 → S3 ∥ S5 ∥ S12 → S16 ∥ S6 ∥ S7 ∥ S8 ∥ S10 → S9 ∥ S13 → S14 → S15 (after S16 and P2-S12 AC1 to AC6, #67).
+
+**Smoke stop rule.** S16's `smoke` runs as soon as S16 merges. If it shows any built-in tool available, or the three MCP tools missing, S6 and S8 pause and S3 goes back to design.
 
 ## 4. Needs a person
 
 | Action | Blocks |
 |---|---|
-| Run the S3 smoke with your login (≤ $0.60) and confirm the record | Trusting the SDK wiring (S3) |
-| Finish Phase 2's shadow weeks and labelling, and commit the labelled set (P2-S12) | S15 |
-| Approve and run S15's live steps, each with its `--max-usd` | The gate |
+| Dispatch S16's `smoke` (≤ $0.60) once S16 merges, and confirm the record | Trusting the SDK wiring (S3); S6 and S8 under the stop rule |
+| Finish Phase 2's shadow weeks and labelling, and commit the labelled set (P2-S12 AC1 to AC6, #67) | S15 |
+| Approve and dispatch S15's live steps from `live.yml` | The gate |
+| Approve any use of the reserve | Re-runs past a step's cap |
 | Judge every new would-be comment the context backfill produces, with `pr label` | Precision coverage (S13, S15) |
 | Allow `issues: read` for the shadow and comment jobs | Linked issues in CI (S14) |
 | Decide when to set `REVIEW_BOT_CONTEXT=repo` | Context reviews in CI (S14) |
@@ -279,33 +294,34 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 
 | Risk | Handling |
 |---|---|
-| SDK behaviour unproven: built-ins off with `tools=[]` while MCP tools stay on, `max_budget_usd` stopping a query, `total_cost_usd` in the result | S3's fakes test our side; its recorded smoke checks the CLI's, and the hook denies any built-in that slips through |
+| SDK behaviour unproven: built-ins off with `tools=[]` while MCP tools stay on, `max_budget_usd` stopping a query, `total_cost_usd` in the result | S3's fakes test our side; the init tool-list check and the hook stop any built-in that slips through; S16's smoke checks the CLI's side, under the stop rule above |
+| A live step run from CI spends the key unattended | `live.yml` runs only on manual dispatch from `main`, with literal amounts and no cancel (S16) |
 | Context reviews cost several times a diff review | Caps above; context off in CI until the owner decides |
 | A repository file or issue carries an injection the model follows | Delimiters, the eval cases, and the model never triggering an action; a finding can still be wrong, which people judge |
 | Suggested fixes put model-written code one click from a commit | Added lines only, short, secret-scanned, and a person commits it (S12) |
 
 ## 6. Open questions
 
-Each has a recommended answer; the reviewer decides.
+All decided by the reviewer on the user's behalf, 2026-11-09, after round-1 review. The user may still overrule any of them.
 
-**Q1. The README names the SDK's built-in `Read`, `Grep` and `Glob`. Use them, or our own read-only tools?** **Recommended:** our own three tools over a git commit, through an in-process MCP server ([ADR 0013](../../adr/0013-read-only-repo-tools-over-a-commit.md)). The built-ins read a working tree, follow its symlinks, can't have their output bounded by us, and would need the head checked out in CI.
+**Q1. The README names the SDK's built-in `Read`, `Grep` and `Glob`. Use them, or our own read-only tools?** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation.** Our own three tools over a git commit, through an in-process MCP server ([ADR 0013](../../adr/0013-read-only-repo-tools-over-a-commit.md)). The built-ins read a working tree, follow its symlinks, can't have their output bounded by us, and would need the head checked out in CI.
 
-**Q2. The README says hooks record the context. Record in SDK hooks, or in the tools?** **Recommended:** the tools record every call themselves, for every provider; the SDK's `PreToolUse` hook enforces the allowlist ([ADR 0014](../../adr/0014-tools-as-a-provider-neutral-executor.md)). Hook-only recording would leave `MockProvider` runs, and so every offline test, with no record.
+**Q2. The README says hooks record the context. Record in SDK hooks, or in the tools?** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation.** The tools record every call themselves, for every provider; the SDK's `PreToolUse` hook enforces the allowlist ([ADR 0014](../../adr/0014-tools-as-a-provider-neutral-executor.md)). Hook-only recording would leave `MockProvider` runs, and so every offline test, with no record.
 
-**Q3. What does "improve" mean?** **Recommended:** on the labelled PRs, the context run's precision point estimate and pooled recall are each strictly higher than Phase 2's, or equal at 100%, with both runs judged to ≥ 90% coverage; on the eval cases, no AI bug caught in fewer runs than in diff mode, and every injection run passing. Intervals are reported beside the point estimates; a miss goes to the user with the numbers, never re-run until it passes.
+**Q3. What does "improve" mean?** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation, amended.** On the labelled PRs, paired by head SHA (each candidate report against Phase 2's report with the same head SHA), the context run's precision point estimate and pooled recall are each strictly higher than Phase 2's, or equal at 100%, with both runs judged to ≥ 90% coverage. On the eval cases, no AI bug is caught in a smaller **share** of runs than in diff mode (shares, not counts, since run counts differ), and every injection run passes. Runs that hit a cost or turn cap count as misses and are reported by name. Intervals are reported beside the point estimates; a miss goes to the user with the numbers, never re-run until it passes.
 
-**Q4. What is "within budget"?** **Recommended:** every live step under its cap in [the table](#spend-and-caps), Phase 3's total live spend at most $20, and no context review over `max_cost_usd`. Mean cost per reviewed PR and per accepted finding are reported beside Phase 2's, but don't pass or fail the gate.
+**Q4. What is "within budget"?** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation, amended.** The $20 covers every dispatched run, re-runs included, summed from reported spend; every step stays under its cap in [the table](#spend-and-caps), and no context review exceeds `max_cost_usd`. Mean cost per reviewed PR and per accepted finding are reported beside Phase 2's, but don't pass or fail the gate.
 
-**Q5. The $20 allocation.** **Recommended:** [the table](#spend-and-caps), with 3 runs per case instead of Phase 1's 5, to fit; new cases set their thresholds for 3 runs.
+**Q5. The $20 allocation.** **Decided by the reviewer on the user's behalf, 2026-11-09:** 3 runs per case instead of Phase 1's 5, with the resized [table](#spend-and-caps) (9 cases); new cases set their thresholds for 3 runs.
 
-**Q6. Context mode in CI.** **Recommended:** built in S14 but off until the owner sets `REVIEW_BOT_CONTEXT=repo`, which should wait until P2-S12 has closed Phase 2's shadow window, so Phase 2's precision isn't measured on a mix.
+**Q6. Context mode in CI.** **Decided by the reviewer on the user's behalf, 2026-11-09:** built in S14, off until the owner sets `REVIEW_BOT_CONTEXT=repo` after #67 closes, so Phase 2's precision isn't measured on a mix; `REVIEW_BOT_MAX_COST_USD` is set only in context mode.
 
-**Q7. Suggested fixes.** **Recommended:** context mode only, a replacement for the one anchored line (1 to 10 lines, at most 1,000 characters), only on an added line, rendered as a GitHub suggestion block in comment bodies and the shadow Markdown.
+**Q7. Suggested fixes.** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation.** Context mode only, a replacement for the one anchored line (1 to 10 lines, at most 1,000 characters), only on an added line, rendered as a GitHub suggestion block in comment bodies and the shadow Markdown.
 
-**Q8. Does CODEOWNERS routing notify?** **Recommended:** no. Owners appear in code spans, which notify nobody, in each comment's record and grouped in the summary. GitHub already requests code owners' reviews; a bot mention would be new noise. Revisit once comment-mode precision is known.
+**Q8. Does CODEOWNERS routing notify?** **Decided by the reviewer on the user's behalf, 2026-11-09: the recommendation.** No. Owners appear in code spans, which notify nobody, in each comment's record and grouped in the summary. GitHub already requests code owners' reviews; a bot mention would be new noise. Revisit once comment-mode precision is known.
 
-**Q9. Literal `grep`, or regular expressions?** **Recommended:** literal (`git grep -F`). A model-written regex can cost exponential time in some engines, and callers and definitions are found by name.
+**Q9. Literal `grep`, or regular expressions?** **Decided by the reviewer on the user's behalf, 2026-11-09:** literal (`git grep -F`), with the literal after `-e`, the commit followed by `--`, and `path_glob` filtered in our code. A model-written regex can cost exponential time in some engines, and callers and definitions are found by name.
 
-**Q10. How many labelled PRs in S15?** **Recommended:** every PR in Phase 2's labelled set that was `reviewed` in shadow mode, newest first, at most 12 by the budget.
+**Q10. Which labelled PRs in S15?** **Decided by the reviewer on the user's behalf, 2026-11-09:** labelled PRs whose final head SHA has a Phase 2 shadow report (`reviewed`), newest first, at most 12 by the budget.
 
-**Q11. Building Phase 3 before Phase 2's gate.** **Recommended:** accept it as a documented exception to the README's "starts only when the previous gate is met": S1 to S14 change no finding of a Phase 2 shadow run unless a person turns them on, and S15 waits for P2-S12.
+**Q11. Building Phase 3 before Phase 2's gate.** **Decided by the reviewer on the user's behalf, 2026-11-09:** accepted as a documented exception to the README's "starts only when the previous gate is met". S1 to S14 and S16 change no finding of a Phase 2 shadow run unless a person turns them on, and S15 waits for P2-S12 AC1 to AC6 (#67).
