@@ -1,6 +1,6 @@
 # P3-S2: Keep the tools inside the commit on hostile paths and repositories
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S1
 - **Touches:** `context` (`paths`, `tools`), `git`
 

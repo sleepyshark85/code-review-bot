@@ -1,6 +1,6 @@
 # P3-S11: Route findings to code owners
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** none
 - **Touches:** `context.codeowners`, `pr` (`runner`, `shadow`, `comments`), `pr.git` (or `git`, if S1's move has merged first)
 

@@ -1,6 +1,6 @@
 # 0016: Measure Phase 3 against a frozen Phase 2 on the same cases and PRs, with per-unit precision and pooled recall
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 - **Phase:** 3
 

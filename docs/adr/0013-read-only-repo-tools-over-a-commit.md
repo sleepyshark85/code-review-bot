@@ -1,6 +1,6 @@
 # 0013: Give the model three read-only tools of our own over one git commit, not the SDK's built-ins
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 - **Phase:** 3
 

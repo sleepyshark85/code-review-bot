@@ -1,6 +1,6 @@
 # P3-S10: Enforce domain rules configured per repository
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S5
 - **Touches:** `rules`, `findings` (`RuleId`), `pr.config`, `prompt` (next context version), `review`, `pr.runner`, `evals` (`replay`), `tests/evals/cases/`
 

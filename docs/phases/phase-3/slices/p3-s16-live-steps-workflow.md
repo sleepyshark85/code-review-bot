@@ -1,6 +1,6 @@
 # P3-S16: Run the live smoke from a manual workflow, and accept CI only for such a dispatch
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S3
 - **Touches:** `.github/workflows/live.yml` (main session, from this spec), `settings` (`in_ci`), `evals` (`cli`, `live`), `pr` (`cli`), `tests/` (the tester parses the workflow, as for [P2-S3](../../phase-2/slices/p2-s3-shadow-workflow.md))
 

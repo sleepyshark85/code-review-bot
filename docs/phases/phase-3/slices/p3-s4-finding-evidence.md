@@ -1,6 +1,6 @@
 # P3-S4: See the context behind every finding
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S1
 - **Touches:** `findings`, `context.evidence`, `prompt` (next context version), `review`, `report`, `render`, `pr.comments`, `pr.shadow`
 

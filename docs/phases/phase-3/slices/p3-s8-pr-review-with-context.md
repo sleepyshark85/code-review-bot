@@ -1,6 +1,6 @@
 # P3-S8: Review pull requests with repository context
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S2, P3-S3, P3-S16
 - **Touches:** `pr` (`runner`, `cli`, `shadow`), `settings`, `.github/workflows/live.yml` (main session, from this spec: the `backfill` choice), `tests/` (the tester parses the workflow)
 

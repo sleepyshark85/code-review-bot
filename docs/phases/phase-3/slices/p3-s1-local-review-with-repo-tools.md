@@ -1,6 +1,6 @@
 # P3-S1: Review a local diff with read-only repository tools, offline
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** none
 - **Touches:** `git` (moved from `pr.git`), `context` (`paths`, `tools`, `ledger`), `providers` (`base`, `mock`), `prompt`, `review`, `report`, `render`, `audit`, `settings`, `cli`
 

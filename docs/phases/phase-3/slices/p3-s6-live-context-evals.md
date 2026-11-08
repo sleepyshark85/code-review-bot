@@ -1,6 +1,6 @@
 # P3-S6: Record live context evals within a dollar cap
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S3, P3-S5, P3-S16
 - **Touches:** `evals` (`live`, `cli`, `render`), `audit`, `.github/workflows/live.yml` (main session, from this spec: the `evals-diff` and `evals-context` choices), `tests/` (the tester parses the workflow)
 

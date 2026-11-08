@@ -1,6 +1,6 @@
 # 0017: Domain rules are named checks from a built-in catalogue, switched on per path in `.review-bot.toml`
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 - **Phase:** 3
 

@@ -1,6 +1,6 @@
 # Phase 3: Context-aware — design
 
-- **Status:** Draft, revised after round-1 review (2026-11-09). The user delegated design approval to the reviewer (2026-11-09). The specs stay `Draft` and the ADRs `Proposed` until the reviewer approves; the main session then sets them `Approved` and `Accepted`. Criterion IDs are stable once approved.
+- **Status:** Approved on 2026-11-09 by the reviewer after three rounds, on the user's behalf: the user delegated design approval to the reviewer that day. Specs are `Approved` and ADRs 0013 to 0017 `Accepted`. Criterion IDs are now stable.
 
 ## 1. Goal and gate
 

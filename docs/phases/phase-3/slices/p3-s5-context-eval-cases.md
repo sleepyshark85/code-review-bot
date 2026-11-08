@@ -1,6 +1,6 @@
 # P3-S5: Score context-mode eval cases offline, including injection through a repository file
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S4
 - **Touches:** `evals` (`formats`, `replay`, `score`, `render`, `cli`), `tests/evals/cases/`, `pyproject.toml` (lint exclusion for fixture repositories)
 

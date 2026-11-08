@@ -1,6 +1,6 @@
 # 0014: Pass tools to providers as a provider-neutral executor that records every call, and use SDK hooks only to enforce
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 - **Phase:** 3
 

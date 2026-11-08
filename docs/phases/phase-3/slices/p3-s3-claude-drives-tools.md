@@ -1,6 +1,6 @@
 # P3-S3: Let Claude drive the tools, locked down and cost-capped
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S1, P3-S2
 - **Touches:** `providers` (`claude_agent`, `base`), `settings`, `cli`, `review`, `report`, the provider conformance suite
 

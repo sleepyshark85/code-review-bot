@@ -1,6 +1,6 @@
 # P3-S9: Review against the acceptance criteria of linked issues
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S5, P3-S8
 - **Touches:** `context.issues`, `pr` (`event`, `github`, `rest_github`, `fake_github`, `runner`, `cli`, `shadow`), `prompt` (next context version), `review`, `evals` (`formats`, `replay`), `tests/evals/cases/`
 

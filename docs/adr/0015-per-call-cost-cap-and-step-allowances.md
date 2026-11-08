@@ -1,6 +1,6 @@
 # 0015: Cap each context review's cost through the CLI's budget, refuse any live step whose calls times that cap exceed its allowance, and run live steps only by manual dispatch
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 - **Phase:** 3
 

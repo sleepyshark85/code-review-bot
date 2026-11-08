@@ -1,6 +1,6 @@
 # P3-S13: Compare Phase 3 against Phase 2 on the labelled pull requests
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S8
 - **Touches:** `pr` (`compare`, `cli`, `units`, `reports`, `metrics_report`)
 

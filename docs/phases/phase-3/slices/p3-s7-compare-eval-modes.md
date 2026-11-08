@@ -1,6 +1,6 @@
 # P3-S7: Compare diff mode and context mode on the same eval cases
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S5
 - **Touches:** `evals` (`compare`, `cli`, `render`)
 

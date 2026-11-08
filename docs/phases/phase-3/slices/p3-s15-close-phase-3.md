@@ -1,6 +1,6 @@
 # P3-S15: Close Phase 3: measure the gate, release 0.4.0
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P3-S1 to P3-S14, P3-S16, and P2-S12 AC1 to AC6 ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)): the committed labelled set
 - **Touches:** `tests/evals/cases/*/recordings/`, `tests/evals/labelled/`, `tests/evals/`, `docs/phases/phase-3/test-report.md`, `pyproject.toml`; README and release notes by the main session
 
