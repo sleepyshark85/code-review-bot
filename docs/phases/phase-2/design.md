@@ -21,7 +21,7 @@ A new package, `review_bot.pr`, with its own entry point `python -m review_bot.p
 | `pr.shadow` | Builds the `shadow/v1` document and its Markdown | `ShadowReport`, `render_shadow_markdown` | S1 |
 | `pr.comments` | A finding's comment body and marker; the summary body; reading markers back | `comment_body`, `summary_body`, `read_marker` | S1 |
 | `pr.plan` | Decides what to create, update, resolve, move, keep or withhold | `plan_comments`, `CommentPlan` | S1, grows in S5, S7 |
-| `pr.event` | Parses the `pull_request` event payload | `PullRequestRef`, `read_event` | S2 |
+| `pr.event` | Parses the `pull_request` event payload, and the merged-PR list `backfill` reads | `PullRequestRef`, `read_event`, `read_pulls` | S2, S13 |
 | `pr.git` | Diffs and file reads between commits in a local clone, by subprocess | `GitRepo` | S2 |
 | `pr.runner` | One PR run: refuse, diff, review, plan, report, apply; and backfill | `run_pull_request`, `Outcome` | S2, S13 |
 | `pr.github` | The GitHub API, behind a `Protocol`, and its one real client | `GitHubClient` (S5), `RestGitHubClient` (S6) | S5 |

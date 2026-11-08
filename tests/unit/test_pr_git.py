@@ -155,3 +155,16 @@ def test_diff_without_git_on_path_says_how_to_fix_it(
 
     with pytest.raises(GitError, match=r"Couldn't run git: .*Install git"):
         GitRepo(repo, timeout_s=60).diff("a" * 40, "b" * 40, max_bytes=LIMIT)
+
+
+def test_has_commit_is_true_only_for_a_commit_in_the_clone(repo: Path) -> None:
+    sha = commit(repo, {"app.py": "one\n"})
+    clone = GitRepo(repo, timeout_s=60)
+
+    assert clone.has_commit(sha)
+    assert not clone.has_commit("c" * 40)
+
+
+def test_has_commit_outside_a_repository_says_git_failed(tmp_path: Path) -> None:
+    with pytest.raises(GitError, match="git rev-parse failed"):
+        GitRepo(tmp_path, timeout_s=60).has_commit("c" * 40)

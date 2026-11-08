@@ -1,7 +1,8 @@
-"""Command line for pull requests: ``python -m review_bot.pr shadow|run|label ...``.
+"""Command line for pull requests: ``python -m review_bot.pr shadow|run|backfill|label ...``.
 
-``shadow`` and ``run`` write a shadow report in ``--out DIR``; ``label`` judges what downloaded
-shadow reports would post.
+``shadow`` and ``run`` write a shadow report in ``--out DIR``, and ``backfill`` one per merged
+pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
+post.
 
 ``run --mode`` accepts only ``shadow``, its default, until comment mode arrives (P2-S5, P2-S6).
 
@@ -10,10 +11,12 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusabl
 command exits 19 (Phase 2 design, Commands and exit codes).
 """
 
+import argparse
 import contextlib
 import os
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,25 +39,28 @@ from review_bot.console import (
     keep_library_logs_off_stderr,
     read_answer,
     write_diagnostic,
+    write_output,
 )
 from review_bot.errors import ConfigError, ProviderError
-from review_bot.pr.event import read_event
+from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.git import GitRepo
-from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
-from review_bot.pr.outcome import Reason
-from review_bot.pr.runner import run_pull_request
+from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
+from review_bot.pr.outcome import Outcome, Reason
+from review_bot.pr.runner import backfill_pull_request, run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
+    Origin,
     ReportedError,
     ShadowReport,
     build_shadow_report,
     render_shadow_json,
     render_shadow_markdown,
 )
+from review_bot.pr.units import ShadowFile
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, load_settings
+from review_bot.settings import Settings, in_ci, load_settings
 
 __all__ = ["main"]
 
@@ -66,6 +72,11 @@ _GIT_TIMEOUT_S: Final = 60
 _NO_CREDENTIAL_HINT: Final = (
     "review-bot pr: ANTHROPIC_API_KEY is unset or empty in CI, so nothing was reviewed. Add it "
     "as a repository secret to review pull requests."
+)
+# In CI, backfill must not spend (S13, Out of scope).
+_BACKFILL_IN_CI: Final = (
+    "backfill doesn't run in CI (CI is set): it spends the budget you approved, with your own "
+    "login or key. Run it from your own shell."
 )
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
@@ -89,6 +100,16 @@ class _RunCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class _BackfillCommand:
+    pulls_path: Path
+    github_repo: str
+    repo_dir: Path
+    out_dir: Path
+    max_calls: int
+    settings: Settings
+
+
+@dataclass(frozen=True, slots=True)
 class _LabelCommand:
     reports_dir: Path
     labels_path: Path
@@ -106,16 +127,23 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
         failure, such as 2 for a usage error or an unwritable ``--out``, 3 for a missing diff,
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
-        written, and 19 for an unusable event or git command. ``label`` returns 0 when done or
-        interrupted, and 2 with no terminal or an invalid labels file.
+        written, and 19 for an unusable event, pulls file or git command. ``backfill`` returns
+        the first provider failure's code, an error's code if one stops it, and 2 in CI or over
+        ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
+        an invalid labels file.
     """
     keep_library_logs_off_stderr()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
         if isinstance(command, _LabelCommand):
             return _label(command)
+        # Before --out is created: in CI, backfill touches nothing.
+        if isinstance(command, _BackfillCommand):
+            _refuse_backfill_in_ci()
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
+        if isinstance(command, _BackfillCommand):
+            return _backfill(command, provider)
         audit = AuditLog(command.settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
@@ -133,10 +161,13 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         return exit_code
 
 
-def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand | _LabelCommand:
+def _parse_args(
+    argv: Sequence[str],
+) -> _ShadowCommand | _RunCommand | _BackfillCommand | _LabelCommand:
     """Parse the command line into the subcommand, its paths and the settings.
 
     The audit log goes in the output directory unless ``REVIEW_BOT_AUDIT_LOG`` names one.
+    ``backfill`` always has ``max_retries`` 0, whatever a flag or variable says.
 
     Raises:
         ConfigError: If an argument, or a setting from the environment, is invalid.
@@ -170,6 +201,37 @@ def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand | _LabelCom
         default="shadow",
         help="shadow (default), the only mode for now",
     )
+    backfill = _add_command(
+        commands.add_parser,
+        "backfill",
+        "review merged pull requests from a pulls file and a clone, posting nothing; each call "
+        "is one attempt, whatever --max-retries says",
+    )
+    backfill.add_argument(
+        "--pulls",
+        type=Path,
+        required=True,
+        help="the JSON from gh pr list --state merged --json "
+        "number,baseRefOid,headRefOid,mergedAt,isCrossRepository",
+    )
+    backfill.add_argument(
+        "--github-repo",
+        type=_github_repo,
+        required=True,
+        help="the repository the pull requests belong to, as OWNER/NAME",
+    )
+    backfill.add_argument(
+        "--repo",
+        type=Path,
+        required=True,
+        help="a clone of the repository, holding each pull request's base and head commits",
+    )
+    backfill.add_argument(
+        "--max-calls",
+        type=_whole_number,
+        required=True,
+        help="the most model calls allowed: one per pull request without a report in --out",
+    )
     label = commands.add_parser(
         "label",
         help="accept or reject, on the terminal, each comment the shadow reports would post",
@@ -196,9 +258,28 @@ def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand | _LabelCom
     if name == "shadow":
         diff_path = Path(flags.pop("diff_path"))
         return _ShadowCommand(diff_path, out_dir, load_settings(flags))
+    if name == "backfill":
+        pulls_path, github_repo = flags.pop("pulls"), flags.pop("github_repo")
+        repo_dir, max_calls = flags.pop("repo"), flags.pop("max_calls")
+        # Checked first, so an invalid value is still refused. Then one attempt per call, as
+        # ``evals live`` makes, so --max-calls bounds the attempts.
+        settings = load_settings(flags).model_copy(update={"max_retries": 0})
+        return _BackfillCommand(pulls_path, github_repo, repo_dir, out_dir, max_calls, settings)
     del flags["mode"]
     event_path, repo_dir = flags.pop("event"), flags.pop("repo")
     return _RunCommand(event_path, repo_dir, out_dir, load_settings(flags))
+
+
+def _github_repo(text: str) -> str:
+    if not REPO_NAME.fullmatch(text):
+        raise argparse.ArgumentTypeError(f"{text!r} isn't a repository's OWNER/NAME")
+    return text
+
+
+def _whole_number(text: str) -> int:
+    if not (text.isascii() and text.isdigit()):
+        raise argparse.ArgumentTypeError(f"{text!r} isn't a whole number")
+    return int(text)
 
 
 def _add_command(
@@ -254,6 +335,12 @@ def _labelled_line(result: LabellingResult) -> str:
     )
 
 
+def _refuse_backfill_in_ci() -> None:
+    """Raise ``ConfigError`` if this process runs in CI, where backfill must not run."""
+    if in_ci(os.environ):
+        raise ConfigError(_BACKFILL_IN_CI)
+
+
 def _require_writable_directory(out_dir: Path) -> None:
     """Create ``out_dir`` if it is missing, and prove a file can be written in it.
 
@@ -281,6 +368,7 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
         run_id=audit.run_id,
         started_at=started_at,
         finished_at=utc_now(),
+        origin=Origin.LOCAL,
         pr=None,
     )
 
@@ -308,13 +396,129 @@ def _run(command: _RunCommand, provider: LLMProvider | None, audit: AuditLog) ->
     return run_to_completion(run)
 
 
+def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
+    """Review each merged pull request in the pulls file that has no report in ``--out`` yet.
+
+    A pull request whose report there is ``failed`` is reviewed again, and its report replaced.
+    Nothing is called over ``--max-calls``. Each pull request is its own run, with its own
+    ``run_id``, report and audit records. Once any could run, stdout ends with the counts.
+
+    Raises:
+        ConfigError: If the planned calls exceed ``--max-calls``.
+        EventError: If the pulls file is unusable.
+        GitError: If git fails.
+        AuditError: If the audit log can't be opened.
+    """
+    pulls = read_pulls(command.pulls_path)
+    pending = [pull for pull in pulls if not _is_done(command.out_dir, pull.number)]
+    # Counted before any is skipped, so the approved budget is the most that can be spent.
+    if len(pending) > command.max_calls:
+        raise ConfigError(
+            f"backfill would make up to {len(pending)} calls, more than --max-calls "
+            f"{command.max_calls}. Pass --max-calls {len(pending)} if that budget is approved."
+        )
+    git = GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S)
+    settings = command.settings
+    # Filled as each pull request ends, so the counts cover those done before any stop.
+    reports: list[ShadowReport] = []
+    backfill = _backfill_pulls(
+        [pull.ref(command.github_repo) for pull in pending],
+        reports,
+        git=git,
+        make_provider=lambda: build_provider(settings) if provider is None else provider,
+        settings=settings,
+        out_dir=command.out_dir,
+    )
+    if uses_own_claude(settings, provider):
+        backfill = then_discard_unraisable(backfill)
+    try:
+        return run_to_completion(backfill)
+    finally:
+        already = len(pulls) - len(pending)
+        write_output(_backfill_counts(reports, entries=len(pulls), already=already))
+
+
+async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the runner's
+    prs: Sequence[PullRequestRef],
+    reports: list[ShadowReport],
+    *,
+    git: GitRepo,
+    make_provider: Callable[[], LLMProvider],
+    settings: Settings,
+    out_dir: Path,
+) -> int:
+    """Run and report each pull request in turn, appending each report to ``reports``.
+
+    A failed review doesn't stop the rest. Any other error, such as git failing or a report
+    that can't be written, stops them at that pull request, with its message.
+
+    Returns:
+        The stopping error's exit code if one stopped them, else the first failed review's, or
+        0 if none failed.
+
+    Raises:
+        AuditError: If the audit log can't be opened.
+    """
+    first_failure = 0
+    for pr in prs:
+        audit = AuditLog(settings.audit_log, clock=utc_now)
+        pr_dir = out_dir / str(pr.number)
+        try:
+            shadow = await backfill_pull_request(
+                pr,
+                git=git,
+                make_provider=make_provider,
+                settings=settings,
+                audit=audit,
+                clock=utc_now,
+            )
+            _write_report(shadow, pr_dir)
+        except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
+            exit_code = report_failure(exc)
+            record_failed_end(audit, exit_code, exc)
+            return exit_code
+        reports.append(shadow)
+        exit_code = _finish(shadow, pr_dir, audit)
+        first_failure = first_failure or exit_code
+    return first_failure
+
+
+def _is_done(out_dir: Path, number: int) -> bool:
+    """Whether ``out_dir`` holds the pull request's report, with any outcome but ``failed``.
+
+    A report that can't be read as ``shadow/v1`` counts as done, so it is never overwritten.
+    """
+    path = out_dir / str(number) / _JSON_NAME
+    if not path.exists():
+        return False
+    report = read_report(path)
+    return not (isinstance(report, ShadowFile) and report.outcome is Outcome.FAILED)
+
+
+def _backfill_counts(reports: Sequence[ShadowReport], *, entries: int, already: int) -> str:
+    """Two lines of ``name=N`` pairs: the totals, then each outcome and each reason given.
+
+    Every outcome is shown, and so is ``too_large``: it is how many the reviewable-bytes cap
+    left out (Phase 2 design, PR supply). Outcome, skip reason and error category names never
+    coincide.
+    """
+    outcomes = Counter(report.outcome for report in reports)
+    reasons = Counter(str(report.reason) for report in reports if report.reason is not None)
+    reasons.setdefault(Reason.TOO_LARGE, 0)
+    pairs = [f"{outcome}={outcomes[outcome]}" for outcome in Outcome]
+    pairs += [f"{reason}={count}" for reason, count in sorted(reasons.items())]
+    totals = f"entries={entries} already_in_out={already} run={len(reports)}"
+    return f"backfill: {totals}\nbackfill: {' '.join(pairs)}"
+
+
 def _write_report(shadow: ShadowReport, out_dir: Path) -> None:
-    """Write ``shadow.json`` and ``shadow.md`` in ``out_dir``.
+    """Write ``shadow.json`` and ``shadow.md`` in ``out_dir``, creating it if it is missing.
 
     Raises:
         ConfigError: If either can't be written.
     """
     try:
+        out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / _JSON_NAME).write_text(
             render_shadow_json(shadow) + "\n", encoding="ascii", newline="\n"
         )
@@ -338,9 +542,20 @@ def _finish(shadow: ShadowReport, out_dir: Path, audit: AuditLog) -> int:
         write_diagnostic(f"review-bot pr: {redact(str(error))}")
     elif shadow.reason is Reason.NO_CREDENTIAL:
         write_diagnostic(_NO_CREDENTIAL_HINT)
+    elif shadow.reason is Reason.MISSING_COMMIT and shadow.pr is not None:
+        write_diagnostic(_missing_commit_hint(shadow.pr.number))
     write_diagnostic(_written_line(shadow, out_dir))
     audit.record(Stage.RUN, "end", {"exit_code": 0, "error": None})
     return 0
+
+
+def _missing_commit_hint(number: int) -> str:
+    return (
+        f"review-bot pr: pull request {number}'s base or head commit isn't in --repo, so it "
+        f"wasn't reviewed. Fetch refs/pull/{number}/head with git fetch origin "
+        f"refs/pull/{number}/head:refs/pull/{number}/head, and if the base commit is missing, "
+        "fetch the base branch's full history too, then run again."
+    )
 
 
 def _unwritable(out_dir: Path, exc: OSError) -> ConfigError:

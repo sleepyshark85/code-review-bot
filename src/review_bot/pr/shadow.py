@@ -8,6 +8,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Final, assert_never
 
 from review_bot.errors import (
@@ -41,6 +42,7 @@ from review_bot.settings import Settings
 
 __all__ = [
     "REPORTED_ERRORS",
+    "Origin",
     "ReportedError",
     "ShadowComment",
     "ShadowReport",
@@ -52,9 +54,6 @@ __all__ = [
 _SCHEMA: Final = "shadow/v1"
 # Nothing posts before comment mode (S5).
 _MODE: Final = "shadow"
-# A run from a diff file has no pull request; a run from an event has one.
-_LOCAL_ORIGIN: Final = "local"
-_EVENT_ORIGIN: Final = "event"
 
 # The errors that still end in a report, as ``skipped``, ``blocked_secret`` or ``failed``. The
 # tuple is for ``except``, the alias for types; a unit test keeps them equal.
@@ -78,6 +77,14 @@ type ReportedError = (
 type _Reason = Reason | ErrorCategory | None
 
 
+class Origin(StrEnum):
+    """What started a run. Only a ``local`` run, from a diff file, has no pull request."""
+
+    LOCAL = "local"
+    EVENT = "event"
+    BACKFILL = "backfill"
+
+
 @dataclass(frozen=True, slots=True)
 class ShadowComment:
     """A planned comment and the body it would be posted with."""
@@ -90,14 +97,15 @@ class ShadowComment:
 class ShadowReport:
     """One run's ``shadow/v1`` report, before it is written.
 
-    ``pr`` is None for a run from a diff file. ``report`` is the ``report/v1`` object, with any
-    secret in it redacted, or None if nothing was reviewed. ``comments`` and ``withheld`` are in
-    comment order. ``caps`` are the run's effective limits, None where there is no cap.
-    ``error`` is the error that ended the run, if any, for the caller's message and exit code;
-    it is never written.
+    ``pr`` is None exactly when ``origin`` is ``local``. ``report`` is the ``report/v1`` object,
+    with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
+    ``withheld`` are in comment order. ``caps`` are the run's effective limits, None where there
+    is no cap. ``error`` is the error that ended the run, if any, for the caller's message and
+    exit code; it is never written.
     """
 
     run_id: str
+    origin: Origin
     pr: PullRequestRef | None
     outcome: Outcome
     reason: _Reason
@@ -119,6 +127,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     run_id: str,
     started_at: datetime,
     finished_at: datetime,
+    origin: Origin,
     pr: PullRequestRef | None,
 ) -> ShadowReport:
     """Build the report of a review, of the error that stopped it, or of a refused run.
@@ -129,7 +138,12 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; and a
     provider error is ``failed`` with its category. A review is over budget when it reports
     more output tokens than ``max_output_tokens``.
+
+    Raises:
+        ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it.
     """
+    if (pr is None) != (origin is Origin.LOCAL):
+        raise ValueError("A shadow report has a pull request exactly when its origin isn't local.")
     comments: tuple[ShadowComment, ...] = ()
     withheld: tuple[WithheldFinding, ...] = ()
     report: dict[str, object] | None = None
@@ -157,6 +171,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         outcome, reason, summary = _not_reviewed(review)
     return ShadowReport(
         run_id=run_id,
+        origin=origin,
         pr=pr,
         outcome=outcome,
         reason=reason,
@@ -221,15 +236,15 @@ def _redacted(value: object) -> object:
 def render_shadow_json(shadow: ShadowReport) -> str:
     """Render the report as one line of pure ASCII JSON, schema ``shadow/v1``, keys in order.
 
-    A run from an event has ``origin`` ``event``, and its ``event_at`` is the pull request's
-    ``updated_at``. A local run's ``event_at`` is its ``started_at``.
+    A run with a pull request has the ``event_at`` it holds: its ``updated_at`` from an event,
+    or its ``mergedAt`` when backfilled. A local run's ``event_at`` is its ``started_at``.
     """
     pr = shadow.pr
     document = {
         "schema": _SCHEMA,
         "run_id": shadow.run_id,
         "mode": _MODE,
-        "origin": _LOCAL_ORIGIN if pr is None else _EVENT_ORIGIN,
+        "origin": shadow.origin,
         "outcome": shadow.outcome,
         "reason": shadow.reason,
         "pr": None if pr is None else _pr_json(pr),

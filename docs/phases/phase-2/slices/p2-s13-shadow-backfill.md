@@ -1,8 +1,8 @@
 # P2-S13: Backfill shadow reports over recent merged PRs
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S2
-- **Touches:** `pr` (`runner`, `cli`)
+- **Touches:** `pr` (`runner`, `cli`, `event`, `git`, `shadow`, `outcome`), `errors`
 
 ## Value
 The user gets shadow reports for this repository's recent merged PRs in one bounded run, so the precision sample doesn't depend only on PRs opened during the window.
@@ -32,3 +32,12 @@ Same caps and settings as `run` ([design](../design.md#ci-settings-and-caps)). N
 
 ## Notes
 - **README (main session):** describe `backfill`, including `git fetch origin 'refs/pull/*/head:refs/pull/*/head'`.
+
+Changed in build, main session, 2026-11-08:
+- `FILE` names no repository, but `pr.repo` must be `owner/name` (`pr.units` needs it). A required `--github-repo OWNER/NAME`, checked with the event's `repository.full_name` pattern, gives it. Forks are still found by `isCrossRepository`.
+- Each backfilled PR is its own run, with its own `run_id` and audit records, because `label` and `metrics` deduplicate reports by `run_id`.
+- "`caps.retries`" in AC11 is the report's `caps.max_retries`. `--max-retries` is accepted, as on every command, and overridden to 0.
+- `FILE` listing one PR number twice is malformed (AC8), since each PR's report has its own directory.
+- A missing base commit is `missing_commit` too. Any other git failure stops the backfill with exit 19 at that PR, after the counts so far are printed.
+- A PR whose existing report has outcome `failed` isn't done (review round 1). It is planned and counted towards `--max-calls` (AC3), reviewed again, and its report replaced. Reports with any other outcome stay untouched (AC10), and so does one that can't be read as `shadow/v1`.
+- Counts (AC9): stdout's last two lines are `backfill: entries=E already_in_out=A run=R`, then `backfill:` followed by `name=N` pairs: every outcome, then each reason seen, with `too_large` always shown.
