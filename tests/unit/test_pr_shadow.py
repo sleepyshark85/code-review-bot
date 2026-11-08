@@ -22,6 +22,7 @@ from review_bot.pr.event import PullRequestRef
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
+    Origin,
     ReportedError,
     build_shadow_report,
     render_shadow_json,
@@ -71,6 +72,7 @@ def build(review: PipelineResult | ReportedError) -> dict[str, Any]:
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED + timedelta(seconds=2),
+        origin=Origin.LOCAL,
         pr=None,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
@@ -121,6 +123,7 @@ def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() ->
         run_id="run-1",
         started_at=STARTED.astimezone(timezone(timedelta(hours=2))),
         finished_at=STARTED + timedelta(seconds=2),
+        origin=Origin.LOCAL,
         pr=None,
     )
 
@@ -161,6 +164,7 @@ def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
             run_id="run-1",
             started_at=STARTED,
             finished_at=STARTED,
+            origin=Origin.LOCAL,
             pr=None,
         )
     )
@@ -216,6 +220,7 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
+        origin=Origin.LOCAL,
         pr=None,
     )
 
@@ -235,6 +240,7 @@ def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
+        origin=Origin.LOCAL,
         pr=None,
     )
 
@@ -258,9 +264,17 @@ PR = PullRequestRef(
 )
 
 
-def build_for_pr(review: PipelineResult | Reason, settings: Settings = SETTINGS) -> dict[str, Any]:
+def build_for_pr(
+    review: PipelineResult | Reason, settings: Settings = SETTINGS, origin: Origin = Origin.EVENT
+) -> dict[str, Any]:
     shadow = build_shadow_report(
-        review, settings=settings, run_id="run-1", started_at=STARTED, finished_at=STARTED, pr=PR
+        review,
+        settings=settings,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=origin,
+        pr=PR,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -280,7 +294,33 @@ def test_render_shadow_json_for_a_pull_request_has_its_origin_fields_and_event_t
     assert document["started_at"] == "2026-11-08T10:00:00+00:00"
 
 
-@pytest.mark.parametrize("reason", [Reason.FORK, Reason.ACTION, Reason.NO_CREDENTIAL])
+def test_render_shadow_json_for_a_backfill_has_its_origin_and_the_pull_requests_time() -> None:
+    document = build_for_pr(result(), origin=Origin.BACKFILL)
+
+    assert (document["origin"], document["event_at"]) == ("backfill", "2026-11-08T08:30:00+00:00")
+
+
+@pytest.mark.parametrize(
+    ("origin", "pr"), [(Origin.LOCAL, PR), (Origin.EVENT, None), (Origin.BACKFILL, None)]
+)
+def test_build_shadow_report_refuses_a_pull_request_that_doesnt_match_the_origin(
+    origin: Origin, pr: PullRequestRef | None
+) -> None:
+    with pytest.raises(ValueError, match="exactly when its origin isn't local"):
+        build_shadow_report(
+            result(),
+            settings=SETTINGS,
+            run_id="run-1",
+            started_at=STARTED,
+            finished_at=STARTED,
+            origin=origin,
+            pr=pr,
+        )
+
+
+@pytest.mark.parametrize(
+    "reason", [Reason.FORK, Reason.ACTION, Reason.NO_CREDENTIAL, Reason.MISSING_COMMIT]
+)
 def test_build_shadow_report_for_a_refused_run_is_skipped_with_its_reason(reason: Reason) -> None:
     document = build_for_pr(reason)
 

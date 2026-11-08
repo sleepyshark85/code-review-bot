@@ -4,7 +4,7 @@ import pytest
 
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
-from review_bot.settings import Settings, load_settings
+from review_bot.settings import Settings, in_ci, load_settings
 
 
 def test_load_settings_with_nothing_set_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,3 +205,12 @@ def test_load_settings_reads_both_new_caps_from_the_environment(
     settings = load_settings({})
 
     assert (settings.max_review_bytes, settings.max_output_tokens) == (120_000, 16_000)
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"), [({"CI": ""}, True), ({"CI": "false"}, True), ({}, False)]
+)
+def test_in_ci_is_true_when_ci_is_set_whatever_its_value(
+    environ: dict[str, str], expected: bool
+) -> None:
+    assert in_ci(environ) is expected

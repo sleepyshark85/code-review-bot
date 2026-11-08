@@ -263,3 +263,57 @@ None at the end. Three were bugs in the tests, fixed before this report:
 ### Coverage
 
 From this file alone, with `--cov=review_bot.pr`: `pr/feedback.py` 97%, `pr/label.py` 91%, `pr/cli.py` 79%, measured before review round 1 moved the reading model and unit rule into `pr/units.py` (whose unit tests are in `tests/unit/test_pr_units.py`) (`cli.py` also holds `shadow` and `run`). The developer's unit tests (`tests/unit/test_pr_label.py`, `test_pr_feedback.py`) cover the rest. The full suite's coverage wasn't measured here, because the tester ran only this file.
+
+## P2-S13: Backfill shadow reports over recent merged PRs
+
+Spec: [p2-s13-shadow-backfill.md](slices/p2-s13-shadow-backfill.md). Tests: [`tests/integration/test_p2_s13_shadow_backfill.py`](../../../tests/integration/test_p2_s13_shadow_backfill.py), 40 cases. They were written from the spec, design.md (Commands and exit codes, CI settings and caps, `shadow/v1`) and P2-S2's spec while the developer built the slice in parallel, before any of the developer's code was read. They were then updated to the main session's decisions: the `--github-repo` flag, the two closing stdout lines, the missing-commit hint, a missing base as `missing_commit`, a repeated number as exit 19, and `--max-retries` forced to 0 as well. Review round 1 then added: an existing `failed` report is reviewed again, counted and replaced, and an unreadable existing report counts as done. They ran against the developer's uncommitted work after review round 1 (base `baaf6cb`).
+
+**Status: AC1 to AC11 pass. All 40 cases pass, from this file alone, on Windows. No AC violations found.**
+
+### Seam and set-up
+
+- **Seam:** `review_bot.pr.cli.main(["backfill", "--pulls", FILE, "--github-repo", "octo/review-bot", "--repo", DIR, "--out", OUT, "--max-calls", N, "--provider", "mock", ...], provider=P)`, in process. The merged-PR list comes only from `FILE`, with `gh pr list --json`'s field names. One provider serves every PR in the run.
+- **`PerPullProvider`** is a test double for `LLMProvider`. It records each request and answers by the PR's file in the prompt, with findings or a `ProviderError`, so the results don't depend on the order of the calls. `MockProvider` gives the same answer to every call.
+- **`History`** is one real git repository in `tmp_path`. Each PR is a branch off `main` adding `src/pr_<n>.py`, after which `main` moves on, so each PR's `baseRefOid` differs from its merge base.
+- **AC11's real call** uses no injected provider: `--provider claude` reaches the suite's `real_query_guard`, which records the options the Claude CLI would get.
+- **Pinned texts** (the main session's): the stdout lines `backfill: entries=E already_in_out=A run=R` and `backfill: reviewed=.. blocked_secret=.. skipped=.. failed=.. <reasons, sorted>=N .. too_large=N` are matched exactly. The missing-commit hint is matched by its opening (`review-bot pr: pull request N's base or head commit isn't in --repo, `), `wasn't reviewed` and `git fetch origin refs/pull/N/head:refs/pull/N/head` on that line. The developer reworded its tail while these tests ran: it now also says to fetch the base branch's full history when the base commit is missing.
+
+### Criteria
+
+| AC | Tests (`test_p2_s13_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_each_pr_gets_a_backfill_shadow_report_with_its_number_shas_and_merged_at`: `OUT/<n>/shadow.json` and `shadow.md` for 3 PRs with `--max-calls 3` (the boundary), with `mode` `shadow`, `origin` `backfill`, outcome `reviewed`, `pr` exactly `{repo, number, base_sha, head_sha}`, and `event_at` = `mergedAt` in `+00:00` form. `ac1_each_pr_reviews_only_its_own_changes_anchored_on_its_heads_lines`: each prompt holds only its PR's file, with no `main`-only change and no other PR's file. Each finding is anchored on the head's line 2. `ac1_every_report_has_a_distinct_run_id_so_label_keeps_each`: 3 distinct `run_id`s, and `pr.units.would_be_comments` keeps one comment per PR, under `octo/review-bot`. `ac1_invalid_github_repo_exits_2_before_any_call` ×4 (no slash, three parts, empty, empty name): stderr names `--github-repo` | pass (7) |
+| AC2 | `ac2_cross_repository_pr_is_skipped_fork_without_a_call`: the same-repo PR is still reviewed | pass |
+| AC3 | `ac3_more_planned_calls_than_allowed_refuses_naming_both`: 5 entries with `--max-calls 3` exit 2, stderr names 5 and 3, and there are no calls and no reports. `ac3_planned_calls_count_entries_that_would_later_be_skipped`: a fork and a missing head still count, so 5 entries with `--max-calls 4` are refused, naming 5 and 4 | pass (2) |
+| AC4 | `ac4_missing_head_is_skipped_and_stderr_says_to_fetch_its_pull_ref`: the PR with the missing head is `skipped`, `missing_commit`; the PRs before and after are reviewed; exit 0; one stderr line names PR 42, says it wasn't reviewed and gives `git fetch origin refs/pull/42/head:refs/pull/42/head`. `ac4_missing_base_is_also_skipped_missing_commit` | pass (2) |
+| AC5 | `ac5_too_large_and_docs_only_prs_are_skipped_without_a_call`: with `REVIEW_BOT_MAX_REVIEW_BYTES=5000`, 20 kB of Python is `too_large` and a docs-only PR is `nothing_to_review`. Only the small PR is called | pass |
+| AC6 | `ac6_ci_set_refuses_before_any_call`: exit 2, stderr names `CI`, no calls and no reports | pass |
+| AC7 | `ac7_failed_pr_does_not_stop_the_rest_and_the_first_failure_sets_the_exit`: of 4 PRs, the 2nd fails with `rate_limit` and the 3rd with `auth`. 4 calls are made, both failures have `failed` reports with their reasons, the other two are reviewed, and the exit is 9 | pass |
+| AC8 | `ac8_malformed_file_exits_19_before_any_call` ×3 (not JSON, an object, not UTF-8). `ac8_entry_missing_a_field_exits_19_naming_it_after_a_valid_entry`. `ac8_sha_that_isnt_40_hex_digits_exits_19_naming_the_entry` ×8 (39 or 41 hex, 40 non-hex, `HEAD`; in `baseRefOid` and in `headRefOid`). `ac8_repeated_pr_number_exits_19_naming_it`. In each, a valid entry comes first, stderr names `entry 2`, and there are no calls and no reports. Limits: `ac8_more_than_500_entries_exits_19_before_any_call` (501 entries) and `ac8_file_over_10_mb_exits_19_quickly_before_any_call` (a valid array padded with whitespace to 10,000,001 bytes, within 60 s) | pass (15) |
+| AC9 | `ac9_stdout_ends_with_counts_per_outcome_and_reason`: one PR of each kind gives exactly `entries=6 already_in_out=0 run=6`, then `reviewed=1 blocked_secret=0 skipped=4 failed=1 fork=1 missing_commit=1 nothing_to_review=1 rate_limit=1 too_large=1`. `ac9_counts_say_how_many_were_too_large_even_when_none_were`: `… failed=0 too_large=0` | pass (2) |
+| AC10 | `ac10_existing_reports_are_kept_and_not_counted_towards_max_calls`: an earlier backfill leaves real reports, `reviewed`, `skipped` (fork) and `blocked_secret` (an AWS key). A second run over 6 entries with `--max-calls 3` makes 3 calls, those three reports stay byte-identical, and stdout says `entries=6 already_in_out=3 run=3`. `ac10_an_unreadable_existing_report_counts_as_done`: non-JSON bytes are left untouched and not counted. `ac10_a_failed_report_is_reviewed_again_and_replaced`: with `--max-calls 1`, the one call is the failed PR's, its report becomes `reviewed` with a new `run_id`, and the done PR's report is byte-identical (`entries=2 already_in_out=1 run=1`). `ac10_a_failed_report_counts_towards_max_calls`: one done, one failed and one new PR make 2 planned calls, over `--max-calls 1`, so exit 2 naming 2, no calls, and existing reports untouched. `ac10_running_again_reviews_nothing_and_rewrites_no_report` | pass (5) |
+| AC11 | `ac11_caps_record_zero_retries_in_every_report` ×2 (`REVIEW_BOT_MAX_RETRIES=2`, and `--max-retries 2`): `caps.max_retries` is 0 in reviewed and skipped reports. `ac11_the_claude_cli_is_called_with_zero_retries`: every call that reached the stopped `query` had `CLAUDE_CODE_MAX_RETRIES=0` | pass (3) |
+
+### Failures
+
+None that point to the product. Two failures in the first run against the implementation were in the tests, and were fixed:
+- `Unit`'s PR field is `pr`, not `number`.
+- The tests read "naming the entry" (AC8) as naming the PR number. The implementation names the entry's position (`entry 2`), which also names it. The tests now assert the position (see reading 2).
+
+### Readings for the designer
+
+1. **`caps.retries`** in AC11 is the existing `caps.max_retries` key. Consider rewording the spec.
+2. **AC8 names entries by position, not by PR number.** The position always exists, even when the number is missing or invalid. For a bad SHA in a valid entry, giving the number too would save the user counting through `gh`'s array. This is a usability note, not a failure.
+3. **The Limits, a repeated number and `--github-repo` are the main session's decisions** (exit 19, 19 and 2). The spec's Interfaces could record them, along with the two stdout lines.
+4. **"First failure" (AC7)** is read in `FILE` order, as the main session confirmed. `gh pr list` writes the newest PR first.
+5. **"Already exists" (AC10)** now means an existing report whose outcome isn't `failed`, or one that can't be read (the main session's decisions in review round 1). A `failed` report is reviewed again and replaced. The spec's AC10 doesn't yet say either; consider adding both.
+6. **The missing-commit hint differs from the text the main session pinned:** it adds ", and if the base commit is missing, fetch the base branch's full history too". That is still within AC4. The tests don't pin the tail, so the main session can settle the wording without changing them.
+
+### Gaps
+
+- **A git failure part-way through a run** (exit 19, with the counts so far, even after a provider failure) isn't tested here. This suite can't make git fail without the commit being missing: a head SHA naming a blob is checked as `<sha>^{commit}` and ends `skipped`, `missing_commit`. The developer's unit test `test_backfill_stopped_by_git_after_a_provider_failure_exits_with_the_git_error` (`tests/unit/test_pr_backfill.py`) covers it, and P2-S2's tests cover git's own failures and timeout.
+- **AC11's second test can't prove every call.** The guard raises `AssertionError`, not a `ProviderError`, so if that ends the run, only its first call is recorded. The `caps` test covers every report.
+
+### Coverage
+
+From this file alone, with `--cov=review_bot.pr`: `pr/shadow.py` 87%, `pr/event.py` 77%, `pr/cli.py` 76%, `pr/runner.py` 76%, `pr/git.py` 67%. These modules also hold `run`, `shadow` and `label`, which this file doesn't exercise. The full suite's coverage wasn't measured here, because the tester ran only this file.

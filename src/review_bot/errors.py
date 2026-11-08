@@ -73,7 +73,7 @@ class SecretDetectedError(InputError):
 
 
 class EventError(InputError):
-    """The pull request event payload can't be read, or a field it needs is invalid."""
+    """An event payload or pulls file can't be read, or a field a run needs is invalid."""
 
 
 class GitError(InputError):

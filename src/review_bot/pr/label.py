@@ -29,6 +29,7 @@ __all__ = [
     "LABELLING_STOPPED",
     "MAX_REPORT_BYTES",
     "LabellingResult",
+    "read_report",
     "run_labelling",
 ]
 
@@ -175,7 +176,7 @@ def _read_reports(directory: Path) -> tuple[list[ShadowFile], list[tuple[Path, s
     for path in sorted(directory.rglob("*.json")):
         if not path.is_file():
             continue
-        report = _read_report(path)
+        report = read_report(path)
         if isinstance(report, ShadowFile):
             reports.append(report)
         else:
@@ -183,8 +184,11 @@ def _read_reports(directory: Path) -> tuple[list[ShadowFile], list[tuple[Path, s
     return reports, skipped
 
 
-def _read_report(path: Path) -> ShadowFile | str:
-    """The report at ``path``, or why it can't be used."""
+def read_report(path: Path) -> ShadowFile | str:
+    """The report at ``path``, or why it can't be used.
+
+    It can't be when it is unreadable, over 10 MB, not JSON, or not ``shadow/v1``.
+    """
     try:
         with path.open("rb") as report_file:
             raw = report_file.read(MAX_REPORT_BYTES + 1)

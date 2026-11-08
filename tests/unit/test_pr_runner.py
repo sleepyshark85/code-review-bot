@@ -14,8 +14,8 @@ from review_bot.findings import Finding
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.git import GitRepo
 from review_bot.pr.outcome import Outcome, Reason
-from review_bot.pr.runner import run_pull_request
-from review_bot.pr.shadow import ShadowReport
+from review_bot.pr.runner import backfill_pull_request, run_pull_request
+from review_bot.pr.shadow import Origin, ShadowReport
 from review_bot.providers.base import LLMProvider, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -265,3 +265,63 @@ def test_run_pull_request_with_a_missing_head_raises_without_a_provider(
         run(pr, factory=factory)
 
     assert factory.calls == 0
+
+
+def backfill(
+    pr: PullRequestRef, run: Runner, factory: CountingFactory, settings: Settings = MOCK
+) -> ShadowReport:
+    return asyncio.run(
+        backfill_pull_request(
+            pr,
+            git=GitRepo(run.repo, timeout_s=60),
+            make_provider=factory,
+            settings=settings,
+            audit=run.audit,
+            clock=lambda: NOW,
+        )
+    )
+
+
+def test_backfill_pull_request_reviews_a_merged_pull_request_as_a_backfill(
+    repo: Path, run: Runner
+) -> None:
+    provider = MockProvider(findings=[])
+    pr = pr_for(repo, action="closed")
+
+    shadow = backfill(pr, run, CountingFactory(provider))
+
+    assert (shadow.origin, shadow.outcome, shadow.pr) == (Origin.BACKFILL, Outcome.REVIEWED, pr)
+    assert "+    return 2" in provider.requests[0].user_prompt
+    assert run.records()[0]["event"] == "pull_request"
+
+
+def test_backfill_pull_request_refuses_a_fork_without_git_or_a_provider(
+    repo: Path, run: Runner
+) -> None:
+    factory = CountingFactory(MockProvider())
+
+    shadow = backfill(unknown_commits(pr_for(repo, is_fork=True)), run, factory)
+
+    assert_refused(shadow, run, factory, Reason.FORK)
+
+
+@pytest.mark.parametrize("missing", ["base_sha", "head_sha"])
+def test_backfill_pull_request_with_a_missing_commit_is_skipped_without_a_provider(
+    repo: Path, run: Runner, missing: str
+) -> None:
+    factory = CountingFactory(MockProvider())
+
+    shadow = backfill(pr_for(repo, **{missing: "e" * 40}), run, factory)
+
+    assert_refused(shadow, run, factory, Reason.MISSING_COMMIT)
+    assert shadow.origin is Origin.BACKFILL
+
+
+def test_backfill_pull_request_with_a_provider_failure_reports_it_as_failed(
+    repo: Path, run: Runner
+) -> None:
+    error = ProviderError(ErrorCategory.RATE_LIMIT, "Wait.")
+
+    shadow = backfill(pr_for(repo), run, CountingFactory(MockProvider(error=error)))
+
+    assert (shadow.outcome, shadow.reason) == (Outcome.FAILED, ErrorCategory.RATE_LIMIT)

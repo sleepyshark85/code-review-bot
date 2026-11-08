@@ -11,8 +11,10 @@ from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
 
-__all__ = ["Settings", "load_settings"]
+__all__ = ["Settings", "in_ci", "load_settings"]
 
+# Set by GitHub Actions and most CI services.
+_CI_VARIABLE: Final = "CI"
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
 
@@ -40,6 +42,11 @@ class Settings(BaseModel):
     audit_log: Path = DEFAULT_AUDIT_LOG_PATH
     format: Literal["text", "json", "markdown"] = "text"
     triage: bool = False
+
+
+def in_ci(environ: Mapping[str, str]) -> bool:
+    """Whether ``environ`` is a CI run's: ``CI`` is set, whatever its value."""
+    return _CI_VARIABLE in environ
 
 
 def load_settings(flags: Mapping[str, str | bool | None]) -> Settings:

@@ -29,3 +29,5 @@ class Reason(StrEnum):
     ACTION = "action"
     FORK = "fork"
     NO_CREDENTIAL = "no_credential"
+    # A backfilled pull request whose base or head commit isn't in the clone.
+    MISSING_COMMIT = "missing_commit"

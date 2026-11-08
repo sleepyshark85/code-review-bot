@@ -1,4 +1,4 @@
-"""Diffs between two commits of a local clone, by running ``git``.
+"""Diffs between two commits of a local clone, and which commits it holds, by running ``git``.
 
 git runs from an argument list with a timeout, and never with an external diff or a textconv
 filter, so the clone's attributes and config can't make it run another program (Phase 2
@@ -85,9 +85,17 @@ class GitRepo:
             )
         return diff
 
+    def has_commit(self, sha: str) -> bool:
+        """Whether ``sha`` is a commit in the clone.
+
+        Raises:
+            GitError: If git fails, times out or can't start.
+        """
+        return self._exit_code(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"]) == 0
+
     def _require_commit(self, sha: str) -> None:
         """Raise ``GitError`` naming ``sha`` unless it is a commit in the clone."""
-        if self._exit_code(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"]) != 0:
+        if not self.has_commit(sha):
             raise GitError(
                 f"Commit {sha} isn't in --repo {self._shown_path}. Fetch the pull request's base "
                 "and head commits into the clone (fetch-depth: 0), then run again."

@@ -32,7 +32,7 @@ from review_bot.findings import Finding
 from review_bot.providers.base import LLMProvider
 from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact, scan_secrets
-from review_bot.settings import Settings, load_settings
+from review_bot.settings import Settings, in_ci, load_settings
 
 if TYPE_CHECKING:
     from review_bot.providers.claude_agent import SdkCall
@@ -72,7 +72,7 @@ async def record_live(
             review, or a setting is invalid. During the run, if the audit log or a recording
             can't be written.
     """
-    if "CI" in environ:
+    if in_ci(environ):
         raise EvalInputError(
             "live never runs in CI, and CI is set in the environment. Run it by hand, outside CI."
         )

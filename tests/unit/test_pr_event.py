@@ -6,7 +6,14 @@ from typing import Any
 import pytest
 
 from review_bot.errors import EventError
-from review_bot.pr.event import MAX_EVENT_BYTES, PullRequestRef, read_event
+from review_bot.pr.event import (
+    MAX_EVENT_BYTES,
+    MAX_PULLS,
+    MergedPull,
+    PullRequestRef,
+    read_event,
+    read_pulls,
+)
 
 BASE_SHA = "a" * 40
 HEAD_SHA = "b" * 40
@@ -155,3 +162,103 @@ def test_read_event_over_10_mb_is_refused_before_parsing(tmp_path: Path) -> None
 def test_read_event_that_is_missing_names_the_flag(tmp_path: Path) -> None:
     with pytest.raises(EventError, match="Can't read the event file --event"):
         read_event(tmp_path / "missing.json")
+
+
+def pull(**changes: Any) -> dict[str, Any]:
+    """One entry as ``gh pr list --state merged --json`` writes it, with ``changes`` applied."""
+    entry: dict[str, Any] = {
+        "number": 12,
+        "baseRefOid": BASE_SHA.upper(),
+        "headRefOid": HEAD_SHA,
+        "mergedAt": "2026-11-07T08:09:10Z",
+        "isCrossRepository": False,
+    }
+    for key, value in changes.items():
+        if value is _DELETE:
+            del entry[key]
+        else:
+            entry[key] = value
+    return entry
+
+
+def test_read_pulls_keeps_each_merged_pull_request_in_file_order(tmp_path: Path) -> None:
+    pulls = read_pulls(write(tmp_path, [pull(), pull(number=3, isCrossRepository=True)]))
+
+    assert pulls == (
+        MergedPull(12, BASE_SHA, HEAD_SHA, datetime(2026, 11, 7, 8, 9, 10, tzinfo=UTC), False),
+        MergedPull(3, BASE_SHA, HEAD_SHA, datetime(2026, 11, 7, 8, 9, 10, tzinfo=UTC), True),
+    )
+
+
+def test_merged_pull_ref_is_the_pull_request_as_its_merge_left_it(tmp_path: Path) -> None:
+    (merged,) = read_pulls(write(tmp_path, [pull(isCrossRepository=True)]))
+
+    assert merged.ref("owner/repo") == PullRequestRef(
+        repo="owner/repo",
+        number=12,
+        base_sha=BASE_SHA,
+        head_sha=HEAD_SHA,
+        is_fork=True,
+        is_draft=False,
+        event_at=merged.merged_at,
+        action="closed",
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "named"),
+    [
+        (pull(number=_DELETE), "entry 2 lacks number"),
+        (pull(number=0), "entry 2: number isn't a positive integer"),
+        (pull(baseRefOid="abc"), "entry 2: baseRefOid isn't a 40-hex-digit SHA"),
+        (pull(headRefOid="g" * 40), "entry 2: headRefOid isn't a 40-hex-digit SHA"),
+        (pull(mergedAt="2026-11-07T08:09:10"), "entry 2: mergedAt isn't an ISO 8601"),
+        (pull(isCrossRepository=_DELETE), "entry 2 lacks isCrossRepository"),
+        (pull(isCrossRepository="no"), "entry 2: isCrossRepository isn't true or false"),
+        (pull(), "entry 2 repeats the number of an earlier entry"),
+        ("12", "entry 2 isn't a JSON object"),
+    ],
+)
+def test_read_pulls_with_a_bad_entry_names_it_and_the_field_but_not_the_value(
+    tmp_path: Path, entry: object, named: str
+) -> None:
+    with pytest.raises(EventError, match=r"^The pulls file --pulls .*isCrossRepository\.$") as info:
+        read_pulls(write(tmp_path, [pull(), entry]))
+
+    assert named in str(info.value)
+    assert "abc" not in str(info.value)
+
+
+def test_read_pulls_that_isnt_a_list_says_so(tmp_path: Path) -> None:
+    with pytest.raises(EventError, match="isn't a JSON list"):
+        read_pulls(write(tmp_path, {"number": 12}))
+
+
+def test_read_pulls_over_500_entries_is_refused(tmp_path: Path) -> None:
+    entries = [pull(number=number) for number in range(1, MAX_PULLS + 2)]
+
+    with pytest.raises(EventError, match=f"more than {MAX_PULLS} pull requests"):
+        read_pulls(write(tmp_path, entries))
+
+
+def test_read_pulls_at_500_entries_is_read(tmp_path: Path) -> None:
+    entries = [pull(number=number) for number in range(1, MAX_PULLS + 1)]
+
+    assert len(read_pulls(write(tmp_path, entries))) == MAX_PULLS
+
+
+def test_read_pulls_over_10_mb_is_refused_before_parsing(tmp_path: Path) -> None:
+    path = tmp_path / "pulls.json"
+    path.write_bytes(b"[" + b" " * MAX_EVENT_BYTES + b"]")
+
+    with pytest.raises(EventError, match=f"--pulls .* is over {MAX_EVENT_BYTES} bytes"):
+        read_pulls(path)
+
+
+def test_read_pulls_that_isnt_json_or_is_missing_names_the_flag(tmp_path: Path) -> None:
+    path = tmp_path / "pulls.json"
+    with pytest.raises(EventError, match=r"^Can't read the pulls file --pulls "):
+        read_pulls(path)
+    path.write_text("[{", encoding="utf-8")
+    with pytest.raises(EventError, match=r"--pulls .* isn't JSON"):
+        read_pulls(path)
