@@ -656,3 +656,45 @@ Both are resolved in the revised workflow:
 ### Coverage
 
 From the S3, S4, S6 and S8 files together, with `--cov=review_bot.pr`, against the final code: `pr/feedback.py` 97%, `pr/rest_github.py` 95%. `pr/cli.py` and `pr/fake_github.py` are covered further by the S5 and S7 suites.
+
+## P2-S11: Capture the value baseline from PR history
+
+Suite: `tests/integration/test_p2_s11_value_baseline.py`, written from the spec, design.md (How the gate is evidenced, Baseline) and Q8 while the developer built the slice, before any of its code was read. **Status: not yet run against the developer's code.** On the first run, all 37 cases fail because the code was mid-edit (`NameError: AwareDatetime` in `rest_github.py`, and the fake's seeding methods aren't there yet). The seam below is an assumption, waiting for confirmation.
+
+### Seam and set-up (assumed)
+
+- AC1 to AC8 and AC10: `review_bot.pr.cli.main(["baseline", "--repo", R, "--since", D, "--until", D, "--out", FILE], github=FakeGitHubClient)`. The fake is assumed to be seeded with `add_pull_request(number=, title=, created_at=, closed_at=, merged_at=None|datetime, commit_dates=(committer dates))` and `add_issue(number=, labels=, created_at=)`, and failed with `fail_on("list_merged_pull_requests" | "count_issues")`. `History` is the one place to change.
+- AC9: `baseline` with no injected client, so it builds `RestGitHubClient` from `GITHUB_TOKEN` and `GITHUB_API_URL` against `github_stub.GitHubStub`. The stub now serves `GET /repos/{o}/{r}/pulls` (`state`, `sort`, `direction`), `GET .../pulls/{n}/commits` (author and committer dates differ by an hour), `GET .../issues` (`labels`, `since`, PRs included as on GitHub) and `GET /search/issues` (`is:`, `type:`, `label:`, `created:`, `merged:`, `closed:` ranges). The tests check the numbers, not which endpoints the client uses.
+- `FILE` is read as strict ASCII JSON (no `NaN` or `Infinity`), on one line. The spec doesn't name where the medians and p90s go, so `stat` finds the one leaf whose path names the measure (`merge` or `commit`) and the statistic (`median` or `p90`).
+
+### Criteria
+
+| AC | Tests (`test_p2_s11_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_four_merged_prs_give_median_7_5_and_p90_30_hours` (2, 5, 10, 30 h: (5 + 10) / 2 = 7.5; nearest rank ⌈0.9 × 4⌉ = 4th = 30). `ac1_file_is_one_ascii_json_document` | not run |
+| AC2 | `ac2_commits_after_opening_give_median_2_5_and_p90_5`: 1, 2, 3 and 5 commits after opening, with 2 before opening left out; no key names pushes | not run |
+| AC3 | `ac3_fix_prs_bug_issues_and_escaped_defects_per_merged_pr`: the four titles give `fix_prs` 2; 2 in-window `bug` issues, plus an `enhancement` one and `bug` ones before and after the window, give `bug_issues` 2 and (2 + 2) / 4 = 1.0. `ac3_fix_is_a_whole_first_word_in_any_case` ×2 (`FIX totals`, `Fix`, `fix(core): x` count; `Fixes`, `Fixed`, `fixup!`, `prefix fix` don't) | not run |
+| AC4 | `ac4_unmerged_and_out_of_window_prs_arent_counted` (a closed unmerged PR, and PRs merged before and after the window, all titled `Fix …`, change neither the count nor `fix_prs`). `ac4_a_pr_opened_before_the_window_and_merged_in_it_counts` (96 h) | not run |
+| AC5 | `ac5_empty_window_has_null_medians_and_p90s_and_exits_0` | not run |
+| AC6 | `ac6_file_holds_the_repo_window_and_a_utc_capture_time`, `ac6_stdout_shows_the_same_numbers_as_text` | not run |
+| AC7 | `ac7_bad_flag_exits_2_naming_it` ×7 (reversed window; `yesterday`, month 13 and `31/10/2026`; a repo with no slash, three parts, or an empty owner); no `FILE`. `ac7_no_token_exits_2_naming_it_and_sends_nothing` | not run |
+| AC8 | `ac8_a_failing_client_exits_18_and_writes_no_file` ×4: each operation fails, with no `FILE` before, or an old `FILE` left byte for byte | not run |
+| AC9 | `ac9_rest_client_gives_the_same_baseline` (AC1 to AC4's numbers through REST; author dates differ from committer dates; a `bug`-labelled PR isn't a bug issue; the token is in every request's `Authorization` and nowhere in stdout, stderr or `FILE`). `ac9_merged_prs_over_two_pages_are_all_read` (150). `ac9_a_failed_read_exits_18_once_without_the_token_or_a_file` ×7 kinds, with every history route failing and GitHub quoting the token back: one request, not retried. `ac9_a_failed_commits_read_exits_18_with_no_file`. `ac9_every_request_has_a_timeout_of_at_most_30_s`. `ac9_baseline_is_read_only` (GET only) | not run |
+| AC10 | `ac10_titles_with_control_characters_or_a_canary_never_reach_file`: ESC, NUL, CR/LF, a forged JSON fragment, U+2028 and U+202E in titles; no title or canary in `FILE`, still `fix_prs` 2 | not run |
+| Limits | `limits_more_than_1000_merged_prs_exits_18_naming_the_limit`: 1,001 merged PRs; the message names `1,000` (or S6's `10 pages`), at most 11 listing requests, no `FILE` | not run |
+
+### Readings for the designer
+
+1. **Window bounds.** The spec doesn't say whether `--until` covers its whole day, or whether the window is on merge time. The tests read it as on merge time (AC4: "merged outside the window"), and keep every timestamp well away from the bounds.
+2. **A PR labelled `bug`** is read as not a bug issue (Q8 counts issues, and GitHub's issues API returns PRs too). `ac9_rest_client_gives_the_same_baseline` pins it.
+3. **`escaped_defects_per_merged_pr` on an empty window** isn't specified. AC5 only requires `FILE` to stay strict JSON (no `NaN` or `Infinity`).
+4. **AC8 "isn't written"** is read as "an existing `FILE` is left as it was" too.
+5. **AC10 is read for `FILE` only**, as the spec says. Titles on stdout aren't asserted.
+
+### Earlier suites changed
+
+- **`github_stub.py`:** PR history (`add_pull`, `add_issue`; the pulls, PR commits, issues and issue search routes, all paged). The existing routes are unchanged. The S6 and S8 suites weren't re-run, because the developer's `rest_github.py` doesn't import yet.
+
+### Coverage
+
+Not measured yet: the code under test doesn't run.

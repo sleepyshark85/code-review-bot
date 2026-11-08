@@ -1,4 +1,4 @@
-"""The real ``GitHubClient``: GitHub's REST and GraphQL APIs over ``urllib`` (P2-S6, P2-S8).
+"""The real ``GitHubClient``: GitHub's REST and GraphQL APIs over ``urllib`` (P2-S6, S8, S11).
 
 It has its own module so the pure ``plan`` and ``shadow`` modules, which import the data types in
 ``github``, never load the HTTP stack.
@@ -15,11 +15,20 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from http.client import HTTPException, HTTPMessage
 from typing import Final, Self
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from review_bot.errors import ConfigError, GitHubError
@@ -32,13 +41,16 @@ from review_bot.pr.comments import (
 )
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import (
+    MAX_MERGED_PULLS,
     BotComment,
     CommentSignals,
+    MergedPullRequest,
     NewComment,
     Resolver,
     Summary,
     is_any_bot,
     is_bot_user,
+    too_many_merged_pulls,
 )
 from review_bot.secret_scan import redact
 from review_bot.settings import GITHUB_TOKEN_VARIABLE
@@ -153,6 +165,12 @@ class _Schema(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, frozen=True)
 
 
+class _RestSchema(BaseModel):
+    """A REST response's shape, with REST's snake_case names; unknown fields are ignored."""
+
+    model_config = ConfigDict(frozen=True)
+
+
 class _User(_Schema):
     login: str
     user_type: str = Field(alias="type")
@@ -251,6 +269,38 @@ class _ResolveData(_Schema):
     resolve_review_thread: _ResolvePayload
 
 
+class _SearchPull(_RestSchema):
+    merged_at: AwareDatetime | None
+
+
+class _SearchItem(_RestSchema):
+    number: int
+    title: str
+    created_at: AwareDatetime
+    pull_request: _SearchPull | None = None
+
+
+class _SearchCount(_RestSchema):
+    total_count: int
+    incomplete_results: bool
+
+
+class _SearchPage(_SearchCount):
+    items: list[_SearchItem]
+
+
+class _GitActor(_RestSchema):
+    date: AwareDatetime
+
+
+class _GitCommit(_RestSchema):
+    committer: _GitActor
+
+
+class _PullCommit(_RestSchema):
+    commit: _GitCommit
+
+
 _REVIEW_COMMENTS: Final = TypeAdapter(list[_ReviewComment])
 _ISSUE_COMMENTS: Final = TypeAdapter(list[_IssueComment])
 _REACTIONS: Final = TypeAdapter(list[_Reaction])
@@ -258,6 +308,9 @@ _WITH_ID: Final = TypeAdapter(_WithId)
 _GRAPHQL_RESPONSE: Final = TypeAdapter(_GraphQLResponse)
 _THREADS_DATA: Final = TypeAdapter(_ThreadsData)
 _RESOLVE_DATA: Final = TypeAdapter(_ResolveData)
+_SEARCH_COUNT: Final = TypeAdapter(_SearchCount)
+_SEARCH_PAGE: Final = TypeAdapter(_SearchPage)
+_PULL_COMMITS: Final = TypeAdapter(list[_PullCommit])
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -284,6 +337,7 @@ class RestGitHubClient:
     def __init__(self, repo: str, access: GitHubAccess, *, timeout_s: float = _TIMEOUT_S) -> None:
         """Talk to ``repo`` (``owner/name``) with ``access``, each request within ``timeout_s``."""
         self._repo = repo
+        self._search_url = f"{access.api_url}/search/issues"
         self._repo_url = f"{access.api_url}/repos/{repo}"
         # Right for api.github.com; GitHub Enterprise Server would need GITHUB_GRAPHQL_URL.
         self._graphql_url = f"{access.api_url}/graphql"
@@ -356,6 +410,88 @@ class RestGitHubClient:
             url = f"{self._repo_url}/issues/comments/{summary.id}"
             self._send(operation, "PATCH", url, payload, _WITH_ID)
 
+    def list_merged_pull_requests(
+        self, repo: str, since: date, until: date
+    ) -> tuple[MergedPullRequest, ...]:
+        """Return the pull requests merged in the window, found by the search API.
+
+        Each one's commits are one more listing, of the at most 250 GitHub lists for a pull
+        request.
+        """
+        operation = "list_merged_pull_requests"
+        query = f"repo:{self._own(repo)} is:pr is:merged merged:{_window(since, until)}"
+        return tuple(
+            MergedPullRequest(
+                number=item.number,
+                title=item.title,
+                created_at=item.created_at,
+                merged_at=item.pull_request.merged_at,
+                commit_dates=self._commit_dates(operation, item.number),
+            )
+            for item in self._search_merged_pulls(operation, query)
+            if item.pull_request is not None and item.pull_request.merged_at is not None
+        )
+
+    def count_issues(self, repo: str, label: str, since: date, until: date) -> int:
+        """Return the search API's count of the issues labelled ``label`` created in the window."""
+        query = f'repo:{self._own(repo)} is:issue label:"{label}" created:{_window(since, until)}'
+        return self._search(
+            "count_issues", query, page=1, per_page=1, schema=_SEARCH_COUNT
+        ).total_count
+
+    def _search_merged_pulls(self, operation: str, query: str) -> list[_SearchItem]:
+        """Every pull request the search API matches ``query`` with, page by page, once each.
+
+        A pull request seen on two pages, as results shift while paging, is kept once.
+
+        Raises:
+            GitHubError: If it matches more than ``MAX_MERGED_PULLS``, the most the search API
+                returns.
+        """
+        found: dict[int, _SearchItem] = {}
+        for page in range(1, _MAX_PAGES + 1):
+            batch = self._search(
+                operation, query, page=page, per_page=_PER_PAGE, schema=_SEARCH_PAGE
+            )
+            if batch.total_count > MAX_MERGED_PULLS:
+                raise too_many_merged_pulls(batch.total_count)
+            for item in batch.items:
+                found.setdefault(item.number, item)
+            if len(batch.items) < _PER_PAGE or len(found) >= batch.total_count:
+                break
+        return list(found.values())
+
+    def _search[T: _SearchCount](
+        self, operation: str, query: str, *, page: int, per_page: int, schema: TypeAdapter[T]
+    ) -> T:
+        """One page of the search API's issues and pull requests matching ``query``.
+
+        Results are oldest first, a stable order to page through.
+
+        Raises:
+            GitHubError: If the call fails, or the search timed out before finding every match.
+        """
+        parameters = {
+            "q": query,
+            "sort": "created",
+            "order": "asc",
+            "per_page": per_page,
+            "page": page,
+        }
+        url = f"{self._search_url}?{urlencode(parameters)}"
+        result = self._send(operation, "GET", url, None, schema)
+        if result.incomplete_results:
+            raise GitHubError(
+                f"GitHub {operation} failed: the search timed out before finding every match. "
+                f"{_RETRY_ADVICE}"
+            )
+        return result
+
+    def _commit_dates(self, operation: str, number: int) -> tuple[datetime, ...]:
+        """The committer date of each of pull request ``number``'s commits."""
+        commits = self._list(operation, f"{self._repo_url}/pulls/{number}/commits", _PULL_COMMITS)
+        return tuple(commit.commit.committer.date for commit in commits)
+
     def _bot_comments(self, operation: str, pr: PullRequestRef) -> tuple[BotComment, ...]:
         """The bot's inline comments on ``pr`` with a valid marker, oldest first."""
         comments = self._list(operation, f"{self._pull_url(pr)}/comments", _REVIEW_COMMENTS)
@@ -391,9 +527,14 @@ class RestGitHubClient:
 
     def _number(self, pr: PullRequestRef) -> int:
         """``pr``'s number, once it is known to be of this client's repository."""
-        if pr.repo != self._repo:
-            raise ValueError(f"This client is for {self._repo}, not {pr.repo}.")
+        self._own(pr.repo)
         return pr.number
+
+    def _own(self, repo: str) -> str:
+        """``repo``, once it is known to be this client's repository."""
+        if repo != self._repo:
+            raise ValueError(f"This client is for {self._repo}, not {repo}.")
+        return repo
 
     def _pull_url(self, pr: PullRequestRef) -> str:
         return f"{self._repo_url}/pulls/{self._number(pr)}"
@@ -508,6 +649,11 @@ class RestGitHubClient:
         if isinstance(reason, TimeoutError):
             return f"no response within {self._timeout_s:g} s"
         return f"the connection failed ({type(reason).__name__})"
+
+
+def _window(since: date, until: date) -> str:
+    """A search qualifier's range: the UTC days from ``since`` to ``until``, both included."""
+    return f"{since.isoformat()}T00:00:00Z..{until.isoformat()}T23:59:59Z"
 
 
 def _is_bot(user: _User | None) -> bool:

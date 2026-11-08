@@ -3,7 +3,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -14,7 +14,7 @@ from review_bot.errors import ConfigError, GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BotComment, NewComment, Resolver, Summary
+from review_bot.pr.github import BotComment, MergedPullRequest, NewComment, Resolver, Summary
 from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess, RestGitHubClient, github_access
 
@@ -686,3 +686,174 @@ def test_a_threads_page_saying_there_is_more_with_no_cursor_is_a_shape_error(stu
         client(stub).list_bot_comments(PR)
 
     assert len(stub.received) == 2
+
+
+# P2-S11: merged pull requests and issues, through the search API.
+
+SINCE, UNTIL = date(2026, 10, 1), date(2026, 10, 31)
+WINDOW = "2026-10-01T00:00:00Z..2026-10-31T23:59:59Z"
+
+
+def search_item(number: int, merged_at: str | None = "2026-10-11T09:00:00Z") -> dict:
+    return {
+        "number": number,
+        "title": f"Fix {number}",
+        "created_at": "2026-10-10T09:00:00Z",
+        "pull_request": {"merged_at": merged_at, "url": "x"},
+        "score": 1.0,
+    }
+
+
+def search_page(items: list[dict], total: int | None = None, *, incomplete: bool = False) -> dict:
+    return {
+        "total_count": len(items) if total is None else total,
+        "incomplete_results": incomplete,
+        "items": items,
+    }
+
+
+def pull_commit(committed: str) -> dict:
+    return {"sha": "c" * 40, "commit": {"committer": {"date": committed, "name": "n"}}}
+
+
+def history(search: Callable[[Received], Reply]) -> Callable[[Received], Reply]:
+    """Answers search requests with ``search``, and each PR's commits with one commit."""
+
+    def respond(request: Received) -> Reply:
+        if request.path == "/search/issues":
+            return search(request)
+        return reply([pull_commit("2026-10-10T10:00:00+02:00")])
+
+    return respond
+
+
+def test_list_merged_pull_requests_searches_the_window_and_reads_each_prs_commits(
+    stub: Stub,
+) -> None:
+    stub.respond = history(lambda _r: reply(search_page([search_item(4), search_item(5, None)])))
+
+    merged = client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert merged == (
+        MergedPullRequest(
+            number=4,
+            title="Fix 4",
+            created_at=datetime(2026, 10, 10, 9, tzinfo=UTC),
+            merged_at=datetime(2026, 10, 11, 9, tzinfo=UTC),
+            commit_dates=(datetime(2026, 10, 10, 8, tzinfo=UTC),),
+        ),
+    )
+    search, commits = stub.received
+    assert search.query == {
+        "q": [f"repo:owner/repo is:pr is:merged merged:{WINDOW}"],
+        "sort": ["created"],
+        "order": ["asc"],
+        "per_page": ["100"],
+        "page": ["1"],
+    }
+    assert commits.path == "/repos/owner/repo/pulls/4/commits"
+    assert all(request.headers["authorization"] == f"Bearer {TOKEN}" for request in stub.received)
+
+
+def test_list_merged_pull_requests_reads_search_pages_until_one_isnt_full(stub: Stub) -> None:
+    pages = {"1": [search_item(n) for n in range(100)], "2": [search_item(100)]}
+    stub.respond = history(lambda r: reply(search_page(pages[r.query["page"][0]], total=101)))
+
+    merged = client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert len(merged) == 101
+    assert [r.query["page"] for r in stub.received if r.path == "/search/issues"] == [["1"], ["2"]]
+
+
+def test_list_merged_pull_requests_at_the_limit_of_1000_returns_them_all(stub: Stub) -> None:
+    def page(request: Received) -> Reply:
+        first = (int(request.query["page"][0]) - 1) * 100
+        return reply(search_page([search_item(n) for n in range(first, first + 100)], total=1000))
+
+    stub.respond = history(page)
+
+    merged = client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert [pull.number for pull in merged] == list(range(1000))
+    assert len([r for r in stub.received if r.path == "/search/issues"]) == 10
+
+
+def test_list_merged_pull_requests_keeps_a_pr_seen_on_two_pages_once(stub: Stub) -> None:
+    # Results shifted while paging: 99 ends page 1 and starts page 2.
+    pages = {"1": list(range(100)), "2": [99, 100]}
+    stub.respond = history(
+        lambda r: reply(search_page([search_item(n) for n in pages[r.query["page"][0]]], total=101))
+    )
+
+    merged = client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert [pull.number for pull in merged] == list(range(101))
+
+
+def test_list_merged_pull_requests_stops_once_it_has_the_total(stub: Stub) -> None:
+    stub.respond = history(lambda _r: reply(search_page([search_item(n) for n in range(100)])))
+
+    client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert len([r for r in stub.received if r.path == "/search/issues"]) == 1
+
+
+def test_list_merged_pull_requests_over_1000_fails_naming_the_limit_before_any_commits(
+    stub: Stub,
+) -> None:
+    stub.respond = history(lambda _r: reply(search_page([search_item(1)] * 100, total=1001)))
+
+    with pytest.raises(
+        GitHubError, match=r"1001 merged pull requests, more than the limit of 1000"
+    ):
+        client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert [request.path for request in stub.received] == ["/search/issues"]
+
+
+def test_an_incomplete_search_fails_rather_than_undercount(stub: Stub) -> None:
+    stub.respond = history(lambda _r: reply(search_page([search_item(1)], incomplete=True)))
+
+    with pytest.raises(GitHubError, match=r"list_merged_pull_requests failed: the search timed"):
+        client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+
+def test_a_commit_without_a_committer_date_is_a_shape_error(stub: Stub) -> None:
+    stub.respond = lambda request: (
+        reply(search_page([search_item(1)]))
+        if request.path == "/search/issues"
+        else reply([{"sha": "c", "commit": {"committer": {"name": "n"}}}])
+    )
+
+    with pytest.raises(GitHubError, match=r"doesn't have the expected shape at 0.commit"):
+        client(stub).list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+
+def test_a_failed_search_fails_naming_the_call_and_status(stub: Stub) -> None:
+    stub.respond = lambda _request: reply({"message": f"no {TOKEN}"}, status=403)
+
+    with pytest.raises(GitHubError, match=r"^GitHub count_issues failed: HTTP 403") as caught:
+        client(stub).count_issues("owner/repo", "bug", SINCE, UNTIL)
+
+    assert TOKEN not in str(caught.value)
+
+
+def test_count_issues_reads_the_searchs_total_for_issues_with_the_label(stub: Stub) -> None:
+    stub.respond = lambda _request: reply(search_page([{"number": 1}], total=2))
+
+    count = client(stub).count_issues("owner/repo", "bug", SINCE, UNTIL)
+
+    assert count == 2
+    (search,) = stub.received
+    assert search.path == "/search/issues"
+    assert search.query["q"] == [f'repo:owner/repo is:issue label:"bug" created:{WINDOW}']
+    assert search.query["per_page"] == ["1"]
+
+
+def test_history_calls_refuse_another_repository(stub: Stub) -> None:
+    with pytest.raises(ValueError, match="not other/repo"):
+        client(stub).list_merged_pull_requests("other/repo", SINCE, UNTIL)
+    with pytest.raises(ValueError, match="not other/repo"):
+        client(stub).count_issues("other/repo", "bug", SINCE, UNTIL)
+
+    assert stub.received == []

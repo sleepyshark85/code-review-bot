@@ -15,7 +15,12 @@ more fields than a client needs, so a client that ignores unknown fields reads t
   above (P2-S8); the same reactions are in each GraphQL comment node's `reactions`, with GraphQL's
   content names and logins, and summed in the REST comment's `reactions` counts;
 - `GET`, `POST /repos/{o}/{r}/issues/{n}/comments` and `PATCH /repos/{o}/{r}/issues/comments/{id}`:
-  issue comments, for the summary.
+  issue comments, for the summary;
+- `GET  /repos/{o}/{r}/pulls` (`state`, `sort`, `direction`), `GET /repos/{o}/{r}/pulls/{n}/commits`
+  (each commit's author and committer dates), `GET /repos/{o}/{r}/issues` (`state`, `labels`,
+  `since`; pull requests included, as GitHub does) and `GET /search/issues` (`q` with `is:` or
+  `type:`, `label:`, `created:`, `merged:` and `closed:`): PR history, for the baseline (P2-S11).
+  All are paged as above.
 
 Every request is recorded with its headers and body. `fail(route, kind)` makes every request to
 one route fail the same way, so a retry would be seen and counted.
@@ -25,8 +30,9 @@ import contextlib
 import json
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -90,6 +96,10 @@ class State:
     # Hostile: a failure's message quotes the request's `Authorization` header back.
     echo_authorization: bool = False
     next_id: int = 900_000
+    # P2-S11: PR history. Each PR is also in `issues`, with a `pull_request` key, as on GitHub.
+    pulls: list[dict[str, Any]] = field(default_factory=list)
+    pull_commits: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
 
 def user(login: str, user_type: str) -> dict[str, Any]:
@@ -167,6 +177,89 @@ def issue_comment(comment_id: int, *, body: str, login: str = BOT_LOGIN) -> dict
     }
 
 
+def pull(
+    number: int, *, title: str, created_at: str, closed_at: str | None, merged_at: str | None
+) -> dict[str, Any]:
+    """A REST pull request, as `GET /pulls` lists it (P2-S11)."""
+    return {
+        "url": f"https://api.example.invalid/pulls/{number}",
+        "id": 3_000_000 + number,
+        "node_id": f"PR_{number}",
+        "html_url": f"https://github.example.invalid/pull/{number}",
+        "number": number,
+        "state": "open" if closed_at is None else "closed",
+        "locked": False,
+        "title": title,
+        "user": user("canary-author-41aa", "User"),
+        "body": "CANARY-PR-BODY-77c1",
+        "labels": [],
+        "created_at": created_at,
+        "updated_at": closed_at or created_at,
+        "closed_at": closed_at,
+        "merged_at": merged_at,
+        "merge_commit_sha": None if merged_at is None else f"{number:040x}",
+        "draft": False,
+        "head": {"ref": f"feat/{number}", "sha": "b" * 40},
+        "base": {"ref": "main", "sha": "a" * 40},
+        "author_association": "MEMBER",
+    }
+
+
+def issue(  # noqa: PLR0913 - keyword-only, one per GitHub fact an issue has
+    number: int,
+    *,
+    title: str,
+    labels: Sequence[str],
+    created_at: str,
+    closed_at: str | None,
+    merged_at: str | None,
+    is_pull: bool,
+) -> dict[str, Any]:
+    """A REST issue, as `GET /issues` and search list it; a PR's has `pull_request` (P2-S11)."""
+    item: dict[str, Any] = {
+        "url": f"https://api.example.invalid/issues/{number}",
+        "id": 4_000_000 + number,
+        "node_id": f"I_{number}",
+        "number": number,
+        "title": title,
+        "user": user("canary-author-41aa", "User"),
+        "labels": [{"id": index, "name": name} for index, name in enumerate(labels)],
+        "state": "open" if closed_at is None else "closed",
+        "comments": 0,
+        "created_at": created_at,
+        "updated_at": closed_at or created_at,
+        "closed_at": closed_at,
+        "body": "CANARY-ISSUE-BODY-5e02",
+        "author_association": "MEMBER",
+        "score": 1.0,
+    }
+    if is_pull:
+        item["pull_request"] = {
+            "url": f"https://api.example.invalid/pulls/{number}",
+            "merged_at": merged_at,
+        }
+    return item
+
+
+def commit(number: int, index: int, authored: str, committed: str) -> dict[str, Any]:
+    """A REST commit on a PR, as `GET /pulls/{n}/commits` lists it (P2-S11)."""
+    sha = f"{number:020x}{index:020x}"
+    person = {"name": "Canary Person", "email": "canary@example.invalid"}
+    return {
+        "sha": sha,
+        "node_id": f"C_{sha}",
+        "commit": {
+            "author": person | {"date": authored},
+            "committer": person | {"date": committed},
+            "message": "CANARY-COMMIT-MESSAGE-90bd",
+            "comment_count": 0,
+        },
+        "author": user("canary-author-41aa", "User"),
+        "committer": user("web-flow", "User"),
+        "parents": [],
+    }
+
+
 class GitHubStub:
     """The server, its state and its request log. Use as a context manager."""
 
@@ -231,6 +324,40 @@ class GitHubStub:
     def add_issue_comment(self, comment: dict[str, Any]) -> None:
         self.state.issue_comments.append(comment)
 
+    def add_pull(  # noqa: PLR0913 - keyword-only, one per GitHub fact a PR has
+        self,
+        number: int,
+        *,
+        title: str,
+        created_at: str,
+        closed_at: str | None,
+        merged_at: str | None,
+        commits: Sequence[tuple[str, str]] = (),
+        labels: Sequence[str] = (),
+    ) -> None:
+        """A PR, as a pull and as an issue; `commits` are (author date, committer date) (P2-S11)."""
+        times = {"created_at": created_at, "closed_at": closed_at, "merged_at": merged_at}
+        self.state.pulls.append(pull(number, title=title, **times))
+        self.state.issues.append(issue(number, title=title, labels=labels, is_pull=True, **times))
+        self.state.pull_commits[number] = [
+            commit(number, index, authored, committed)
+            for index, (authored, committed) in enumerate(commits)
+        ]
+
+    def add_issue(self, number: int, *, title: str, labels: Sequence[str], created_at: str) -> None:
+        """An open issue that isn't a PR (P2-S11)."""
+        self.state.issues.append(
+            issue(
+                number,
+                title=title,
+                labels=labels,
+                created_at=created_at,
+                closed_at=None,
+                merged_at=None,
+                is_pull=False,
+            )
+        )
+
     def fail(self, route: str, kind: str) -> None:
         assert kind in FAILURE_KINDS, kind
         self.state.failures[route] = kind
@@ -271,6 +398,10 @@ _ROUTES = (
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/issues/\d+/comments"), "list_issue_comments"),
     ("POST", re.compile(r"/repos/[^/]+/[^/]+/issues/\d+/comments"), "create_issue_comment"),
     ("PATCH", re.compile(r"/repos/[^/]+/[^/]+/issues/comments/(\d+)"), "edit_issue_comment"),
+    ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls"), "list_pulls"),
+    ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls/\d+/commits"), "list_pull_commits"),
+    ("GET", re.compile(r"/repos/[^/]+/[^/]+/issues"), "list_issues"),
+    ("GET", re.compile(r"/search/issues"), "list_search_issues"),
 )
 
 
@@ -391,6 +522,10 @@ def _respond(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[str, st
         "list_reactions": lambda: _page(stub, request, _rest_reactions(state, request)),
         "list_issue_comments": lambda: _page(stub, request, state.issue_comments),
         "list_threads": lambda: (200, _threads_page(state, request.json or {}), {}),
+        "list_pulls": lambda: _page(stub, request, _pulls(state, request)),
+        "list_pull_commits": lambda: _page(stub, request, _commits(state, request)),
+        "list_issues": lambda: _page(stub, request, _issues(state, request)),
+        "list_search_issues": lambda: _search(stub, request),
         "graphql_resolve": lambda: (200, _resolved(state, request), {}),
         "create_review": lambda: (200, _created_review(state, request.json or {}), {}),
         "edit_review_comment": lambda: _edited(state, request),
@@ -639,3 +774,121 @@ def _edited(state: State, request: Request) -> tuple[int, Any, dict[str, str]]:
             comment["body"] = (request.json or {}).get("body", comment["body"])
             return 200, comment, {}
     return 404, {"message": "Not Found", "documentation_url": "https://x.invalid"}, {}
+
+
+# P2-S11: PR history.
+
+
+def _when(text: str) -> datetime:
+    moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _sorted(items: list[dict[str, Any]], request: Request) -> list[dict[str, Any]]:
+    key = "updated_at" if request.query.get("sort", ["created"])[0] == "updated" else "created_at"
+    descending = request.query.get("direction", ["desc"])[0] != "asc"
+    return sorted(items, key=lambda item: _when(item[key]), reverse=descending)
+
+
+def _in_state(item: dict[str, Any], request: Request) -> bool:
+    wanted = request.query.get("state", ["open"])[0]
+    return wanted in ("all", item["state"])
+
+
+def _pulls(state: State, request: Request) -> list[dict[str, Any]]:
+    return _sorted([pull for pull in state.pulls if _in_state(pull, request)], request)
+
+
+def _commits(state: State, request: Request) -> list[dict[str, Any]]:
+    return state.pull_commits.get(int(request.path.rsplit("/", 2)[1]), [])
+
+
+def _issues(state: State, request: Request) -> list[dict[str, Any]]:
+    labels = {name for name in request.query.get("labels", [""])[0].split(",") if name}
+    since = request.query.get("since", [None])[0]
+    chosen = [
+        item
+        for item in state.issues
+        if _in_state(item, request)
+        and labels <= {label["name"] for label in item["labels"]}
+        and (since is None or _when(item["updated_at"]) >= _when(since))
+    ]
+    return _sorted(chosen, request)
+
+
+def _bound(text: str, *, end: bool) -> datetime:
+    """A search date or date-time; a date as an end bound covers its whole day."""
+    if "T" in text:
+        return _when(text)
+    day = _when(text)
+    return day + timedelta(days=1, microseconds=-1) if end else day
+
+
+def _range(condition: str) -> tuple[datetime | None, datetime | None]:
+    """A search range's inclusive bounds, None if open: `A..B` (`*` open), `>=A`, `<=B`, `>A`,
+    `<B` or `A`."""
+    tick = timedelta(microseconds=1)
+    if ".." in condition:
+        low, high = condition.split("..", 1)
+        return (
+            None if low in ("", "*") else _bound(low, end=False),
+            None if high in ("", "*") else _bound(high, end=True),
+        )
+    prefixes = {
+        ">=": lambda text: (_bound(text, end=False), None),
+        "<=": lambda text: (None, _bound(text, end=True)),
+        ">": lambda text: (_bound(text, end=True) + tick, None),
+        "<": lambda text: (None, _bound(text, end=False) - tick),
+    }
+    for prefix, bounds in prefixes.items():
+        if condition.startswith(prefix):
+            return bounds(condition[len(prefix) :])
+    return _bound(condition, end=False), _bound(condition, end=True)
+
+
+def _in_range(value: str | None, condition: str) -> bool:
+    if value is None:
+        return False
+    moment = _when(value)
+    low, high = _range(condition)
+    return (low is None or moment >= low) and (high is None or moment <= high)
+
+
+def _search_matches(item: dict[str, Any], qualifiers: list[tuple[str, str]]) -> bool:
+    is_pull = "pull_request" in item
+    merged_at = item["pull_request"]["merged_at"] if is_pull else None
+    flags = {
+        "pr": is_pull,
+        "issue": not is_pull,
+        "merged": merged_at is not None,
+        "unmerged": is_pull and merged_at is None,
+        "closed": item["state"] == "closed",
+        "open": item["state"] == "open",
+    }
+    labels = {label["name"] for label in item["labels"]}
+    for name, value in qualifiers:
+        if name in ("is", "type"):
+            ok = flags.get(value, True)
+        elif name == "label":
+            ok = value in labels
+        elif name in ("created", "closed", "merged"):
+            ok = _in_range(merged_at if name == "merged" else item[f"{name}_at"], value)
+        else:  # `repo:` and anything else the stub doesn't model
+            ok = True
+        if not ok:
+            return False
+    return True
+
+
+def _search(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[str, str]]:
+    terms = request.query.get("q", [""])[0].split()
+    qualifiers = [
+        (name.lower(), value.strip('"'))
+        for name, _, value in (term.partition(":") for term in terms)
+        if value
+    ]
+    found = _sorted(
+        [item for item in stub.state.issues if _search_matches(item, qualifiers)], request
+    )
+    status, items, headers = _page(stub, request, found)
+    return status, {"total_count": len(found), "incomplete_results": False, "items": items}, headers

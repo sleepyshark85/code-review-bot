@@ -5,28 +5,36 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Final, Protocol
 
+from review_bot.errors import GitHubError
 from review_bot.findings import Severity
 from review_bot.pr.event import PullRequestRef
 
 __all__ = [
     "BOT_LOGIN",
     "BOT_USER_TYPE",
+    "MAX_MERGED_PULLS",
     "BotComment",
     "CommentSignals",
     "GitHubClient",
+    "MergedPullRequest",
     "NewComment",
     "Resolver",
     "Summary",
+    "in_window",
     "is_any_bot",
     "is_bot_user",
+    "too_many_merged_pulls",
 ]
 
 # The bot's comments are those by this REST user (ADR 0008, ADR 0009).
 BOT_LOGIN: Final = "github-actions[bot]"
 BOT_USER_TYPE: Final = "Bot"
+# The most merged pull requests one baseline window may cover (P2-S11, Limits).
+MAX_MERGED_PULLS: Final = 1000
 
 
 def is_bot_user(login: str, user_type: str) -> bool:
@@ -99,8 +107,36 @@ class Summary:
     reviewed_sha: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class MergedPullRequest:
+    """A merged pull request, as the value baseline reads it (P2-S11).
+
+    ``created_at`` is when it was opened, and ``commit_dates`` hold each of its commits'
+    committer dates. All are timezone-aware.
+    """
+
+    number: int
+    title: str
+    created_at: datetime
+    merged_at: datetime
+    commit_dates: tuple[datetime, ...]
+
+
+def in_window(moment: datetime, since: date, until: date) -> bool:
+    """Whether ``moment`` falls on a UTC day from ``since`` to ``until``, both included."""
+    return since <= moment.astimezone(UTC).date() <= until
+
+
+def too_many_merged_pulls(count: int) -> GitHubError:
+    """The error for a baseline window covering more than ``MAX_MERGED_PULLS`` merged PRs."""
+    return GitHubError(
+        f"GitHub list_merged_pull_requests failed: the window holds {count} merged pull "
+        f"requests, more than the limit of {MAX_MERGED_PULLS}. Pass a shorter window."
+    )
+
+
 class GitHubClient(Protocol):
-    """The calls a comment-mode run and ``collect`` make.
+    """The calls a comment-mode run, ``collect`` and ``baseline`` make.
 
     Each raises ``GitHubError`` naming itself on failure.
     """
@@ -133,5 +169,26 @@ class GitHubClient(Protocol):
         """Create the bot's summary comment on ``pr``, or edit it in place if it exists.
 
         Its marker records ``reviewed_sha``, the last commit reviewed, or ``none`` if None.
+        """
+        ...
+
+    def list_merged_pull_requests(
+        self, repo: str, since: date, until: date
+    ) -> tuple[MergedPullRequest, ...]:
+        """Return ``repo``'s pull requests merged in the window, with their commits' dates.
+
+        The window is the UTC days from ``since`` to ``until``, both included (``in_window``).
+        Pull requests closed without merging aren't returned.
+
+        Raises:
+            GitHubError: If a call fails, or more than ``MAX_MERGED_PULLS`` were merged in the
+                window (``too_many_merged_pulls``).
+        """
+        ...
+
+    def count_issues(self, repo: str, label: str, since: date, until: date) -> int:
+        """Return how many of ``repo``'s issues labelled ``label`` were created in the window.
+
+        The window is as ``list_merged_pull_requests``'s; pull requests aren't counted.
         """
         ...

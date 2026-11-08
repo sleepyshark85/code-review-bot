@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -7,7 +8,14 @@ from review_bot.findings import Category, Finding, ReviewedFinding, Severity, So
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeCall, FakeGitHubClient, FakeReview
-from review_bot.pr.github import BotComment, NewComment, Resolver, Summary
+from review_bot.pr.github import (
+    MAX_MERGED_PULLS,
+    BotComment,
+    MergedPullRequest,
+    NewComment,
+    Resolver,
+    Summary,
+)
 from review_bot.pr.plan import Action, PlannedComment
 
 PR = PullRequestRef(
@@ -212,3 +220,87 @@ def test_list_signals_fails_when_told_to() -> None:
 
     with pytest.raises(GitHubError, match="GitHub list_signals failed"):
         github.list_signals(PR)
+
+
+# P2-S11: merged pull requests and issues.
+
+SINCE, UNTIL = date(2026, 10, 1), date(2026, 10, 31)
+OPENED = datetime(2026, 10, 10, tzinfo=UTC)
+
+
+def add_pull(
+    client: FakeGitHubClient, number: int, merged_at: datetime | None, *, closed: bool = True
+) -> None:
+    client.add_pull_request(
+        number=number,
+        title=f"Change {number}",
+        created_at=OPENED - timedelta(days=30),
+        closed_at=(merged_at or OPENED) if closed else None,
+        merged_at=merged_at,
+        commit_dates=(OPENED,),
+    )
+
+
+def test_list_merged_pull_requests_returns_only_those_merged_in_the_window() -> None:
+    client = FakeGitHubClient()
+    add_pull(client, 1, OPENED)
+    add_pull(client, 2, None)
+    add_pull(client, 3, None, closed=False)
+    add_pull(client, 4, datetime(2026, 9, 30, 23, 59, tzinfo=UTC))
+    add_pull(client, 5, datetime(2026, 10, 31, 23, 59, tzinfo=UTC))
+    add_pull(client, 6, datetime(2026, 11, 1, tzinfo=UTC))
+
+    merged = client.list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+    assert [pull.number for pull in merged] == [1, 5]
+    assert merged[0] == MergedPullRequest(
+        1, "Change 1", OPENED - timedelta(days=30), OPENED, (OPENED,)
+    )
+    assert client.calls == [FakeCall("list_merged_pull_requests", ("owner/repo", SINCE, UNTIL))]
+
+
+def test_list_merged_pull_requests_over_the_limit_fails_naming_it() -> None:
+    client = FakeGitHubClient()
+    for number in range(MAX_MERGED_PULLS + 1):
+        add_pull(client, number, OPENED)
+
+    with pytest.raises(
+        GitHubError, match=r"1001 merged pull requests, more than the limit of 1000"
+    ):
+        client.list_merged_pull_requests("owner/repo", SINCE, UNTIL)
+
+
+def test_list_merged_pull_requests_at_the_limit_returns_them_all() -> None:
+    client = FakeGitHubClient()
+    for number in range(MAX_MERGED_PULLS):
+        add_pull(client, number, OPENED)
+
+    assert len(client.list_merged_pull_requests("owner/repo", SINCE, UNTIL)) == MAX_MERGED_PULLS
+
+
+def test_count_issues_counts_those_with_the_label_created_in_the_window() -> None:
+    client = FakeGitHubClient()
+    client.add_issue(number=1, labels=("bug",), created_at=OPENED)
+    client.add_issue(number=2, labels=("docs", "bug"), created_at=OPENED)
+    client.add_issue(number=3, labels=("docs",), created_at=OPENED)
+    client.add_issue(number=4, labels=("bug",), created_at=datetime(2026, 11, 1, tzinfo=UTC))
+
+    assert client.count_issues("owner/repo", "bug", SINCE, UNTIL) == 2
+    assert client.calls == [FakeCall("count_issues", ("owner/repo", "bug", SINCE, UNTIL))]
+
+
+@pytest.mark.parametrize(
+    ("operation", "call"),
+    [
+        ("list_merged_pull_requests", lambda c: c.list_merged_pull_requests("o/r", SINCE, UNTIL)),
+        ("count_issues", lambda c: c.count_issues("o/r", "bug", SINCE, UNTIL)),
+    ],
+)
+def test_a_failing_history_call_raises_github_error(
+    operation: str, call: Callable[[FakeGitHubClient], object]
+) -> None:
+    client = FakeGitHubClient()
+    client.fail_on(operation)
+
+    with pytest.raises(GitHubError, match=operation):
+        call(client)
