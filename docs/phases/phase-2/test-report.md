@@ -698,3 +698,52 @@ Suite: `tests/integration/test_p2_s11_value_baseline.py`, written from the spec,
 ### Coverage
 
 Not measured yet: the code under test doesn't run.
+
+## P2-S10: Measure latency, tokens, cost, outcomes and precision
+
+Spec: [p2-s10-metrics.md](slices/p2-s10-metrics.md). Tests: [`tests/integration/test_p2_s10_metrics.py`](../../../tests/integration/test_p2_s10_metrics.py), 42 cases. They were written from the spec, design.md ("How the gate is evidenced") and ADRs 0010 and 0011 while the developer built the slice, before any of its code was read.
+
+**Status: not yet run against the developer's code.** On the first run (base `0068d3e`), all 42 cases fail on one cause, `invalid choice: 'metrics'`, because the subcommand isn't there yet. Every fixture and precondition passes, including the 32 shadow labels made by `label` and the reaction records made by `collect`. The seam and the JSON key names below are assumptions, waiting for confirmation.
+
+### Seam and set-up (assumed)
+
+- **Seam:** `review_bot.pr.cli.main(["metrics", "--reports", DIR, "--labels", F1, F2, ..., *flags, "--format", "json"|"text"])`, in process, read with `capsys`. `--labels` is read as one flag taking several files, as the spec writes it. Only `metrics()` knows the argv.
+- **`metrics/v1` keys:** `runs.outcomes[]` (`mode`, `origin`, `outcome`, `reason`, `count`), `runs.latency_s.{end_to_end,review}.{p50,p95}`, `tokens.{input,output}.{total,mean,max}`, `tokens.over_budget`, `cost` (null when not priced, else `usd` and `per_accepted_finding_usd` as strings in cents), `shadow_precision` and `comment_precision` (`accepted`, `rejected`, `duplicates`, `precision`, `wilson_low`, `wilson_high`, `lower_bound`, `judged`, `units`, `coverage`, `prs`, `largest_pr_share`, `conflict`, `resolved`, `splits.{origin,source,rule_part,reject_reason}`), and `orphans`. Shares may be fractions or `"70.0%"` strings; `pct()` reads both. Only the "metrics/v1 reading" section knows these names.
+- **Inputs come from the real commands.** Reports are written by `run` (`MockProvider` with scripted findings and `TokenUsage`), in shadow mode or in comment mode against `FakeGitHubClient`. Shadow labels are written by `label`, driven by `Oracle`, which answers from the PR each question names, so the verdicts don't depend on question order. Reaction and resolution records are written by `collect` on the same fake the comment-mode run posted to, so their fingerprints are the report's own.
+- **Edited after the fact only where a criterion needs it:** exact timestamps (AC2, AC11), `origin` `backfill` (AC1, AC2), a second judgement with a chosen `recorded_at` (AC8, Limits), and malformed or oversized files (AC12).
+- **The AC6 data set** is built once per module: 34 units on two PRs, 17 each in two reports per PR. Each PR has 16 judged and 15 non-duplicate verdicts, so the largest PR's share is 50% whether it is read over units, judged or the precision denominator.
+
+### Criteria
+
+Test names drop the `test_p2_s10_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_counts_per_outcome_and_reason_split_by_mode_and_origin`: 2 shadow event, 1 comment event and 1 shadow backfill `reviewed`; `skipped` `too_large`, `blocked_secret`, `failed` `auth`, all made by `run`. `ac1_text_names_each_outcome_reason_mode_and_origin` | not run |
+| AC2 | `ac2_latency_is_nearest_rank_over_reviewed_event_runs_only`: 60, 90, 120, 400 s give 90 and 400; review times 10 to 40 s give 20 and 40. A backfilled run (10^6 s) and a skipped run (9,000 s) are left out | not run |
+| AC3 | `ac3_a_report_downloaded_twice_counts_once` (every report copied: 4 runs, gate numbers unchanged). `ac3_a_duplicated_run_adds_no_tokens` | not run |
+| AC4 | `ac4_tokens_total_mean_max_and_over_budget_count`: inputs 1,000,000 / 250,000 / 400,000; outputs 100,000 / 25,000 / 40,000; 1 run over `--max-output-tokens 35000` | not run |
+| AC5 | `ac5_cost_is_22_50_usd_and_2_50_per_accepted_finding` (9 accepts by `label`). `ac5_text_shows_the_cost_in_usd`. `ac5_cost_rounds_half_even_to_cents` (0.125 gives 0.12). `ac5_no_prices_shows_not_priced`. `ac5_an_invalid_price_exits_2_naming_the_flag` ×8: one price only (either), negative (either), a word, empty, `nan`, `inf` | not run |
+| AC6 | `ac6_precision_70_with_wilson_52_1_to_83_3`, `ac6_duplicates_apart_and_the_lower_bound_65_6`, `ac6_coverage_94_1_of_34_units`, `ac6_two_prs_and_the_largest_share_50`, `ac6_splits_by_origin_source_rule_part_and_reject_reason` (4 wrong, 3 not worth it, 2 wrong line, 2 duplicate), `ac6_text_shows_every_gate_number` | not run |
+| AC7 | `ac7_comment_mode_entries_add_no_shadow_units`: comment-mode reports on the judged PR's own lines and 3 new lines on PR 9; still 34 units, 94.1%, 2 PRs | not run |
+| AC8 | `ac8_the_later_shadow_judgement_of_a_unit_wins` (a later reject wins, an earlier one is ignored, in both file orders: 20/30 = 66.7%). `ac8_the_later_reaction_label_wins` (two `collect` runs, +1 then -1; reject wins in both orders) | not run |
+| AC9 | `ac9_comment_precision_counts_reactions_and_their_coverage` (4 posted: 1 accept, 1 conflict, 1 resolved; 100.0%, coverage 25.0%). `ac9_a_reaction_label_takes_its_fields_from_the_report` (source `ai`, rule part `ai:logic`). `ac9_shadow_and_comment_precision_are_never_merged` | not run |
+| AC10 | `ac10_no_labels_shows_n_a`. `ac10_only_conflict_and_resolved_is_n_a` | not run |
+| AC11 | `ac11_only_runs_and_units_in_the_window_count` ×4 (November: 11/15 = 73.3%; October: 10/15 = 66.7%; `--since` only; `--until` only). `ac11_an_invalid_date_exits_2` | not run |
+| AC12 | `ac12_invalid_files_and_orphans_are_skipped_one_line_each`: non-JSON, `shadow/v2` and empty reports, a bad labels file, a shadow label on PR 99 and a real reaction record with no report; one stderr line each, `orphans` 2, every number unchanged. `ac12_a_report_over_10_mib_is_skipped` | not run |
+| AC13 | `ac13_json_is_one_ascii_metrics_v1_document`. `ac13_json_and_text_show_the_same_numbers` | not run |
+| Limits | `limits_nine_mb_of_rejudgements_in_time_and_the_latest_wins`: 20,000 records for one unit, latest first in the file, under 60 s | not run |
+
+### Readings for the designer
+
+1. **`--labels FILE ...`** is read as one flag taking several files. If it is a repeated flag instead, only `metrics()` changes.
+2. **Review time's population.** AC2 says review time is shown "the same way". The backfilled run's review time is chosen so the expected p50 and p95 hold whether or not backfilled runs count.
+3. **"Naming the flag" with one price** is read as naming the missing one.
+4. **`nan` and `inf`** are read as non-numeric prices (exit 2). If the designer reads them otherwise, those two cases go.
+5. **Comment coverage** is read as reactions judged (`accept` or `reject`) ÷ `create` entries in comment-mode reports: 1 of 4 in AC9.
+6. **Labels on would-be comments outside the `--since`/`--until` window** are excluded. The tests don't assert whether they are reported as orphans.
+7. **A report over 10 MiB** is read as an invalid file under AC12: skipped with one stderr line.
+
+### Coverage
+
+Not measured yet: the code under test doesn't run.

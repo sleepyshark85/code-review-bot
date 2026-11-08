@@ -56,7 +56,12 @@ def report(
         "event_at": finished_at,
         "started_at": finished_at,
         "finished_at": finished_at,
-        "report": {"schema": "report/v1", "model": "claude-x", "prompt_version": "p1-v1"},
+        "report": {
+            "schema": "report/v1",
+            "model": "claude-x",
+            "prompt_version": "p1-v1",
+            "usage": {"input_tokens": 1000, "output_tokens": 100},
+        },
         "summary_body": "summary",
         "comments": list(entries),
         "withheld": [],

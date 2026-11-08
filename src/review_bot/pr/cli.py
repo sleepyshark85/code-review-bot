@@ -4,7 +4,8 @@
 pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
 post. ``collect`` writes ``feedback.jsonl`` in ``--out DIR``, from the reactions and resolutions
 on the bot's comments, with no model. ``baseline`` writes the ``baseline/v1`` document in
-``--out FILE``, from a repository's merged pull requests, with no model.
+``--out FILE``, from a repository's merged pull requests, with no model. ``metrics`` shows
+the numbers of downloaded shadow reports and labels on stdout, offline.
 
 ``run --mode comment`` also posts on the pull request, and ``collect`` and ``baseline`` read
 GitHub, through its API with the token in ``GITHUB_TOKEN``; without it, they exit 2.
@@ -18,14 +19,16 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
 import argparse
 import contextlib
 import os
+import re
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from review_bot.audit import AuditLog, Stage, utc_now
 from review_bot.cli import (
@@ -49,17 +52,30 @@ from review_bot.console import (
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
-from review_bot.pr.feedback import SignalFeedback, labels_from_signals, render_feedback_line
+from review_bot.pr.feedback import (
+    FeedbackRecord,
+    SignalFeedback,
+    labels_from_signals,
+    render_feedback_line,
+)
 from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
-from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
-from review_bot.pr.metrics import render_baseline_json, render_baseline_text, summarise_baseline
+from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
+from review_bot.pr.metrics import (
+    Prices,
+    render_baseline_json,
+    render_baseline_text,
+    summarise_baseline,
+)
+from review_bot.pr.metrics_report import render_metrics_json, render_metrics_text
 from review_bot.pr.outcome import Outcome, Reason
+from review_bot.pr.reports import read_labels, read_report, read_reports, skipped_line
 from review_bot.pr.rest_github import (
     API_URL_VARIABLE,
     RestGitHubClient,
     github_access,
 )
+from review_bot.pr.run_metrics import summarise_runs
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
@@ -104,6 +120,8 @@ _BASELINE_WITHOUT_CREDENTIAL: Final = (
 )
 # The escaped-defect proxy's issue label (Phase 2 design, Q8).
 _BUG_LABEL: Final = "bug"
+# A price flag's value: digits, with an optional fraction.
+_PRICE: Final = re.compile(r"[0-9]+(\.[0-9]+)?")
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
     "interactive shell."
@@ -149,6 +167,16 @@ class _CollectCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class _MetricsCommand:
+    reports_dir: Path
+    labels_paths: tuple[Path, ...]
+    since: date | None
+    until: date | None
+    prices: Prices | None
+    as_json: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BaselineCommand:
     github_repo: str
     since: date
@@ -189,7 +217,9 @@ def main(
         failed GitHub call or an unusable event writes nothing. ``baseline`` returns 0 once
         ``--out FILE`` is written; 2 for an invalid flag, an unwritable ``FILE``, or with no
         ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``; and 18 for a failed
-        GitHub call, which writes nothing.
+        GitHub call, which writes nothing. ``metrics`` returns 0 once the numbers are shown,
+        and 2 for an invalid flag, a --reports that isn't a directory, an --until before
+        --since, or only one price.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
@@ -199,7 +229,9 @@ def main(
     github_token = take_github_token()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
-        if isinstance(command, _LabelCommand | _CollectCommand | _BaselineCommand):
+        if isinstance(
+            command, _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand
+        ):
             return _run_without_review(command, github, github_token)
         # Before --out is created: in CI, backfill touches nothing.
         if isinstance(command, _BackfillCommand):
@@ -229,7 +261,7 @@ def main(
 
 
 def _run_without_review(
-    command: _LabelCommand | _CollectCommand | _BaselineCommand,
+    command: _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand,
     github: GitHubClient | None,
     github_token: str | None,
 ) -> int:
@@ -243,6 +275,8 @@ def _run_without_review(
         case _BaselineCommand():
             client = _github_requiring_token(github, github_token, _BASELINE_WITHOUT_CREDENTIAL)
             return _baseline(command, client(command.github_repo))
+        case _MetricsCommand():
+            return _metrics(command)
 
 
 def _parse_args(
@@ -254,6 +288,7 @@ def _parse_args(
     | _LabelCommand
     | _CollectCommand
     | _BaselineCommand
+    | _MetricsCommand
 ):
     """Parse the command line into the subcommand, its paths and the settings.
 
@@ -353,14 +388,11 @@ def _parse_args(
         "--out", type=Path, required=True, help="the directory to write feedback.jsonl"
     )
     _add_baseline_command(commands.add_parser)
+    _add_metrics_command(commands.add_parser)
     flags = vars(parser.parse_args(argv))
     name = flags.pop("command")
-    if name == "label":
-        return _LabelCommand(flags["reports"], flags["labels"])
-    if name == "collect":
-        return _CollectCommand(flags["event"], flags["out"])
-    if name == "baseline":
-        return _baseline_command(flags["repo"], flags["since"], flags["until"], flags["out"])
+    if name in ("label", "collect", "baseline", "metrics"):
+        return _command_without_review(name, flags)
     out_dir = flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
@@ -376,6 +408,25 @@ def _parse_args(
         return _BackfillCommand(pulls_path, github_repo, repo_dir, out_dir, max_calls, settings)
     event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
     return _RunCommand(event_path, repo_dir, out_dir, mode, load_settings(flags))
+
+
+def _command_without_review(
+    name: str,
+    # Any, as argparse's parsed values have no static type.
+    flags: Mapping[str, Any],
+) -> _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand:
+    """The subcommand ``name``, one that reviews nothing, from its parsed ``flags``.
+
+    Raises:
+        ConfigError: If its flags don't fit together.
+    """
+    if name == "label":
+        return _LabelCommand(flags["reports"], flags["labels"])
+    if name == "collect":
+        return _CollectCommand(flags["event"], flags["out"])
+    if name == "baseline":
+        return _baseline_command(flags["repo"], flags["since"], flags["until"], flags["out"])
+    return _metrics_command(flags)
 
 
 def _github_repo(text: str) -> str:
@@ -415,12 +466,100 @@ def _baseline_command(
     Raises:
         ConfigError: If ``--until`` is before ``--since``.
     """
+    _require_window_in_order(since, until)
+    return _BaselineCommand(github_repo, since, until, out_path)
+
+
+def _require_window_in_order(since: date, until: date) -> None:
+    """Raise ``ConfigError`` if ``--until`` is before ``--since``."""
     if until < since:
         raise ConfigError(
             f"--until {until} is before --since {since}. Pass an --until on or after --since. "
             "Run with --help for usage."
         )
-    return _BaselineCommand(github_repo, since, until, out_path)
+
+
+def _add_metrics_command(add_parser: Callable[..., RaisingArgumentParser]) -> None:
+    metrics = add_parser(
+        "metrics",
+        help="show latency, tokens, cost, outcomes and precision from downloaded reports and "
+        "labels, offline",
+        description="Count the shadow reports in --reports, and precision from the feedback/v1 "
+        "labels in each --labels file, for the runs whose event_at falls from --since to "
+        "--until (UTC days, both included).",
+        allow_abbrev=False,
+    )
+    metrics.add_argument(
+        "--reports",
+        type=Path,
+        required=True,
+        help="the directory holding the downloaded shadow.json files, at any depth",
+    )
+    metrics.add_argument(
+        "--labels",
+        type=Path,
+        nargs="+",
+        action="extend",
+        default=[],
+        help="feedback/v1 JSONL files: label's, and collect's feedback.jsonl",
+    )
+    metrics.add_argument("--since", type=_iso_date, help="the window's first day, as YYYY-MM-DD")
+    metrics.add_argument("--until", type=_iso_date, help="the window's last day, as YYYY-MM-DD")
+    metrics.add_argument(
+        "--price-input-usd-per-mtok", type=_price, help="USD per million input tokens"
+    )
+    metrics.add_argument(
+        "--price-output-usd-per-mtok", type=_price, help="USD per million output tokens"
+    )
+    metrics.add_argument(
+        "--format", choices=["text", "json"], default="text", help="text (default) or json"
+    )
+
+
+def _metrics_command(flags: Mapping[str, Any]) -> _MetricsCommand:
+    """The ``metrics`` command, once its window and prices are known to be in order.
+
+    Raises:
+        ConfigError: If ``--until`` is before ``--since``, or only one price is given.
+    """
+    since, until = flags["since"], flags["until"]
+    if since is not None and until is not None:
+        _require_window_in_order(since, until)
+    return _MetricsCommand(
+        reports_dir=flags["reports"],
+        labels_paths=tuple(flags["labels"]),
+        since=since,
+        until=until,
+        prices=_prices(flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]),
+        as_json=flags["format"] == "json",
+    )
+
+
+def _prices(input_price: Decimal | None, output_price: Decimal | None) -> Prices | None:
+    """Both prices, or None for neither.
+
+    Raises:
+        ConfigError: Naming the missing flag if only one is given.
+    """
+    if input_price is None and output_price is None:
+        return None
+    if input_price is None or output_price is None:
+        missing = "input" if input_price is None else "output"
+        raise ConfigError(
+            f"--price-{missing}-usd-per-mtok is missing. Pass both prices to show the cost, or "
+            "neither. Run with --help for usage."
+        )
+    return Prices(input_price, output_price)
+
+
+def _price(text: str) -> Decimal:
+    # Digits only, so a sign, an exponent, nan or inf is refused.
+    if not _PRICE.fullmatch(text):
+        raise argparse.ArgumentTypeError(
+            f"{text!r} isn't a price: pass USD per million tokens as a number of 0 or more, such "
+            "as 15 or 0.25"
+        )
+    return Decimal(text)
 
 
 def _iso_date(text: str) -> date:
@@ -481,6 +620,37 @@ def _label(command: _LabelCommand) -> int:
         # A second Ctrl+C only loses this notice.
         with contextlib.suppress(KeyboardInterrupt):
             write_diagnostic(LABELLING_STOPPED)
+    return 0
+
+
+def _metrics(command: _MetricsCommand) -> int:
+    """Show the metrics of the reports and labels on stdout, as text or ``metrics/v1`` JSON.
+
+    Each report or labels file left out, and each orphan label, gets one line on stderr.
+
+    Raises:
+        ConfigError: If ``--reports`` isn't a directory.
+    """
+    reports, skipped = read_reports(command.reports_dir)
+    for path, problem in skipped:
+        write_diagnostic(skipped_line(path, problem))
+    labels: list[FeedbackRecord] = []
+    for path in command.labels_paths:
+        records = read_labels(path)
+        if isinstance(records, str):
+            write_diagnostic(skipped_line(path, records))
+        else:
+            labels += records
+    metrics = summarise_runs(
+        reports, labels, since=command.since, until=command.until, prices=command.prices
+    )
+    for orphan in metrics.orphans:
+        write_diagnostic(
+            f"review-bot pr: orphan {orphan.channel} label for {orphan.repo}#{orphan.pr}, "
+            f"fingerprint {orphan.fingerprint}: no report in --reports has its finding, so no "
+            "number counts it. Download that pull request's reports too."
+        )
+    write_output(render_metrics_json(metrics) if command.as_json else render_metrics_text(metrics))
     return 0
 
 

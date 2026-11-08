@@ -1,7 +1,6 @@
 """Judge the would-be comments in downloaded shadow reports, appending a label for each.
 
-Reports are untrusted: each is at most 10 MB, parsed as ``units.ShadowFile``, and its text is
-shown only escaped.
+Reports are untrusted: ``pr.reports`` reads them, and their text is shown only escaped.
 """
 
 import contextlib
@@ -12,30 +11,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final, TextIO
 
-from pydantic import ValidationError
-
 from review_bot.errors import ConfigError
 from review_bot.pr.feedback import (
     FeedbackLabel,
     FeedbackRecord,
     RejectReason,
     ShadowFeedback,
-    parse_feedback_line,
     render_feedback_line,
 )
-from review_bot.pr.units import ShadowFile, WouldBeComment, would_be_comments
+from review_bot.pr.reports import BadLabelLine, parse_labels, read_reports, skipped_line
+from review_bot.pr.units import WouldBeComment, would_be_comments
 from review_bot.render import escape_unprintable
 from review_bot.secret_scan import redact
 
-__all__ = [
-    "LABELLING_STOPPED",
-    "MAX_REPORT_BYTES",
-    "LabellingResult",
-    "read_report",
-    "run_labelling",
-]
+__all__ = ["LABELLING_STOPPED", "LabellingResult", "run_labelling"]
 
-MAX_REPORT_BYTES: Final = 10_000_000
 LABELLING_STOPPED: Final = "Labelling stopped."
 
 _VERDICT_PROMPT: Final = "[a]ccept [r]eject [s]kip: "
@@ -102,9 +92,9 @@ def run_labelling(
         for record in _parse_labels(existing, labels_path)
         if isinstance(record, ShadowFeedback)
     }
-    reports, skipped_files = _read_reports(reports_dir)
+    reports, skipped_files = read_reports(reports_dir)
     for path, problem in skipped_files:
-        write_line(escape_unprintable(f"review-bot pr: skipped {redact(str(path))}: {problem}"))
+        write_line(escape_unprintable(skipped_line(path, problem)))
     comments = [comment for comment in would_be_comments(reports) if comment.unit not in labelled]
     judged = skipped = 0
     if comments:
@@ -152,71 +142,14 @@ def _parse_labels(raw: bytes, path: Path) -> list[FeedbackRecord]:
     Raises:
         ConfigError: Naming the first line that isn't a ``feedback/v1`` record.
     """
-    records = []
-    for number, line in enumerate(raw.split(b"\n"), start=1):
-        if not line.strip():
-            continue
-        try:
-            records.append(parse_feedback_line(line))
-        except ValidationError as exc:
-            raise ConfigError(
-                f"Line {number} of the labels file --labels {redact(str(path))} isn't a "
-                f"feedback/v1 record ({_first_problem(exc)}). Fix or remove that line, then run "
-                "label again."
-            ) from exc
-    return records
-
-
-def _read_reports(directory: Path) -> tuple[list[ShadowFile], list[tuple[Path, str]]]:
-    """Every ``*.json`` file under ``directory`` as a report, or with why it is skipped.
-
-    Raises:
-        ConfigError: If ``directory`` isn't a directory.
-    """
-    if not directory.is_dir():
+    records = parse_labels(raw)
+    if isinstance(records, BadLabelLine):
         raise ConfigError(
-            f"--reports {redact(str(directory))} isn't a directory. Pass the directory you "
-            "downloaded the shadow report artifacts to."
+            f"Line {records.number} of the labels file --labels {redact(str(path))} isn't a "
+            f"feedback/v1 record ({records.problem}). Fix or remove that line, then run label "
+            "again."
         )
-    reports: list[ShadowFile] = []
-    skipped: list[tuple[Path, str]] = []
-    # Sorted, so reports finished at the same moment are taken in a repeatable order.
-    for path in sorted(directory.rglob("*.json")):
-        if not path.is_file():
-            continue
-        report = read_report(path)
-        if isinstance(report, ShadowFile):
-            reports.append(report)
-        else:
-            skipped.append((path, report))
-    return reports, skipped
-
-
-def read_report(path: Path) -> ShadowFile | str:
-    """The report at ``path``, or why it can't be used.
-
-    It can't be when it is unreadable, over 10 MB, not JSON, or not ``shadow/v1``.
-    """
-    try:
-        with path.open("rb") as report_file:
-            raw = report_file.read(MAX_REPORT_BYTES + 1)
-    except OSError as exc:
-        return f"can't be read ({exc.strerror or type(exc).__name__})"
-    if len(raw) > MAX_REPORT_BYTES:
-        return f"over {MAX_REPORT_BYTES} bytes"
-    try:
-        return ShadowFile.model_validate_json(raw, strict=True)
-    except ValidationError as exc:
-        if exc.errors()[0]["type"] == "json_invalid":
-            return "not JSON"
-        return f"not a shadow/v1 report ({_first_problem(exc)})"
-
-
-def _first_problem(exc: ValidationError) -> str:
-    """Where the first problem is and what it is; pydantic's messages never quote the input."""
-    error = exc.errors()[0]
-    location = ".".join(str(part) for part in error["loc"]) or "top level"
-    return f"{location}: {error['msg']}"
+    return records
 
 
 def _open_for_append(path: Path) -> TextIO:
