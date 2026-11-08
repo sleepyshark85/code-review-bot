@@ -27,6 +27,7 @@ A new package, `review_bot.pr`, with its own entry point `python -m review_bot.p
 | `pr.github` | The GitHub API, behind a `Protocol`, and its one real client | `GitHubClient` (S5), `RestGitHubClient` (S6) | S5 |
 | `pr.fake_github` | In-memory GitHub for tests, in `src/` as `MockProvider` is | `FakeGitHubClient` | S5 |
 | `pr.feedback` | `feedback/v1` records, from judgements, reactions and resolutions | `FeedbackRecord`, `labels_from_signals` | S4, S8 |
+| `pr.units` | Pure: reads `shadow/v1` reports into would-be comments, the unit (repo, PR, key, index), deduped by `run_id`; shared by `label` and `metrics` (added in build, S4) | `would_be_comments`, `WouldBeComment` | S4, S10 |
 | `pr.label` | Interactive judging of downloaded shadow reports | `run_labelling` | S4 |
 | `pr.config` | Parses `.review-bot.toml` from the base commit | `RepoConfig` | S9 |
 | `pr.metrics` | Latency, tokens, cost, outcomes, precision; the baseline | `summarise_runs`, `summarise_baseline` | S10, S11 |

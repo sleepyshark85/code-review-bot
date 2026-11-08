@@ -1,6 +1,8 @@
+import io
 import json
 import runpy
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ import pytest
 from audit_records import read_records
 from diff_samples import section
 from git_samples import commit, init_repo
+from shadow_samples import K1, K2, entry, report, write_report
 
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding
@@ -389,3 +392,80 @@ def test_run_with_a_provider_failure_keeps_the_key_out_of_every_file_in_out(
     assert shadow_json(out)["outcome"] == "failed"
     assert (out / "audit.jsonl").exists()
     assert not any(key in path.read_text("utf-8") for path in out.iterdir())
+
+
+def label(reports: Path, labels: Path) -> int:
+    return main(["label", "--reports", str(reports), "--labels", str(labels)])
+
+
+@pytest.mark.parametrize("stream_name", ["stdin", "stderr"])
+def test_label_without_a_terminal_exits_2_naming_label_before_reading_anything(
+    stream_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "review_bot.pr.cli.is_terminal", lambda stream: stream is not getattr(sys, stream_name)
+    )
+    labels = tmp_path / "labels.jsonl"
+    labels.write_text("{not json\n", encoding="ascii")
+
+    exit_code = label(tmp_path / "missing", labels)
+
+    assert exit_code == 2
+    assert capsys.readouterr().err == (
+        "review-bot: error: label needs a terminal: stdin and stderr must both be attached to "
+        "one. Run it from an interactive shell.\n"
+    )
+
+
+def test_label_in_a_terminal_appends_the_verdicts_and_ends_with_the_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("review_bot.pr.cli.is_terminal", lambda _stream: True)
+    monkeypatch.setattr("sys.stdin", io.StringIO("a\n"))
+    reports = tmp_path / "reports"
+    write_report(reports, "one", report(entry(K1), entry(K2)))
+    (reports / "broken.json").write_text("{", encoding="ascii")
+    labels = tmp_path / "labels.jsonl"
+
+    exit_code = label(reports, labels)
+
+    assert exit_code == 0
+    assert len(labels.read_text(encoding="ascii").splitlines()) == 1
+    assert capsys.readouterr().err.endswith(
+        "Labelling stopped.\nreview-bot pr: label: judged=1 skipped=0 remaining=1 files_skipped=1\n"
+    )
+
+
+def test_label_with_a_malformed_labels_file_exits_2_naming_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("review_bot.pr.cli.is_terminal", lambda _stream: True)
+    labels = tmp_path / "labels.jsonl"
+    labels.write_text("\n[]\n", encoding="ascii")
+
+    exit_code = label(tmp_path, labels)
+
+    assert exit_code == 2
+    assert "Line 2 of the labels file" in capsys.readouterr().err
+
+
+def test_label_interrupted_while_loading_reports_stops_cleanly_and_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("review_bot.pr.cli.is_terminal", lambda _stream: True)
+
+    def interrupted(_directory: Path, _pattern: str) -> Iterator[Path]:
+        raise KeyboardInterrupt
+        yield  # pragma: no cover - makes this a generator, like rglob
+
+    monkeypatch.setattr(Path, "rglob", interrupted)
+    labels = tmp_path / "labels.jsonl"
+
+    exit_code = label(tmp_path, labels)
+
+    assert exit_code == 0
+    assert capsys.readouterr().err == "Labelling stopped.\n"
+    assert not labels.exists()

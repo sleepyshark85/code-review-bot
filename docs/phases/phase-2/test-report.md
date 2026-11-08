@@ -203,3 +203,63 @@ None.
 ### Coverage
 
 The slice changes no module in `src/` except the `run --mode` flag, which the developer's unit tests cover. This file makes one in-process CLI call. The tester ran only this file, so coverage wasn't measured.
+
+## P2-S4: Judge would-be comments from shadow reports, and keep the labels
+
+Spec: [p2-s4-label-shadow-findings.md](slices/p2-s4-label-shadow-findings.md). Tests: [`tests/integration/test_p2_s4_label_shadow_findings.py`](../../../tests/integration/test_p2_s4_label_shadow_findings.py), 47 cases. They were written from the spec, design.md ("How the gate is evidenced", `shadow/v1`) and ADR 0011, before the developer's code was read. They were then tightened to the exact texts the main session pinned: the description line, the prompts, `Labelling stopped.`, the counts line, the skip lines and the two exit-2 errors. They ran against the developer's uncommitted work (base `fb9f525`), including the `run_id` dedupe.
+
+**Status: AC1 to AC13 pass. All 47 cases pass, from this file alone, on Windows. No AC violations found.**
+
+### Seam and set-up
+
+- **Seam:** `review_bot.pr.cli.main(["label", "--reports", DIR, "--labels", FILE])`, in process. `sys.stdin`, `sys.stdout` and `sys.stderr` are P1-S12's simulated terminals (`FakeStream`). An answer can also be a callable, run at the moment of its read, so a test can look at `FILE` before the next question (AC3, AC4). Each segment must hold exactly one description line, `Would-be comment i of n: repo#pr file:line [severity] source S, rule R, in k report(s): body`, which the tests split into fields. The end-of-session line is matched exactly: `review-bot pr: label: judged=J skipped=S remaining=R files_skipped=F`.
+- **Input reports are built by `run`**, with a scripted `MockProvider`, over a real git repository in `tmp_path`. The repository has a base, a head with K1 to K3 on lines 1 to 3 and two identical lines on 4 and 6, and a second push that inserts one line on top. The PR number is set in the event.
+- **Reports are edited after `run` writes them only when a criterion needs a value no command writes yet.** That means `mode` `comment` (S5), `origin` `backfill` (S13), outcome `failed` with entries still present, an `action` of `keep` or `update`, a fingerprint that differs for one key, or a hostile `body` or `file`.
+- **A question is identified by its body, not its position.** The stderr text written since the previous stdin read is that question's segment, and the rationale word (such as `K1r3`) says which would-be comment it is.
+- **"Latest by `finished_at`"** is separated from file order: the oldest report sits at the deepest, last-sorting path and has the newest modification time.
+
+### Criteria
+
+Test names drop the `test_p2_s4_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_three_reports_ask_about_k1_k2_k3_each_once`: three reads, each key's latest body in exactly one segment, with one report at `DIR`'s top and one three levels down. `ac1_each_question_shows_the_latest_reports_fields`: repo and PR, `file:line`, severity, source and rule part, all from the latest report; older bodies never shown. `ac1_each_question_shows_how_many_reports_had_it` (3, 2, 1, with `report` singular for 1). `ac1_a_report_downloaded_twice_counts_once`: the same `shadow.json` in two folders is one report | pass (4) |
+| AC2 | `ac2_a_reworded_entry_on_a_shifted_line_is_one_would_be_comment`: the second push moves K1 down a line and rewords it; one question shows the new line. `ac2_a_different_fingerprint_for_one_key_is_one_would_be_comment`: the record holds the latest fingerprint. `ac2_two_identical_lines_are_two_would_be_comments_indexed_in_line_order`: index 0 is line 4 and index 1 is line 6, by their fingerprints, although the mock lists line 6 first | pass (3) |
+| AC3 | `ac3_accept_appends_one_shadow_accept_line_before_the_next_question`: one line already exists at the second read. `ac3_a_new_session_appends_to_the_existing_file`: the old bytes are kept as a prefix | pass (2) |
+| AC4 | `ac4_reject_asks_for_a_reason_and_records_it` ×4 (`w`, `n`, `l`, `d`): the reason prompt is shown exactly as specified. `ac4_any_other_reason_answer_asks_again`: `x` and an empty line ask again, and nothing is written before a valid reason | pass (5) |
+| AC5 | `ac5_skip_writes_nothing_and_asks_again_next_session` | pass |
+| AC6 | `ac6_a_labelled_would_be_comment_is_not_asked_again`: a newer report re-lists K1, and only K2 is asked. `ac6_the_same_key_on_another_pr_is_asked_about`: PR 8, same anchor | pass (2) |
+| AC7 | `ac7_excluded_reports_and_entries_contribute_nothing` ×4 (`mode` `comment`, outcome `failed`, action `keep`, action `update`). For an excluded report, K1 shows the older report's body and a count of 1. `ac7_backfill_reports_count_like_event_reports` | pass (5) |
+| AC8 | `ac8_stopping_part_way_keeps_the_lines_and_exits_0` ×2 (end of input, Ctrl+C): exit 0, no traceback, one record kept, `Labelling stopped.`, then `judged=1 skipped=0 remaining=2 files_skipped=0`. `ac8_a_finished_session_shows_its_counts` (`judged=2 skipped=1 remaining=0`, no stop message). `ac8_ctrl_c_at_the_reason_prompt_writes_nothing_for_it` | pass (4) |
+| AC9 | `ac9_without_a_terminal_exits_2_naming_label` ×3 (stdin, stderr, neither): exactly the pinned line, `review-bot: error: label needs a terminal: …`, within 5 s, nothing read, `FILE` not created. `ac9_stdin_from_the_null_device_exits_2` (P1-S12's console check on Windows) | pass (4) |
+| AC10 | `ac10_an_accept_record_has_exactly_the_keys_and_the_latest_entrys_values`: every value is pinned, including `run_id`, `model` and `prompt_version` from the latest report, and `recorded_at` in UTC and within the run. `ac10_records_hold_no_body_or_rationale`: no rationale word, no body and no reaction text in `FILE`; a reject record has its reason | pass (2) |
+| AC11 | `ac11_each_bad_file_is_skipped_with_one_line_naming_it`: not JSON, another schema, over 10 MiB (a valid report padded with whitespace, whose key is never asked about), 200,000-deep nesting, binary bytes, and `comments` not a list. One line each, `review-bot pr: skipped <path>: <problem>`, with the problem pinned per file (`not JSON`, `not a shadow/v1 report (…)` or `over 10000000 bytes`). No traceback, within 60 s, and the good report is still asked about. `ac11_the_count_of_skipped_files_is_shown`: `files_skipped=6`. `ac11_a_report_of_exactly_10_000_000_bytes_is_read` | pass (3) |
+| AC12 | `ac12_a_malformed_labels_line_exits_2_naming_it` ×3 (not JSON, missing keys, not an object, each on line 2 after a valid line 1): exit 2 with `Line 2 of the labels file --labels <path> isn't a feedback/v1 record (…). Fix or remove that line, then run label again.`, no prompt, nothing read, `FILE` byte-identical | pass (3) |
+| AC13 | `ac13_a_hostile_rationale_shows_no_raw_control_characters`, through `run`. `ac13_limits_a_tampered_body_shows_no_raw_control_characters` ×6 (CSI with a newline, OSC with BEL, C1 CSI, carriage return, U+2028, NUL) written straight into the report's `body`; the whole body stays on the description line. `ac13_limits_a_tampered_path_shows_no_raw_control_characters` | pass (8) |
+| Limits | `limits_twenty_thousand_entries_for_one_key_are_read_within_the_bound`: 20,000 entries under one key in one report, so 20,000 would-be comments; within 60 s, `remaining 20000` | pass |
+
+### Failures
+
+None at the end. Three were bugs in the tests, fixed before this report:
+- the labels file was put in a directory that didn't exist, and the spec doesn't promise to create one;
+- one test looked for the wrong rationale word;
+- one test's count pattern didn't match `files_skipped=6`.
+
+### Readings for the designer
+
+1. **"10 MB" is read as 10,000,000 bytes** by the implementation (`over 10000000 bytes`). The tests accept either reading: exactly 10,000,000 bytes must be read, and over 10 MiB must be skipped. The size between the two isn't pinned.
+2. **Resolved in review round 1: the README now defines `remaining` as "not reached this session".** `remaining` (AC8) excludes would-be comments skipped this session. After `a`, `s`, `r w` on three, the line reads `judged=2 skipped=1 remaining=0`. The main session pinned this, and the tests now assert it. The spec doesn't define `remaining`, though. Since a skip is asked about again next session (AC5), a user could read `remaining=0` as "nothing left to judge". Consider defining it in the spec's Interfaces.
+3. **Local reports** (`origin` `local`, `pr` null) contribute nothing, according to the main session ("`pr` is set"). AC7 doesn't list that case, so it isn't tested. Consider adding it to AC7.
+4. **Every `*.json` file under `DIR` is read**, according to the main session, not only `shadow.json` as AC1 words it. An unrelated JSON file in a download folder, such as an event payload, would be reported as a skipped file and counted in `files_skipped`. The tests use only `shadow.json` names, so they don't pin this either way.
+5. **A missing parent directory for `--labels`** exits 2 before any report is read (changed in review round 1): `The directory of the labels file --labels <path> doesn't exist. Create it, or pass a file in a directory that exists.` This isn't in the spec; it is a usage error.
+6. **The question shows the body on one line**, with its newlines as literal `\n`. That meets AC13 and P1-S12 AC9's "one line", but long bodies are hard to read. This is a usability note, not a failure.
+
+### Gaps
+
+- **Ctrl+C while reports load** (the developer's second late change) has no test here. Raising `KeyboardInterrupt` part-way through loading needs a hook inside `label`'s file reading, which this suite deliberately doesn't patch. AC8's "part-way" is tested at the verdict and reason prompts. The developer's unit tests should cover the loading case.
+- **The real-terminal path** (`console.read_answer` on a real console) runs only through simulated streams, as in P1-S12.
+
+### Coverage
+
+From this file alone, with `--cov=review_bot.pr`: `pr/feedback.py` 97%, `pr/label.py` 91%, `pr/cli.py` 79%, measured before review round 1 moved the reading model and unit rule into `pr/units.py` (whose unit tests are in `tests/unit/test_pr_units.py`) (`cli.py` also holds `shadow` and `run`). The developer's unit tests (`tests/unit/test_pr_label.py`, `test_pr_feedback.py`) cover the rest. The full suite's coverage wasn't measured here, because the tester ran only this file.
