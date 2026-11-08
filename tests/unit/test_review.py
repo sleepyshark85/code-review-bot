@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from audit_records import data_of, events, read_records
 from diff_samples import MINIMAL_DIFF, section
+from git_samples import commit, init_repo
 
 from review_bot.audit import AuditLog
+from review_bot.context.tools import RepoRef
 from review_bot.errors import (
     DiffNotParsableError,
     DiffTooLargeError,
@@ -19,13 +21,15 @@ from review_bot.errors import (
 )
 from review_bot.findings import Category, Finding, Severity, Source
 from review_bot.fingerprint import fingerprint_for
-from review_bot.prompt import PROMPT_VERSION
+from review_bot.git import GitRepo
+from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
-from review_bot.review import run_pipeline
+from review_bot.review import ReviewContext, run_pipeline
 from review_bot.settings import Settings
 
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
+UNIQUE_TEXT = "unique-text-4f1c"
 
 
 def run(
@@ -559,3 +563,117 @@ def test_run_pipeline_over_the_review_byte_cap_records_the_skip_and_calls_no_pro
         review_with_cap(tmp_path, code, 1_000)
 
     assert data_of(tmp_path / "audit.jsonl", "agent.skipped") == {"reason": "too_large"}
+
+
+def context_repo(tmp_path: Path) -> ReviewContext:
+    """A commit holding `a.py`, which `MINIMAL_DIFF` doesn't change."""
+    repo = init_repo(tmp_path / "repo")
+    sha = commit(repo, {"a.py": f"{UNIQUE_TEXT}\n"})
+    return ReviewContext(repo=RepoRef(git=GitRepo(repo, timeout_s=60), commit=sha))
+
+
+def run_with_context(
+    tmp_path: Path, provider: MockProvider, context: ReviewContext, **settings: int
+) -> PipelineResult:
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 9, tzinfo=UTC))
+    diff = write_diff(tmp_path, MINIMAL_DIFF)
+    return asyncio.run(
+        run_pipeline(diff, Settings(provider="mock", **settings), provider, audit, context=context)
+    )
+
+
+def test_run_pipeline_with_context_sends_the_context_prompt_and_tools(tmp_path: Path) -> None:
+    provider = MockProvider(findings=[], tool_calls=[("read", {"path": "a.py"})])
+
+    result = run_with_context(tmp_path, provider, context_repo(tmp_path))
+
+    [request] = provider.requests
+    assert request.tools is not None
+    assert [definition.name for definition in request.tools.definitions] == [
+        "read",
+        "grep",
+        "glob",
+    ]
+    assert f"1\t{UNIQUE_TEXT}" in provider.tool_results[0]
+    assert result.prompt_version == CONTEXT_PROMPT_VERSION
+    assert [call.tool for call in result.ledger] == ["read"]
+
+
+def test_run_pipeline_with_context_names_the_commit_and_records_the_prompt_version(
+    tmp_path: Path,
+) -> None:
+    context = context_repo(tmp_path)
+
+    result = run_with_context(tmp_path, MockProvider(findings=[]), context)
+
+    assert result.context_commit == context.repo.commit
+    assert data_of(tmp_path / "audit.jsonl", "run.start")["prompt_version"] == "p3-v1"
+
+
+def test_run_pipeline_with_context_caps_tool_calls_from_the_settings(tmp_path: Path) -> None:
+    provider = MockProvider(findings=[], tool_calls=[("glob", {"pattern": "*"})] * 2)
+
+    result = run_with_context(tmp_path, provider, context_repo(tmp_path), max_tool_calls=1)
+
+    assert [call.reason for call in result.ledger] == [None, "call_limit"]
+
+
+def test_run_pipeline_records_each_tool_call_without_its_arguments_or_result(
+    tmp_path: Path,
+) -> None:
+    calls = [("read", {"path": "a.py"}), ("grep", {"literal": UNIQUE_TEXT}), ("nope", {})]
+    provider = MockProvider(findings=[], tool_calls=calls)
+
+    run_with_context(tmp_path, provider, context_repo(tmp_path))
+
+    log = tmp_path / "audit.jsonl"
+    records = [r["data"] for r in read_records(log) if r["stage"] == "context"]
+    assert [(r["tool"], r["outcome"], r["reason"]) for r in records] == [
+        ("read", "ok", None),
+        ("grep", "ok", None),
+        (None, "refused", "unknown_tool"),
+    ]
+    assert records[0]["spans"] == [{"path": "a.py", "first_line": 1, "last_line": 1}]
+    assert records[0]["spans_total"] == 1
+    assert all(len(r["input_sha256"]) == 64 and r["result_bytes"] > 0 for r in records)
+    assert UNIQUE_TEXT not in log.read_text(encoding="ascii")
+    assert events(log)[-1] == "context.tool_call"
+
+
+def test_run_pipeline_records_tool_calls_even_when_the_provider_then_fails(
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider(
+        error=ProviderError(ErrorCategory.TRANSIENT, "x"), tool_calls=[("glob", {"pattern": "*"})]
+    )
+
+    with pytest.raises(ProviderError):
+        run_with_context(tmp_path, provider, context_repo(tmp_path))
+
+    assert "context.tool_call" in events(tmp_path / "audit.jsonl")
+
+
+def test_run_pipeline_with_every_file_skipped_still_names_the_context_commit(
+    tmp_path: Path,
+) -> None:
+    context = context_repo(tmp_path)
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 9, tzinfo=UTC))
+    diff = write_diff(tmp_path, section("package-lock.json"))
+    settings = Settings(provider="mock")
+
+    result = asyncio.run(run_pipeline(diff, settings, MockProvider(), audit, context=context))
+
+    assert not result.model_called
+    assert result.context_commit == context.repo.commit
+    assert result.prompt_version == CONTEXT_PROMPT_VERSION
+
+
+def test_run_pipeline_without_context_sends_no_tools(tmp_path: Path) -> None:
+    provider = MockProvider(findings=[], tool_calls=[("read", {"path": "a.py"})])
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), tmp_path / "audit.jsonl", provider)
+
+    assert provider.requests[0].tools is None
+    assert result.context_commit is None
+    assert result.ledger == ()
+    assert result.prompt_version == PROMPT_VERSION

@@ -13,10 +13,12 @@ from typing import TextIO, cast, override
 import pytest
 from audit_records import data_of, events, read_records
 from diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIFF, section
+from git_samples import commit, git, init_repo
 
 from review_bot.cli import build_provider, main, parse_args
-from review_bot.errors import ConfigError, ErrorCategory, InputError, ProviderError
+from review_bot.errors import ConfigError, ErrorCategory, GitError, InputError, ProviderError
 from review_bot.findings import Finding, Severity
+from review_bot.git import GitRepo
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
@@ -902,3 +904,136 @@ def test_main_removes_github_token_from_the_environment_before_the_provider(
 
     assert provider.saw_token == [False]
     assert "GITHUB_TOKEN" not in os.environ
+
+
+@pytest.fixture
+def context_repo(tmp_path: Path) -> Path:
+    repo = init_repo(tmp_path / "repo")
+    commit(repo, {"pkg/a.py": "x\n"})
+    return repo
+
+
+def test_main_in_context_mode_appends_tool_calls_and_names_the_context_prompt(
+    diff_path: Path,
+    context_repo: Path,
+    audit_log_in_tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = MockProvider(findings=[], tool_calls=[("glob", {"pattern": "*"})] * 2)
+
+    main(
+        [str(diff_path), "--provider", "mock", "--context-repo", str(context_repo)],
+        provider=provider,
+    )
+
+    summary = capsys.readouterr().err.splitlines()[-1]
+    assert " prompt=p3-v1 " in summary
+    assert summary.endswith(" tool_calls=2")
+
+
+def test_main_in_diff_mode_leaves_tool_calls_out_of_the_summary(
+    diff_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main([str(diff_path), "--provider", "mock"], provider=MockProvider(findings=[]))
+
+    summary = capsys.readouterr().err.splitlines()[-1]
+    assert f" prompt={PROMPT_VERSION} " in summary
+    assert "tool_calls" not in summary
+
+
+def test_main_reads_the_whole_repository_from_a_subdirectory_of_it(
+    diff_path: Path, context_repo: Path, audit_log_in_tmp_path: Path
+) -> None:
+    provider = MockProvider(findings=[], tool_calls=[("read", {"path": "pkg/a.py"})])
+
+    main(
+        [str(diff_path), "--provider", "mock", "--context-repo", str(context_repo / "pkg")],
+        provider=provider,
+    )
+
+    assert "1\tx" in provider.tool_results[0]
+
+
+def test_main_with_context_rev_records_its_commit(
+    diff_path: Path, context_repo: Path, audit_log_in_tmp_path: Path
+) -> None:
+    older = git(context_repo, "rev-parse", "HEAD")
+    commit(context_repo, {"pkg/a.py": "y\n"})
+    provider = MockProvider(findings=[], tool_calls=[("read", {"path": "pkg/a.py"})])
+
+    main(
+        [
+            str(diff_path),
+            "--provider",
+            "mock",
+            "--context-repo",
+            str(context_repo),
+            "--context-rev",
+            older,
+        ],
+        provider=provider,
+    )
+
+    assert "1\tx" in provider.tool_results[0]
+
+
+def test_main_in_context_mode_with_the_claude_provider_exits_2_before_any_call(
+    diff_path: Path,
+    context_repo: Path,
+    audit_log_in_tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main([str(diff_path), "--context-repo", str(context_repo)]) == 2
+
+    assert "--context-repo needs --provider mock" in capsys.readouterr().err
+    assert not audit_log_in_tmp_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("extra", "named"),
+    [
+        (["--context-rev", "main"], "--context-rev"),
+        (["--context-repo", "{tmp}"], "--context-repo"),
+        (["--context-repo", "{repo}", "--context-rev", "no-such-branch"], "--context-rev"),
+    ],
+)
+@pytest.mark.usefixtures("audit_log_in_tmp_path")
+def test_main_with_a_bad_context_flag_exits_2_naming_it_before_any_call(
+    diff_path: Path,
+    context_repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: list[str],
+    named: str,
+) -> None:
+    not_a_repo = context_repo.parent / "plain"
+    not_a_repo.mkdir()
+    args = [arg.format(tmp=not_a_repo, repo=context_repo) for arg in extra]
+    provider = MockProvider(findings=[])
+
+    assert main([str(diff_path), "--provider", "mock", *args], provider=provider) == 2
+
+    assert f"review-bot: error: {named}" in capsys.readouterr().err
+    assert provider.requests == []
+
+
+@pytest.mark.usefixtures("audit_log_in_tmp_path")
+def test_main_keeps_gits_own_message_when_git_cant_start_for_the_context_repo(
+    diff_path: Path,
+    context_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def git_missing(_self: GitRepo) -> None:
+        raise GitError("Couldn't run git: not found. Install git and check that it is on PATH.")
+
+    monkeypatch.setattr(GitRepo, "top_level", git_missing)
+    provider = MockProvider(findings=[])
+
+    exit_code = main(
+        [str(diff_path), "--provider", "mock", "--context-repo", str(context_repo)],
+        provider=provider,
+    )
+
+    assert exit_code == 19
+    assert "Install git" in capsys.readouterr().err
+    assert provider.requests == []

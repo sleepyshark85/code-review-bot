@@ -6,8 +6,8 @@ import string
 from collections.abc import Sequence
 from typing import Final
 
+from review_bot.context.ledger import ToolOutcome, merged_spans_by_file
 from review_bot.findings import Finding, ReviewedFinding, Severity
-from review_bot.prompt import PROMPT_VERSION
 from review_bot.report import (
     PipelineResult,
     TriageDecision,
@@ -30,6 +30,7 @@ __all__ = [
 
 _REPORT_SCHEMA: Final = "report/v1"
 _MARKDOWN_HEADING: Final = "## Review"
+_MAX_FILES_READ: Final = 200  # Phase 3 design, Report keys
 # CommonMark's ASCII punctuation, each of which a backslash makes literal.
 _MARKDOWN_PUNCTUATION: Final = frozenset(string.punctuation)
 _BACKTICK_RUN: Final = re.compile("`+")
@@ -106,7 +107,7 @@ def report_document(
         "run_id": run_id,
         "provider": settings.provider,
         "model": settings.model,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": result.prompt_version,
         "threshold": settings.threshold,
         "findings": findings,
         "counts": {
@@ -125,6 +126,29 @@ def report_document(
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
         },
+        "mode": "diff" if result.context_commit is None else "context",
+        "context": _context_json(result),
+    }
+
+
+def _context_json(result: PipelineResult) -> dict[str, object] | None:
+    """The tools' commit and what they returned, or None in diff mode."""
+    if result.context_commit is None:
+        return None
+    ledger = result.ledger
+    by_file = merged_spans_by_file(span for call in ledger for span in call.spans)
+    return {
+        "commit": result.context_commit,
+        "tool_calls": len(ledger),
+        "refused": sum(call.outcome is ToolOutcome.REFUSED for call in ledger),
+        "result_bytes": sum(call.result_bytes for call in ledger),
+        "files_read": [
+            {
+                "path": path_fields(path)["file"],
+                "spans": [[span.first_line, span.last_line] for span in spans],
+            }
+            for path, spans in list(by_file.items())[:_MAX_FILES_READ]
+        ],
     }
 
 

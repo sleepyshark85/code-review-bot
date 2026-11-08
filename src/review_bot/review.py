@@ -8,6 +8,7 @@ import hashlib
 import os
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Final
 
 from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diagnostics
 from review_bot.console import write_diagnostic
+from review_bot.context.ledger import LineSpan, ToolCall
+from review_bot.context.tools import RepoRef, RepoTools, ToolCaps
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import DecodedPath, ParsedDiff, parse_diff
 from review_bot.errors import (
@@ -24,18 +27,24 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.policy import Decision, decide
-from review_bot.prompt import PROMPT_VERSION, build_request
-from review_bot.providers.base import LLMProvider, ReviewResponse, TokenUsage
+from review_bot.prompt import (
+    CONTEXT_PROMPT_VERSION,
+    PROMPT_VERSION,
+    build_context_request,
+    build_request,
+)
+from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.report import PipelineResult, section_path
 from review_bot.rules import RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
-__all__ = ["review_diff", "run_pipeline"]
+__all__ = ["ReviewContext", "review_diff", "run_pipeline"]
 
 _MAX_NAMED_SECRETS: Final = 5
-# Caps each list in the parse record, so its size doesn't grow with the diff.
+# Caps each list in the parse record and each tool call's spans, so no record grows with the
+# diff or the repository.
 _MAX_LISTED_IN_AUDIT: Final = 50
 
 
@@ -58,8 +67,20 @@ class _PolicyOutcome(StrEnum):
     BELOW_THRESHOLD = "below_threshold"
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewContext:
+    """What a context review may look up: the commit its tools read."""
+
+    repo: RepoRef
+
+
 async def run_pipeline(
-    diff_path: Path, settings: Settings, provider: LLMProvider, audit: AuditLog
+    diff_path: Path,
+    settings: Settings,
+    provider: LLMProvider,
+    audit: AuditLog,
+    *,
+    context: ReviewContext | None = None,
 ) -> PipelineResult:
     """Read the diff at ``diff_path``, then review it as ``review_diff`` does.
 
@@ -69,10 +90,11 @@ async def run_pipeline(
         AuditError: If a record can't be written.
     """
     diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
-    return await review_diff(diff, settings, provider, audit, name=redact(str(diff_path)))
+    name = redact(str(diff_path))
+    return await review_diff(diff, settings, provider, audit, name=name, context=context)
 
 
-async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
+async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-only
     diff: str,
     settings: Settings,
     provider: LLMProvider,
@@ -80,6 +102,7 @@ async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
     *,
     name: str,
     exclude: Sequence[str] = (),
+    context: ReviewContext | None = None,
 ) -> PipelineResult:
     """Review ``diff`` with ``provider``, sending only the files not skipped.
 
@@ -95,14 +118,19 @@ async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
         audit: Where each stage's decision goes.
         name: How messages name the diff; it must already be redacted.
         exclude: Globs whose matching files are skipped too, as ``parse_diff`` matches them.
+        context: The commit the model's tools read, within the settings' tool caps, with the
+            context prompt; None reviews in diff mode, with no tools.
 
     Raises:
         InputError: If the diff isn't a diff, holds a possible secret, or its files to review
-            are over ``max_review_bytes``; the provider is not called.
+            are over ``max_review_bytes``; the provider is not called. ``GitError`` if git
+            fails during a tool call.
         ProviderError: If the provider fails.
         AuditError: If a record can't be written.
     """
-    audit.record(Stage.RUN, "start", _start_data(settings, diff))
+    prompt_version = PROMPT_VERSION if context is None else CONTEXT_PROMPT_VERSION
+    context_commit = None if context is None else context.repo.commit
+    audit.record(Stage.RUN, "start", _start_data(settings, diff, prompt_version))
     # Before the parser, so nothing the parser misreads or drops can carry a secret past the scan.
     _stop_on_secrets(scan_secrets(diff), audit)
     try:
@@ -127,10 +155,22 @@ async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
             skipped,
             parsed=parsed,
             model_called=False,
+            prompt_version=prompt_version,
+            context_commit=context_commit,
         )
 
     _stop_if_too_large_to_review(parsed, settings, name, audit)
-    response = await _call_provider(provider, parsed, settings, diff, audit)
+    tools = None if context is None else RepoTools(context.repo, caps=_tool_caps(settings))
+    if tools is None:
+        request = build_request(parsed.reviewable_text, model=settings.model)
+    else:
+        request = build_context_request(parsed.reviewable_text, model=settings.model, tools=tools)
+    try:
+        response = await _call_provider(provider, request, diff, audit)
+    finally:
+        # Every call is recorded, even when the review then fails.
+        ledger = () if tools is None else tools.ledger
+        _record_tool_calls(ledger, audit)
     # The model proposes, code disposes: nothing it returns is reported before both checks.
     verification = verify_findings(response.findings, rule_result.findings, parsed)
     _record_verification(verification, audit)
@@ -144,13 +184,24 @@ async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
         parsed=parsed,
         model_called=True,
         warnings=response.warnings,
+        prompt_version=prompt_version,
+        context_commit=context_commit,
+        ledger=ledger,
+    )
+
+
+def _tool_caps(settings: Settings) -> ToolCaps:
+    return ToolCaps(
+        max_calls=settings.max_tool_calls,
+        max_result_bytes=settings.max_tool_result_bytes,
+        max_total_bytes=settings.max_tool_total_bytes,
     )
 
 
 async def _call_provider(
-    provider: LLMProvider, parsed: ParsedDiff, settings: Settings, diff: str, audit: AuditLog
+    provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog
 ) -> ReviewResponse:
-    """Send the reviewable text, record the call, and write and record its warnings.
+    """Send ``request``, record the call, and write and record its warnings.
 
     Raises:
         ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
@@ -158,9 +209,7 @@ async def _call_provider(
     """
     started = time.perf_counter()
     try:
-        response = await provider.review(
-            build_request(parsed.reviewable_text, model=settings.model)
-        )
+        response = await provider.review(request)
     except ProviderError as exc:
         diagnostics = _scrubbed(exc.diagnostics, diff)
         audit.record(Stage.AGENT, "failed", {"category": exc.category, "diagnostics": diagnostics})
@@ -199,14 +248,14 @@ def _stop_if_too_large_to_review(
     )
 
 
-def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
+def _start_data(settings: Settings, diff: str, prompt_version: str) -> dict[str, JsonValue]:
     # The diff's reader decoded it as strict UTF-8, so encoding gives back its exact bytes.
     diff_bytes = diff.encode("utf-8")
     return {
         "version": version("review-bot"),
         "provider": settings.provider,
         "model": settings.model,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
         "threshold": settings.threshold,
         "format": settings.format,
         "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
@@ -288,6 +337,34 @@ def _rules_data(result: RuleResult) -> dict[str, JsonValue]:
             for reviewed in result.findings
         ],
         "unanchored_hits": result.unanchored_hits,
+    }
+
+
+def _record_tool_calls(ledger: Iterable[ToolCall], audit: AuditLog) -> None:
+    """Record each tool call: what it returned and how much, never its arguments or result."""
+    for call in ledger:
+        spans = [_span_data(span) for span in call.spans[:_MAX_LISTED_IN_AUDIT]]
+        audit.record(
+            Stage.CONTEXT,
+            "tool_call",
+            {
+                "tool": call.tool,
+                "outcome": call.outcome,
+                "reason": call.reason,
+                "spans": spans,
+                "spans_total": len(call.spans),
+                "result_bytes": call.result_bytes,
+                "input_sha256": call.input_sha256,
+            },
+        )
+
+
+def _span_data(span: LineSpan) -> JsonValue:
+    """A span's path, as ``file_fields`` writes it, and its first and last lines."""
+    return {
+        "path": file_fields(span.path)["file"],
+        "first_line": span.first_line,
+        "last_line": span.last_line,
     }
 
 

@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,7 @@ from review_bot.errors import (
     GitError,
     NotARegularFileError,
 )
-from review_bot.pr.git import GitRepo
+from review_bot.git import GIT_FATAL_EXIT_CODE, GitRepo, TreeEntry
 
 LIMIT = 100_000
 
@@ -267,3 +269,169 @@ def test_read_file_refuses_a_submodule(repo: Path) -> None:
         GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=LIMIT)
 
     assert caught.value.kind == "submodule"
+
+
+def test_list_files_lists_entries_at_any_depth_with_mode_and_size(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "abc\n", "pkg/b.py": "x\n"})
+
+    entries = GitRepo(repo, timeout_s=60).list_files(sha, max_entries=10)
+
+    assert entries == (TreeEntry("a.py", "100644", 4), TreeEntry("pkg/b.py", "100644", 2))
+
+
+def test_list_files_gives_a_submodule_no_size(repo: Path) -> None:
+    other = commit(repo, {"app.py": "x\n"})
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{other},sub")
+    git(repo, "commit", "-q", "-m", "submodule")
+
+    entries = GitRepo(repo, timeout_s=60).list_files(git(repo, "rev-parse", "HEAD"), max_entries=10)
+
+    assert TreeEntry("sub", "160000", None) in entries
+
+
+def test_list_files_over_max_entries_is_rejected(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "", "b.py": "", "c.py": ""})
+
+    with pytest.raises(GitError, match="more than 2 files"):
+        GitRepo(repo, timeout_s=60).list_files(sha, max_entries=2)
+
+
+def test_grep_returns_null_separated_matches_by_path_then_line(repo: Path) -> None:
+    sha = commit(repo, {"b.py": "hit\n", "a.py": "miss\nHIT here\n"})
+
+    output = GitRepo(repo, timeout_s=60).grep(sha, "hit", ignore_case=True, max_bytes=LIMIT)
+
+    assert output == f"{sha}:a.py\x002\x00HIT here\n{sha}:b.py\x001\x00hit\n".encode()
+
+
+def test_grep_with_no_match_returns_nothing(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+
+    assert GitRepo(repo, timeout_s=60).grep(sha, "y", ignore_case=False, max_bytes=LIMIT) == b""
+
+
+def test_grep_reads_only_one_byte_past_its_cap(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "hit\n" * 1000})
+
+    output = GitRepo(repo, timeout_s=60).grep(sha, "hit", ignore_case=False, max_bytes=100)
+
+    assert len(output) == 101
+
+
+def test_grep_searches_an_option_like_literal_as_text(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x --no-index y\n"})
+
+    output = GitRepo(repo, timeout_s=60).grep(sha, "--no-index", ignore_case=False, max_bytes=LIMIT)
+
+    assert output.endswith(b"x --no-index y\n")
+
+
+def test_resolve_commit_returns_the_sha_a_revision_names(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+
+    assert GitRepo(repo, timeout_s=60).resolve_commit("main") == sha
+
+
+@pytest.mark.parametrize("revision", ["no-such-branch", "-x", "--all"])
+def test_resolve_commit_of_no_commit_is_none(repo: Path, revision: str) -> None:
+    commit(repo, {"a.py": "x\n"})
+
+    assert GitRepo(repo, timeout_s=60).resolve_commit(revision) is None
+
+
+def test_resolve_commit_outside_a_repository_raises(tmp_path: Path) -> None:
+    with pytest.raises(GitError):
+        GitRepo(tmp_path, timeout_s=60).resolve_commit("HEAD")
+
+
+def test_top_level_of_a_subdirectory_is_the_working_tree_root(repo: Path) -> None:
+    commit(repo, {"pkg/a.py": "x\n"})
+
+    top = GitRepo(repo / "pkg", timeout_s=60).top_level()
+
+    assert top is not None
+    assert top.resolve() == repo.resolve()
+
+
+def test_top_level_outside_a_repository_is_none(tmp_path: Path) -> None:
+    assert GitRepo(tmp_path, timeout_s=60).top_level() is None
+
+
+def test_top_level_of_a_missing_directory_is_none(tmp_path: Path) -> None:
+    assert GitRepo(tmp_path / "missing", timeout_s=60).top_level() is None
+
+
+def test_git_errors_name_the_flag_that_gave_the_directory(tmp_path: Path) -> None:
+    with pytest.raises(GitError, match=r"in --context-repo .*Check that --context-repo is a git"):
+        GitRepo(tmp_path, timeout_s=60, flag="--context-repo").resolve_commit("HEAD")
+
+
+def test_a_failing_git_error_carries_gits_exit_code(tmp_path: Path) -> None:
+    with pytest.raises(GitError) as caught:
+        GitRepo(tmp_path, timeout_s=60).resolve_commit("HEAD")
+
+    assert caught.value.exit_code == GIT_FATAL_EXIT_CODE
+
+
+def test_a_missing_commit_is_named_with_the_flag(repo: Path) -> None:
+    commit(repo, {"a.py": "x\n"})
+
+    with pytest.raises(GitError, match=r"isn't in --context-repo .*Fetch it into the clone"):
+        GitRepo(repo, timeout_s=60, flag="--context-repo").read_file(
+            "c" * 40, "a.py", max_bytes=LIMIT
+        )
+
+
+class _ExpiredTimer:
+    """A timer that fires as soon as it starts: the timeout passes before git can finish.
+
+    A real timer of a microsecond can still lose to git, since Windows wakes timed waits only
+    every 15 ms or so.
+    """
+
+    def __init__(self, _interval_s: float, function: Callable[[], None]) -> None:
+        self._function = function
+
+    def start(self) -> None:
+        self._function()
+
+    def cancel(self) -> None:
+        pass
+
+
+@pytest.fixture
+def expired_timer(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The timer is the clock here: no real time passes.
+    monkeypatch.setattr(threading, "Timer", _ExpiredTimer)
+
+
+# On Windows a killed git exits 1, which grep and rev-parse would otherwise read as "nothing
+# found", hiding the timeout.
+@pytest.mark.usefixtures("expired_timer")
+def test_grep_that_times_out_raises_rather_than_finding_nothing(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "hit\n"})
+
+    with pytest.raises(GitError, match="took longer than"):
+        GitRepo(repo, timeout_s=60).grep(sha, "hit", ignore_case=False, max_bytes=LIMIT)
+
+
+@pytest.mark.usefixtures("expired_timer")
+def test_resolve_commit_that_times_out_raises_rather_than_finding_no_commit(repo: Path) -> None:
+    commit(repo, {"a.py": "x\n"})
+
+    with pytest.raises(GitError, match="took longer than"):
+        GitRepo(repo, timeout_s=60).resolve_commit("HEAD")
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [b"100644 blob abc\0", b"100644 blob abc 12 a.py\0", b"100644 blob abc big\ta.py\0"],
+)
+def test_list_files_rejects_a_listing_it_cant_read(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, listing: bytes
+) -> None:
+    # git's output is the edge here: no real ls-tree writes these records.
+    monkeypatch.setattr(GitRepo, "_read_output", lambda *_args, **_kwargs: listing)
+
+    with pytest.raises(GitError, match="can't be read"):
+        GitRepo(repo, timeout_s=60).list_files("c" * 40, max_entries=10)

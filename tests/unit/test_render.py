@@ -1,9 +1,11 @@
+import dataclasses
 import json
 
 import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.diff_parser import FileDiff, ParsedDiff, SkipReason
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
 from review_bot.policy import Decision
@@ -70,6 +72,7 @@ def pipeline_result(
         skipped_files,
         parsed=ParsedDiff(files=(), reviewable_text="", decoded_paths=()),
         model_called=True,
+        prompt_version=PROMPT_VERSION,
     )
 
 
@@ -161,6 +164,8 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         },
         "skipped_files": [],
         "usage": {"input_tokens": 12, "output_tokens": 3},
+        "mode": "diff",
+        "context": None,
     }
     assert list(json.loads(render(result))) == [
         "schema",
@@ -173,6 +178,8 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "counts",
         "skipped_files",
         "usage",
+        "mode",
+        "context",
     ]
 
 
@@ -640,3 +647,43 @@ def test_report_document_is_the_object_render_json_writes() -> None:
     settings = Settings(provider="mock")
 
     assert report_document(result, settings, "run-1") == json.loads(render(result))
+
+
+def test_render_json_in_context_mode_summarises_the_ledger() -> None:
+    def tool_call(outcome: ToolOutcome, spans: tuple[LineSpan, ...], size: int) -> ToolCall:
+        reason = RefusalReason.NOT_FOUND if outcome is ToolOutcome.REFUSED else None
+        return ToolCall(ToolName.READ, outcome, reason, spans, (), size, "0" * 64)
+
+    ledger = (
+        tool_call(ToolOutcome.OK, (LineSpan("b.py", 5, 9), LineSpan("a.py", 1, 2)), 100),
+        tool_call(ToolOutcome.REFUSED, (), 40),
+        tool_call(ToolOutcome.TRUNCATED, (LineSpan("b.py", 10, 12),), 60),
+    )
+    result = dataclasses.replace(
+        pipeline_result(), prompt_version="p3-v1", context_commit="c" * 40, ledger=ledger
+    )
+
+    document = json.loads(render(result))
+
+    assert document["mode"] == "context"
+    assert document["prompt_version"] == "p3-v1"
+    assert document["context"] == {
+        "commit": "c" * 40,
+        "tool_calls": 3,
+        "refused": 1,
+        "result_bytes": 200,
+        "files_read": [
+            {"path": "a.py", "spans": [[1, 2]]},
+            {"path": "b.py", "spans": [[5, 12]]},
+        ],
+    }
+
+
+def test_render_json_lists_at_most_200_files_read() -> None:
+    spans = tuple(LineSpan(f"f{number:03}.py", 1, 1) for number in range(201))
+    call = ToolCall(ToolName.GREP, ToolOutcome.OK, None, spans, (), 1, "0" * 64)
+    result = dataclasses.replace(pipeline_result(), context_commit="c" * 40, ledger=(call,))
+
+    files_read = json.loads(render(result))["context"]["files_read"]
+
+    assert [entry["path"] for entry in files_read] == [f"f{n:03}.py" for n in range(200)]

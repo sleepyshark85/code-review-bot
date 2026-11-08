@@ -16,6 +16,7 @@ from review_bot.console import (
     write_diagnostic,
     write_output,
 )
+from review_bot.context.tools import RepoRef
 from review_bot.diff_parser import FileDiff
 from review_bot.errors import (
     AuditError,
@@ -37,12 +38,12 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.findings import ReviewedFinding, Severity, Source
-from review_bot.prompt import PROMPT_VERSION
+from review_bot.git import GIT_TIMEOUT_S, GitRepo
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
-from review_bot.review import run_pipeline
+from review_bot.review import ReviewContext, run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings, take_github_token
 from review_bot.triage import TriageResult, run_triage
@@ -70,7 +71,8 @@ _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     DiffTooLargeError: 6,
     DiffNotParsableError: 15,
     SecretDetectedError: 16,
-    # Only ``python -m review_bot.pr`` raises these (Phase 2 design, Commands and exit codes).
+    # Only ``python -m review_bot.pr`` raises these (Phase 2 design, Commands and exit codes),
+    # and ``GitError`` too when git times out or can't start under ``--context-repo``.
     EventError: 19,
     GitError: 19,
     RepoConfigError: 2,
@@ -87,6 +89,7 @@ _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
 }
 
 _INTERNAL_ERROR_EXIT_CODE: Final = 14
+_CONTEXT_FLAG: Final = "--context-repo"
 _AUDIT_ERROR_EXIT_CODE: Final = 17
 # Only ``python -m review_bot.pr`` calls GitHub (Phase 2 design, Commands and exit codes).
 _GITHUB_ERROR_EXIT_CODE: Final = 18
@@ -182,8 +185,69 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
         action="store_true",
         help="ask on the terminal to accept or reject each reported finding",
     )
+    _add_context_arguments(parser)
     args = vars(parser.parse_args(argv))
     return Path(args.pop("diff_path")), load_settings(args)
+
+
+def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--context-repo",
+        help="a git repository the model may read, search and list at one commit (context mode)",
+    )
+    parser.add_argument(
+        "--context-rev", help="the commit of --context-repo the model reads (default: HEAD)"
+    )
+    parser.add_argument("--max-tool-calls", help="the most tool calls in a review (default: 12)")
+    parser.add_argument(
+        "--max-tool-result-bytes", help="the most bytes one tool call returns (default: 16000)"
+    )
+    parser.add_argument(
+        "--max-tool-total-bytes",
+        help="the most bytes all tool calls in a review return (default: 96000)",
+    )
+
+
+def _open_context(settings: Settings, provider: LLMProvider | None) -> ReviewContext | None:
+    """Resolve ``--context-repo`` and ``--context-rev`` to the commit the tools read.
+
+    Returns:
+        The context, or None in diff mode, when ``--context-repo`` isn't given.
+
+    Raises:
+        ConfigError: If ``--context-rev`` is given without ``--context-repo``, the directory
+            isn't in a git repository, the revision names no commit, or the run would build the
+            Claude provider, which can't drive the tools yet (P3-S3).
+        GitError: If git fails, times out or can't start.
+    """
+    if settings.context_repo is None:
+        if "context_rev" in settings.model_fields_set:
+            raise ConfigError(
+                "--context-rev (or REVIEW_BOT_CONTEXT_REV) needs --context-repo: pass the "
+                "repository too, or leave out the revision."
+            )
+        return None
+    if uses_own_claude(settings, provider):
+        raise ConfigError(
+            "--context-repo needs --provider mock for now: the Claude provider can't drive the "
+            "repository tools yet. Leave out --context-repo to review the diff alone."
+        )
+    shown_repo = redact(str(settings.context_repo))
+    directory = GitRepo(settings.context_repo, timeout_s=GIT_TIMEOUT_S, flag=_CONTEXT_FLAG)
+    top_level = directory.top_level()
+    if top_level is None:
+        raise ConfigError(
+            f"--context-repo {shown_repo} isn't in a git repository. Pass the directory of a "
+            "git clone."
+        )
+    git = GitRepo(top_level, timeout_s=GIT_TIMEOUT_S, flag=_CONTEXT_FLAG)
+    commit = git.resolve_commit(settings.context_rev)
+    if commit is None:
+        raise ConfigError(
+            f"--context-rev {settings.context_rev} names no commit in --context-repo "
+            f"{shown_repo}. Pass a branch, tag or SHA it holds."
+        )
+    return ReviewContext(repo=RepoRef(git=git, commit=commit))
 
 
 def build_provider(settings: Settings) -> LLMProvider:
@@ -216,12 +280,14 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
+        # Before the audit log, like any other bad argument: no provider is called.
+        context = _open_context(settings, provider)
         # Opened before the diff is read, so an untraceable run never reaches a provider.
         audit = AuditLog(settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
     try:
-        return _review(diff_path, settings, provider, audit)
+        return _review(diff_path, settings, provider, audit, context)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         exit_code = report_failure(exc)
         record_failed_end(audit, exit_code, exc)
@@ -275,9 +341,13 @@ def record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
 
 
 def _review(
-    diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
+    diff_path: Path,
+    settings: Settings,
+    provider: LLMProvider | None,
+    audit: AuditLog,
+    context: ReviewContext | None,
 ) -> int:
-    result = run_review(diff_path, settings, provider, audit)
+    result = run_review(diff_path, settings, provider, audit, context=context)
     # Before any output, so stdout holds only the report, written after the last decision.
     triage = None
     if settings.triage:
@@ -285,7 +355,7 @@ def _review(
             result.decision.reported, read_line=read_answer, write_line=write_diagnostic
         )
         # Before stdout, so a failure writing the report can't lose the decisions.
-        _record_labels(triage, settings, audit)
+        _record_labels(triage, settings, result.prompt_version, audit)
 
     # Stdout goes first, so a failure writing it leaves only the error line on stderr.
     output = _render_report(result, settings, audit.run_id, triage)
@@ -308,16 +378,23 @@ def _review(
 
 
 def run_review(
-    diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
+    diff_path: Path,
+    settings: Settings,
+    provider: LLMProvider | None,
+    audit: AuditLog,
+    *,
+    context: ReviewContext | None = None,
 ) -> PipelineResult:
     """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
+
+    ``context`` is the commit the model's tools read; None reviews in diff mode.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
             becomes one too, so it can't set the exit code itself.
     """
     selected_provider = build_provider(settings) if provider is None else provider
-    review = run_pipeline(diff_path, settings, selected_provider, audit)
+    review = run_pipeline(diff_path, settings, selected_provider, audit, context=context)
     if uses_own_claude(settings, provider):
         review = then_discard_unraisable(review)
     return run_to_completion(review)
@@ -346,7 +423,9 @@ def run_to_completion[T](review: Coroutine[object, object, T]) -> T:
         raise _ReviewAbortedError(exc) from exc
 
 
-def _record_labels(triage: TriageResult, settings: Settings, audit: AuditLog) -> None:
+def _record_labels(
+    triage: TriageResult, settings: Settings, prompt_version: str, audit: AuditLog
+) -> None:
     for label in triage.labels:
         audit.record(
             Stage.TRIAGE,
@@ -359,7 +438,7 @@ def _record_labels(triage: TriageResult, settings: Settings, audit: AuditLog) ->
                 "rationale_changed": label.rationale_changed,
                 "source": label.source,
                 "model": settings.model,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": prompt_version,
             },
         )
 
@@ -414,16 +493,18 @@ def _all_dropped_warning(dropped_count: int) -> str:
 
 
 def _summarise(result: PipelineResult, settings: Settings, run_id: str) -> str:
-    # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility).
+    # Phase 1 appends fields after Phase 0's, in the design's order (Compatibility), and
+    # context mode appends its own.
     verification = result.verification
     rule_count = sum(reviewed.source is Source.RULE for reviewed in verification.kept)
+    tool_calls = "" if result.context_commit is None else f" tool_calls={len(result.ledger)}"
     return (
-        f"provider={settings.provider} model={settings.model} prompt={PROMPT_VERSION} "
+        f"provider={settings.provider} model={settings.model} prompt={result.prompt_version} "
         f"input_tokens={result.usage.input_tokens} output_tokens={result.usage.output_tokens} "
         f"rule_findings={rule_count} dropped={len(verification.dropped)} "
         f"deduped={len(verification.deduped)} "
         f"skipped_files={len(result.skipped_files)} "
-        f"model_called={str(result.model_called).lower()} run_id={run_id}"
+        f"model_called={str(result.model_called).lower()} run_id={run_id}{tool_calls}"
     )
 
 

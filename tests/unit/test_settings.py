@@ -65,6 +65,13 @@ def test_load_settings_with_valid_flag_ignores_invalid_environment(
         ("max_diff_bytes", "1" + "0" * 30, "--max-diff-bytes"),
         ("max_review_bytes", "0", "--max-review-bytes"),
         ("max_output_tokens", "abc", "--max-output-tokens"),
+        ("max_tool_calls", "0", "--max-tool-calls"),
+        ("max_tool_calls", "31", "--max-tool-calls"),
+        ("max_tool_result_bytes", "999", "--max-tool-result-bytes"),
+        ("max_tool_result_bytes", "64001", "--max-tool-result-bytes"),
+        ("max_tool_total_bytes", "0", "--max-tool-total-bytes"),
+        ("max_tool_total_bytes", "400001", "--max-tool-total-bytes"),
+        ("context_rev", "", "--context-rev"),
     ],
 )
 def test_load_settings_with_invalid_flag_names_the_flag(field: str, value: str, flag: str) -> None:

@@ -1,6 +1,6 @@
 # P3-S1: Review a local diff with read-only repository tools, offline
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** none
 - **Touches:** `git` (moved from `pr.git`), `context` (`paths`, `tools`, `ledger`), `providers` (`base`, `mock`), `prompt`, `review`, `report`, `render`, `audit`, `settings`, `cli`
 
@@ -38,3 +38,11 @@ Tool arguments come from the model, so they're hostile: each is checked against 
 - **README (main session):** describe `--context-repo` and `--context-rev`. Reword Phase 3 at README.md:154 and :156: the tools are our own read-only `read`, `grep` and `glob` over a git commit ([ADR 0013](../../../adr/0013-read-only-repo-tools-over-a-commit.md)), and the context behind each finding is recorded by the tools, with hooks enforcing the allowlist ([ADR 0014](../../../adr/0014-tools-as-a-provider-neutral-executor.md)).
 - **The `pr.git` → `git` move is mechanical:** the module moves and imports change, with no behaviour change in the same commit; new methods come in separate commits.
 - git runs through `asyncio.to_thread` inside `RepoTools.call` (CONVENTIONS §10).
+- **Changed in build:**
+  - `read` also refuses `symlink`, `submodule` and `too_large` (a blob over 1 MB), since `GitRepo.read_file` already reports them and no S1 reason fits; S2 adds the rest of its reasons.
+  - `ToolCall.tool` is `ToolName | None`: an unknown tool's name is model text, so the ledger and audit keep null. `ToolDefinition.input_schema` is `Mapping[str, object]`, because `audit.JsonValue` would import `audit` into `providers.base` in a cycle. Each schema is generated from the strict pydantic model that validates the arguments.
+  - `--context-repo` may name a subdirectory: the tools read from the repository's top level, because `git grep` with no pathspec searches only below its working directory. The Claude provider is refused with exit 2 in context mode until S3. `GIT_TIMEOUT_S` (60 s) moved from `pr.cli` to `git`.
+  - `max_tool_total_bytes` counts the bytes of results that aren't refusals; `context.result_bytes` adds up every result, refusals included. The audit record adds `spans_total` next to the 50 spans it lists.
+  - After review round 1: `read` and `grep` strings that reach git (`path`, `literal`) refuse any control character as `invalid_arguments`, since git can't take a NUL. A git failure on a `read` path, such as `../x`, `/x` or `:(glob)**`, is refused `invalid_path`, S2's reason, so the review goes on. `GitRepo` names the flag that gave its directory in its messages. Under `--context-repo`, only "not in a git repository" exits 2; git that can't start or times out keeps its own message and exits 19.
+  - `context.tools` imports `report.path_fields` to C-quote non-UTF-8 paths. S2 moves the quoting helper into `context.paths` or a lower-level module.
+  - After review round 2: a `grep` literal may hold a tab, but no other control character, so no NUL or line break. `read` refuses `invalid_path` only when git rejects the path (exit 128, carried on `GitError.exit_code`); a timeout or a missing git still stops the review until S2 AC9 adds the `timeout` refusal. A timed-out git always raises, even when its killed exit code is one the command accepts.

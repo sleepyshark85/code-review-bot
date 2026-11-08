@@ -11,10 +11,10 @@ from git_samples import commit, git, init_repo
 from review_bot.audit import AuditLog
 from review_bot.errors import ErrorCategory, GitError, GitHubError, ProviderError
 from review_bot.findings import Finding
+from review_bot.git import GitRepo
 from review_bot.pr.comments import with_summary_marker
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeGitHubClient
-from review_bot.pr.git import GitRepo
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
 from review_bot.pr.shadow import Mode, Origin, Scope, ShadowReport

@@ -73,6 +73,7 @@ class Stage(StrEnum):
     VERIFY = "verify"
     POLICY = "policy"
     TRIAGE = "triage"
+    CONTEXT = "context"
 
 
 class AuditLog:
