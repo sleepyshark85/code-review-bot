@@ -1,6 +1,6 @@
 # P2-S9: Set the review policy per repository
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S2
 - **Touches:** `pr` (`config`, `git`, `runner`), and `review` or `diff_parser` (a skip reason)
 
@@ -44,3 +44,4 @@ The mode and the caps stay in the workflow ([design](../design.md#ci-settings-an
 
 ## Notes
 - **README (main session):** document `.review-bot.toml`, read from the base branch.
+- **Build:** a deleted file has no new path, so `exclude` matches its old path, as the built-in skips do. A built-in skip reason (`docs`, `lock`, `generated`, `binary`) wins over `excluded_by_config`. `config` in `shadow.json` is null when the run read none: refused, or the file is invalid. An `exclude` pattern with an empty segment (a leading or trailing `/`, `//`, or an empty pattern) matches no path, so it is invalid (`invalid_config`), naming the pattern.

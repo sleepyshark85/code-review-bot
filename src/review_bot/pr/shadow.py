@@ -20,21 +20,23 @@ from review_bot.errors import (
     ErrorCategory,
     GitHubError,
     ProviderError,
+    RepoConfigError,
     SecretDetectedError,
 )
 from review_bot.findings import ReviewedFinding
 from review_bot.pr.comments import (
     blocked_summary,
     comment_body,
+    invalid_config_summary,
     no_new_changes_summary,
     not_reviewed_summary,
     reviewed_summary,
 )
+from review_bot.pr.config import RepoConfig
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import BotComment
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import (
-    DEFAULT_MAX_OPEN_COMMENTS,
     Action,
     CommentPlan,
     PlannedComment,
@@ -74,6 +76,7 @@ REPORTED_ERRORS: Final = (
     DiffNotUtf8Error,
     SecretDetectedError,
     ProviderError,
+    RepoConfigError,
 )
 type ReportedError = (
     DiffTooLargeError
@@ -82,6 +85,7 @@ type ReportedError = (
     | DiffNotUtf8Error
     | SecretDetectedError
     | ProviderError
+    | RepoConfigError
 )
 
 type _Reason = Reason | ErrorCategory | None
@@ -153,10 +157,11 @@ class ShadowReport:
     ``pr`` is None exactly when ``origin`` is ``local``. ``report`` is the ``report/v1`` object,
     with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
     ``withheld`` are in comment order, and ``resolves`` oldest first. ``caps`` are the run's
-    effective limits, None where there is no cap. ``since`` is the last reviewed commit a
-    comment mode run started from, the head or an ancestor of it, else None. ``error`` is the
-    error that ended the run, if any, for the caller's message and exit code; it is never
-    written.
+    effective limits, None where there is no cap. ``config`` is the review policy the run used,
+    or None if it read none: it was refused, or its repository config was invalid. ``since``
+    is the last reviewed commit a comment mode run started from, the head or an ancestor of it,
+    else None. ``error`` is the error that ended the run, if any, for the caller's message and
+    exit code; it is never written.
     """
 
     run_id: str
@@ -173,6 +178,7 @@ class ShadowReport:
     resolves: tuple[ShadowResolve, ...]
     withheld: tuple[WithheldFinding, ...]
     caps: Mapping[str, int | float | None]
+    config: Mapping[str, object] | None
     over_budget: bool
     since: str | None
     error: ReportedError | GitHubError | None
@@ -189,6 +195,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     mode: Mode,
     existing: Sequence[BotComment],
     settings: Settings,
+    config: RepoConfig | None,
     run_id: str,
     started_at: datetime,
     finished_at: datetime,
@@ -208,14 +215,20 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     whose anchored lines are gone. A comment mode summary also counts the bot's comments open
     once the plan is applied (``reviewed_summary``). A review that skipped every file is
     ``skipped``, ``nothing_to_review``; a refused run is ``skipped`` with its reason; a secret
-    is ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; and a
-    provider error is ``failed`` with its category. A review is over budget when it reports
-    more output tokens than ``max_output_tokens``.
+    is ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; an
+    invalid repository config is ``failed``, ``invalid_config``; and a provider error is
+    ``failed`` with its category. A review is over budget when it reports more output tokens
+    than ``max_output_tokens``.
+
+    ``settings`` are those the review ran with, the repository's threshold applied, and
+    ``config`` the repository's policy, or None if the run read none. Comments are planned up
+    to its ``max_open_comments``.
 
     Raises:
         ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it;
             if ``existing`` comments or ``since`` are given in shadow mode; if ``incremental``
-            is given without ``since``; or if ``no_new_changes`` comes without ``incremental``.
+            is given without ``since``; if ``no_new_changes`` comes without ``incremental``;
+            or if comments are to be planned with no ``config``.
     """
     if (pr is None) != (origin is Origin.LOCAL):
         raise ValueError("A shadow report has a pull request exactly when its origin isn't local.")
@@ -232,14 +245,14 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     if review is Reason.NO_NEW_CHANGES:
         if incremental is None or since is None:
             raise ValueError("Only an incremental run can have no new changes.")
-        plan = _plan((), existing, incremental.pr_diff, incremental)
+        plan = _plan((), existing, incremental.pr_diff, incremental, config)
         comments, resolves, withheld = _planned(plan)
         outcome, reason = Outcome.REVIEWED, review
         summary = no_new_changes_summary(since=since, open_comments=plan.open_after)
     elif isinstance(review, Reason):
         outcome, reason, summary = _skipped(review)
     elif isinstance(review, PipelineResult) and review.model_called:
-        plan = _plan(review.decision.reported, existing, review.parsed, incremental)
+        plan = _plan(review.decision.reported, existing, review.parsed, incremental, config)
         comments, resolves, withheld = _planned(plan)
         # A rationale can quote a secret that withholds its comment; no file may hold it.
         document = report_document(review, settings, run_id)
@@ -278,6 +291,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
             "max_retries": settings.max_retries,
             "deadline_s": settings.deadline_s,
         },
+        config=None if config is None else _config_json(config, settings),
         over_budget=isinstance(review, PipelineResult) and _is_over_budget(review.usage, settings),
         since=since,
         error=error,
@@ -289,15 +303,32 @@ def _plan(
     existing: Sequence[BotComment],
     reviewed_diff: ParsedDiff,
     incremental: Incremental | None,
+    config: RepoConfig | None,
 ) -> CommentPlan:
-    """Plan against the reviewed diff, or an incremental run's whole PR diff and its changes."""
+    """Plan against the reviewed diff, or an incremental run's whole PR diff and its changes.
+
+    Raises:
+        ValueError: If ``config`` is None, so the comment limit is unknown.
+    """
+    if config is None:
+        raise ValueError("Comments are planned under the repository config the run read.")
     return plan_comments(
         findings,
         existing,
         pr_diff=reviewed_diff if incremental is None else incremental.pr_diff,
         changed=None if incremental is None else incremental.changed,
-        max_open_comments=DEFAULT_MAX_OPEN_COMMENTS,
+        max_open_comments=config.max_open_comments,
     )
+
+
+def _config_json(config: RepoConfig, settings: Settings) -> dict[str, object]:
+    """The policy as the report shows it, with the threshold the review used."""
+    return {
+        "source": config.source,
+        "threshold": settings.threshold,
+        "exclude": list(config.exclude),
+        "max_open_comments": config.max_open_comments,
+    }
 
 
 def _planned(
@@ -314,7 +345,7 @@ def _is_over_budget(usage: TokenUsage, settings: Settings) -> bool:
     return cap is not None and usage.output_tokens > cap
 
 
-def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:
+def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:  # noqa: PLR0911 - one return per error type
     """The outcome, reason and summary of a run that an error stopped before any review."""
     match error:
         case SecretDetectedError():
@@ -330,6 +361,9 @@ def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:
             return _skipped(Reason.NOT_A_DIFF)
         case DiffNotUtf8Error():
             return _skipped(Reason.UNREADABLE)
+        case RepoConfigError():
+            summary = invalid_config_summary(redact(str(error)))
+            return Outcome.FAILED, Reason.INVALID_CONFIG, summary
         case _:
             assert_never(error)
 
@@ -378,6 +412,7 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "over_budget": shadow.over_budget,
         "scope": shadow.scope,
         "since": shadow.since,
+        "config": shadow.config,
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
 

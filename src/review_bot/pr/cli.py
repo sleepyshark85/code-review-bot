@@ -8,8 +8,9 @@ post.
 ``GITHUB_TOKEN``; without it, it exits 2.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
-with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusable event or git
-command exits 19, and a failed GitHub call 18 (Phase 2 design, Commands and exit codes).
+with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
+``.review-bot.toml`` exits 2, an unusable event or git command 19, and a failed GitHub call 18
+(Phase 2 design, Commands and exit codes).
 """
 
 import argparse
@@ -42,7 +43,8 @@ from review_bot.console import (
     write_diagnostic,
     write_output,
 )
-from review_bot.errors import ConfigError, GitHubError, ProviderError
+from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
+from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
@@ -142,14 +144,16 @@ def main(
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
-        failure, such as 2 for a usage error or an unwritable ``--out``, 3 for a missing diff,
+        failure, such as 2 for a usage error, an unwritable ``--out`` or an invalid
+        ``.review-bot.toml``, whose report is still written, 3 for a missing diff,
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
         written, 18 for a failed GitHub call, whose report is still written unless listing the
         bot's comments failed, and 19 for an unusable event, pulls file or git command. A
         ``run --mode comment`` with no ``github`` exits 2 if ``GITHUB_TOKEN`` is missing or
         ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
-        code, an error's code if one stops it, and 2 in CI or over ``--max-calls``. ``label``
-        returns 0 when done or interrupted, and 2 with no terminal or an invalid labels file.
+        or invalid config's code, an error's code if one stops it, and 2 in CI or over
+        ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
+        an invalid labels file.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment`` keeps it for its client.
@@ -412,6 +416,8 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
         mode=Mode.SHADOW,
         existing=(),
         settings=command.settings,
+        # A local diff has no repository to read a config from.
+        config=DEFAULT_REPO_CONFIG,
         run_id=audit.run_id,
         started_at=started_at,
         finished_at=utc_now(),
@@ -590,7 +596,7 @@ def _write_report(shadow: ShadowReport, out_dir: Path) -> None:
 def _finish(shadow: ShadowReport, out_dir: Path, audit: AuditLog) -> int:
     """Say what was written and why, record the run's end, and return its exit code."""
     error = shadow.error
-    if isinstance(error, ProviderError | GitHubError):
+    if isinstance(error, ProviderError | GitHubError | RepoConfigError):
         write_diagnostic(_written_line(shadow, out_dir))
         exit_code = report_failure(error)
         record_failed_end(audit, exit_code, error)

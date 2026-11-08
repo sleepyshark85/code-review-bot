@@ -517,3 +517,75 @@ def test_parse_diff_lists_every_path_it_yields_among_the_decoded_paths(lines: li
     decoded_texts = {path.text for path in parsed.decoded_paths}
     for file in parsed.files:
         assert {file.path, file.old_path} - {None} <= decoded_texts
+
+
+EXCLUDE = ("generated/**", "*.snap", "src/*.json")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["generated/a.py", "generated/x/y.py", "a.snap", "tests/x/a.snap", "src/a.json"],
+)
+def test_parse_diff_skips_a_file_matching_an_exclude_glob(path: str) -> None:
+    parsed = parse_diff(section(path) + section("kept.py"), exclude=EXCLUDE)
+
+    assert [file.skip_reason for file in parsed.files] == [SkipReason.EXCLUDED_BY_CONFIG, None]
+    assert path not in parsed.reviewable_text
+    assert "kept.py" in parsed.reviewable_text
+
+
+@pytest.mark.parametrize("path", ["src/generated/a.py", "src/x/a.json", "generated.py"])
+def test_parse_diff_reviews_a_file_no_exclude_glob_matches(path: str) -> None:
+    parsed = parse_diff(section(path), exclude=EXCLUDE)
+
+    assert parsed.files[0].skip_reason is None
+
+
+@pytest.mark.parametrize(
+    ("glob", "path", "is_excluded"),
+    [
+        ("**/a.py", "a.py", True),
+        ("**/a.py", "x/y/a.py", True),
+        ("x/**/a.py", "x/a.py", True),
+        ("x/**/a.py", "x/y/z/a.py", True),
+        ("x/**/a.py", "y/x/a.py", False),
+        ("x/*/a.py", "x/a.py", False),
+        ("x/*/a.py", "x/y/a.py", True),
+        ("x/**/**/a.py", "x/a.py", True),
+        ("*.py", "x.py/a.txt", False),
+    ],
+)
+def test_parse_diff_matches_star_within_a_segment_and_double_star_across_any(
+    glob: str, path: str, is_excluded: bool
+) -> None:
+    parsed = parse_diff(section(path), exclude=(glob,))
+
+    assert (parsed.files[0].skip_reason is SkipReason.EXCLUDED_BY_CONFIG) is is_excluded
+
+
+def test_parse_diff_keeps_a_built_in_skip_reason_over_an_exclude_glob() -> None:
+    parsed = parse_diff(section("README.md"), exclude=("*.md",))
+
+    assert parsed.files[0].skip_reason is SkipReason.DOCS
+
+
+def test_parse_diff_excludes_a_deleted_file_by_its_old_path() -> None:
+    text = (
+        "diff --git a/generated/a.py b/generated/a.py\ndeleted file mode 100644\n"
+        "--- a/generated/a.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+    )
+
+    parsed = parse_diff(text, exclude=("generated/**",))
+
+    assert parsed.files[0].skip_reason is SkipReason.EXCLUDED_BY_CONFIG
+
+
+def test_parse_diff_matches_many_double_star_globs_in_linear_time() -> None:
+    path = "/".join(["d"] * 100) + "/a.py"
+    glob = "/".join(["**"] * 99) + "/b.py"
+    started = time.perf_counter()
+
+    parsed = parse_diff(section(path), exclude=(glob,) * 50)
+
+    assert parsed.files[0].skip_reason is None
+    assert time.perf_counter() - started < 5

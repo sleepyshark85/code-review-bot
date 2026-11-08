@@ -677,3 +677,21 @@ def test_shadow_removes_github_token_from_the_environment_before_the_provider(
     assert exit_code == 0
     assert provider.saw_token == [False]
     assert "GITHUB_TOKEN" not in os.environ
+
+
+def test_run_with_an_invalid_repository_config_writes_a_failed_report_and_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = init_repo(tmp_path / "repo")
+    base = commit(repo, {"app.py": "x = 1\n", ".review-bot.toml": "max_retries = 0\n"})
+    head = commit(repo, {"app.py": "x = 2\n"})
+    out = tmp_path / "out"
+    provider = MockProvider(findings=[])
+
+    exit_code = run_pr(pull_request_event(repo, base, head), repo, out, provider=provider)
+
+    document = shadow_json(out)
+    assert exit_code == 2
+    assert (document["outcome"], document["reason"]) == ("failed", "invalid_config")
+    assert provider.requests == []
+    assert "unknown key 'max_retries'" in capsys.readouterr().err

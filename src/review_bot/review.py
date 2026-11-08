@@ -72,8 +72,14 @@ async def run_pipeline(
     return await review_diff(diff, settings, provider, audit, name=redact(str(diff_path)))
 
 
-async def review_diff(
-    diff: str, settings: Settings, provider: LLMProvider, audit: AuditLog, *, name: str
+async def review_diff(  # noqa: PLR0913 - name and exclude are keyword-only
+    diff: str,
+    settings: Settings,
+    provider: LLMProvider,
+    audit: AuditLog,
+    *,
+    name: str,
+    exclude: Sequence[str] = (),
 ) -> PipelineResult:
     """Review ``diff`` with ``provider``, sending only the files not skipped.
 
@@ -88,6 +94,7 @@ async def review_diff(
         provider: The model to call.
         audit: Where each stage's decision goes.
         name: How messages name the diff; it must already be redacted.
+        exclude: Globs whose matching files are skipped too, as ``parse_diff`` matches them.
 
     Raises:
         InputError: If the diff isn't a diff, holds a possible secret, or its files to review
@@ -99,7 +106,7 @@ async def review_diff(
     # Before the parser, so nothing the parser misreads or drops can carry a secret past the scan.
     _stop_on_secrets(scan_secrets(diff), audit)
     try:
-        parsed = parse_diff(diff)
+        parsed = parse_diff(diff, exclude=exclude)
     except DiffNotParsableError as exc:
         raise DiffNotParsableError(f"Diff {name} can't be parsed. {exc}") from exc
     # Only reached with clean raw text, so no secret is counted twice; before the parse record,

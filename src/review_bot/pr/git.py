@@ -1,4 +1,4 @@
-"""Diffs between two commits of a local clone, which commits it holds and how they relate, by git.
+"""A local clone's diffs, files and commits, and how the commits relate, read by git.
 
 git runs from an argument list with a timeout, and never with an external diff or a textconv
 filter, so the clone's attributes and config can't make it run another program (Phase 2
@@ -11,7 +11,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
-from review_bot.errors import DiffEmptyError, DiffNotUtf8Error, DiffTooLargeError, GitError
+from review_bot.errors import (
+    DiffEmptyError,
+    DiffNotUtf8Error,
+    DiffTooLargeError,
+    GitError,
+    NotARegularFileError,
+)
 from review_bot.secret_scan import redact
 
 __all__ = ["GitRepo"]
@@ -31,6 +37,11 @@ _DIFF_OPTIONS: Final = (
 # ``git merge-base`` when the commits share no history or, with ``--is-ancestor``, when the first
 # isn't an ancestor of the second.
 _NOT_FOUND_EXIT_CODE: Final = 1
+# ``git ls-tree`` modes: a regular file, plain or executable, and what else a path can name.
+_REGULAR_FILE_MODES: Final = frozenset({b"100644", b"100755"})
+_OTHER_ENTRY_KINDS: Final = {b"120000": "symbolic link", b"160000": "submodule"}
+# One ``ls-tree`` entry: mode, type, a SHA of up to 64 hex digits, a tab and the path.
+_MAX_TREE_ENTRY_BYTES: Final = 4096
 
 
 class GitRepo:
@@ -85,6 +96,38 @@ class GitRepo:
                 f"The diff {name} is empty: the pull request changes nothing since its merge base."
             )
         return diff
+
+    def read_file(self, commit: str, path: str, *, max_bytes: int) -> bytes | None:
+        """Return the regular file at ``path`` in ``commit``, or None if nothing is there.
+
+        Only ``max_bytes`` plus one bytes of it are ever read, so a longer result means the file
+        is over ``max_bytes``. Its bytes are git's, with no filter or textconv applied.
+
+        Args:
+            commit: The commit's SHA.
+            path: The path from the repository's root, with ``/`` between segments.
+            max_bytes: The most bytes wanted.
+
+        Raises:
+            GitError: If the commit isn't in the clone, or git fails, times out or can't start.
+            NotARegularFileError: If ``path`` is a directory, symbolic link or submodule.
+        """
+        self._require_commit(commit)
+        listing = self._read_output(
+            ["ls-tree", "-z", commit, "--", path], max_bytes=_MAX_TREE_ENTRY_BYTES
+        )
+        entry = listing.split(b"\0", maxsplit=1)[0]
+        if not entry:
+            return None
+        mode, kind, object_id = entry.partition(b"\t")[0].split(b" ")
+        if mode not in _REGULAR_FILE_MODES:
+            what = "directory" if kind == b"tree" else _OTHER_ENTRY_KINDS.get(mode, "special entry")
+            raise NotARegularFileError(
+                f"{path} in commit {commit} is a {what}, not a regular file.", kind=what
+            )
+        return self._read_output(
+            ["cat-file", "blob", object_id.decode("ascii")], max_bytes=max_bytes
+        )
 
     def has_commit(self, sha: str) -> bool:
         """Whether ``sha`` is a commit in the clone.

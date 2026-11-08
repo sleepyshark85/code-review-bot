@@ -836,3 +836,176 @@ def test_run_pull_request_blocked_by_a_secret_keeps_the_reviewed_commit_and_send
     assert (again.scope, again.since) == (Scope.INCREMENTAL, reviewed)
     assert "+a10 = 'b'" in provider.requests[0].user_prompt
     assert aws_key not in provider.requests[0].user_prompt
+
+
+def config_pr(repo: Path, config: str | None, head_files: Mapping[str, str]) -> PullRequestRef:
+    """A pull request whose base holds ``config`` as ``.review-bot.toml``, if given."""
+    base_files = {"app.py": "def run():\n    return 1\n"}
+    if config is not None:
+        base_files[".review-bot.toml"] = config
+    base = commit(repo, base_files)
+    head = commit(repo, head_files)
+    return dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head)
+
+
+def finding_at(line: int, severity: str, file: str = "app.py") -> Finding:
+    return Finding(
+        file=file, line=line, severity=severity, category="logic", rationale="Why.", confidence=1.0
+    )
+
+
+CHANGED_APP = {"app.py": "def run():\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    e = 5\n"}
+
+
+def test_run_pull_request_without_a_config_file_uses_the_defaults(repo: Path, run: Runner) -> None:
+    pr = config_pr(repo, None, CHANGED_APP)
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[])))
+
+    assert shadow.config == {
+        "source": "default",
+        "threshold": "low",
+        "exclude": [],
+        "max_open_comments": 10,
+    }
+
+
+def test_run_pull_request_applies_the_base_threshold_not_the_heads(repo: Path, run: Runner) -> None:
+    pr = config_pr(
+        repo,
+        'threshold = "medium"\n',
+        {**CHANGED_APP, ".review-bot.toml": 'threshold = "critical"\n'},
+    )
+    provider = MockProvider(findings=[finding_at(2, "low"), finding_at(3, "medium")])
+
+    shadow = run(pr, factory=CountingFactory(provider))
+
+    assert [comment.planned.reviewed.finding.line for comment in shadow.comments] == [3]
+    assert shadow.config is not None
+    assert shadow.config["source"] == f".review-bot.toml@{pr.base_sha}"
+    assert shadow.config["threshold"] == "medium"
+
+
+def test_run_pull_request_keeps_a_threshold_the_settings_were_given(
+    repo: Path, run: Runner
+) -> None:
+    pr = config_pr(repo, 'threshold = "medium"\n', CHANGED_APP)
+    provider = MockProvider(findings=[finding_at(3, "medium"), finding_at(4, "high")])
+    settings = Settings(provider="mock", threshold="high")
+
+    shadow = run(pr, factory=CountingFactory(provider), settings=settings)
+
+    assert [comment.planned.reviewed.finding.line for comment in shadow.comments] == [4]
+
+
+def test_run_pull_request_doesnt_send_an_excluded_file_to_the_model(
+    repo: Path, run: Runner
+) -> None:
+    pr = config_pr(
+        repo, 'exclude = ["*.snap"]\n', {**CHANGED_APP, "tests/x/a.snap": "snapshot text\n"}
+    )
+    provider = MockProvider(findings=[])
+
+    shadow = run(pr, factory=CountingFactory(provider))
+
+    assert "snapshot text" not in provider.requests[0].user_prompt
+    assert shadow.report is not None
+    assert shadow.report["skipped_files"] == [
+        {"file": "tests/x/a.snap", "reason": "excluded_by_config"}
+    ]
+
+
+def test_run_pull_request_creates_comments_up_to_the_repository_limit(
+    repo: Path, run: Runner
+) -> None:
+    pr = config_pr(repo, "max_open_comments = 3\n", CHANGED_APP)
+    provider = MockProvider(findings=[finding_at(line, "high") for line in range(2, 7)])
+
+    shadow = run(pr, factory=CountingFactory(provider))
+
+    assert len(shadow.comments) == 3
+    assert [item.reason for item in shadow.withheld] == ["over_limit", "over_limit"]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {".review-bot.toml": "max_diff_bytes = 1\n"},
+        {".review-bot.toml/inner.toml": "x = 1\n"},
+    ],
+    ids=["unknown-key", "directory"],
+)
+def test_run_pull_request_with_an_invalid_config_fails_without_a_provider(
+    repo: Path, run: Runner, files: dict[str, str]
+) -> None:
+    commit(repo, files)
+    pr = config_pr(repo, None, CHANGED_APP)
+    factory = CountingFactory(MockProvider(findings=[]))
+
+    shadow = run(pr, factory=factory)
+
+    assert (shadow.outcome, shadow.reason, shadow.config) == (
+        Outcome.FAILED,
+        Reason.INVALID_CONFIG,
+        None,
+    )
+    assert factory.calls == 0
+    assert "invalid" in shadow.summary_body
+
+
+def test_run_pull_request_with_an_invalid_config_in_comment_mode_writes_only_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    pr = config_pr(repo, 'threshold = "urgent"\n', CHANGED_APP)
+    github = FakeGitHubClient()
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[])), github=github)
+
+    assert shadow.outcome is Outcome.FAILED
+    assert github.summary is not None
+    assert "(`invalid_config`)" in github.summary
+    assert "threshold" in github.summary
+    assert github.comments == []
+
+
+def test_a_refused_run_reads_no_config(repo: Path, run: Runner) -> None:
+    shadow = run(
+        unknown_commits(pr_for(repo, is_fork=True)), factory=CountingFactory(MockProvider())
+    )
+
+    assert shadow.config is None
+
+
+def test_backfill_pull_request_applies_the_base_config(repo: Path, tmp_path: Path) -> None:
+    pr = config_pr(repo, 'threshold = "high"\n', CHANGED_APP)
+    provider = MockProvider(findings=[finding_at(2, "medium")])
+
+    shadow = asyncio.run(
+        backfill_pull_request(
+            pr,
+            git=GitRepo(repo, timeout_s=60),
+            make_provider=lambda: provider,
+            settings=MOCK,
+            audit=AuditLog(tmp_path / "backfill.jsonl", clock=lambda: NOW),
+            clock=lambda: NOW,
+        )
+    )
+
+    assert shadow.comments == ()
+    assert shadow.config is not None
+    assert shadow.config["threshold"] == "high"
+
+
+def test_an_invalid_config_run_keeps_the_last_reviewed_commit_in_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    pr = config_pr(repo, "max_retries = 0\n", CHANGED_APP)
+    github = FakeGitHubClient()
+    reviewed = "e" * 40
+    github.summary = summary_for(reviewed)
+
+    run(pr, factory=CountingFactory(MockProvider(findings=[])), github=github)
+
+    assert github.summary is not None
+    assert "(`invalid_config`)" in github.summary
+    assert github.summary.endswith(f"<!-- review-bot:v1 summary reviewed={reviewed} -->")
