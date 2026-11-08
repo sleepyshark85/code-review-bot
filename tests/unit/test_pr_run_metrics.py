@@ -1,161 +1,24 @@
-import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
 
 import pytest
+from metrics_samples import (
+    PRICES,
+    gate_sample,
+    key,
+    posted,
+    shadow_label,
+    signal_label,
+    summarise,
+    timed_report,
+    usage,
+)
 from shadow_samples import entry, report
 
-from review_bot.pr.feedback import (
-    FeedbackLabel,
-    FeedbackRecord,
-    RejectReason,
-    ShadowFeedback,
-    SignalFeedback,
-)
+from review_bot.pr.feedback import FeedbackLabel, FeedbackRecord, RejectReason
 from review_bot.pr.metrics import Prices
-from review_bot.pr.metrics_report import render_metrics_json, render_metrics_text
 from review_bot.pr.outcome import Outcome
-from review_bot.pr.run_metrics import (
-    OutcomeCount,
-    Percentiles,
-    RunMetrics,
-    TokenTotals,
-    summarise_runs,
-)
-from review_bot.pr.units import ShadowFile
-
-RECORDED = datetime(2026, 11, 8, 12, tzinfo=UTC)
-PRICES = Prices(Decimal(15), Decimal(75))
-
-
-def parsed(document: dict[str, Any]) -> ShadowFile:
-    return ShadowFile.model_validate_json(json.dumps(document), strict=True)
-
-
-def key(number: int, rule_part: str = "ai:logic") -> tuple[str, str, str]:
-    return ("src/app.py", rule_part, f"{number:016x}")
-
-
-def usage(input_tokens: int, output_tokens: int) -> dict[str, Any]:
-    return {
-        "model": "claude-x",
-        "prompt_version": "p1-v1",
-        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
-    }
-
-
-def posted(number: int, applied: str = "done") -> dict[str, Any]:
-    """A comment mode ``create`` entry, fingerprinted by ``number``, applied as ``applied``."""
-    return entry(key(number), fingerprint=str(number) * 16) | {"applied": applied}
-
-
-def shadow_label(
-    anchor_key: tuple[str, str, str],
-    label: FeedbackLabel = FeedbackLabel.ACCEPT,
-    reason: RejectReason | None = None,
-    *,
-    pr: int = 7,
-    recorded_at: datetime = RECORDED,
-) -> ShadowFeedback:
-    file, rule_part, anchor = anchor_key
-    return ShadowFeedback.model_validate(
-        {
-            "channel": "shadow",
-            "repo": "owner/repo",
-            "pr": pr,
-            "fingerprint": "f" * 16,
-            "file": file,
-            "rule_part": rule_part,
-            "anchor": anchor,
-            "index": 0,
-            "source": "ai",
-            "severity": "medium",
-            "label": label,
-            "reason": reason,
-            "run_id": "run",
-            "model": "claude-x",
-            "prompt_version": "p1-v1",
-            "recorded_at": recorded_at,
-        }
-    )
-
-
-def signal_label(
-    fingerprint: str,
-    label: FeedbackLabel = FeedbackLabel.ACCEPT,
-    *,
-    channel: str = "reaction",
-    recorded_at: datetime = RECORDED,
-) -> SignalFeedback:
-    return SignalFeedback.model_validate(
-        {
-            "channel": channel,
-            "repo": "owner/repo",
-            "pr": 7,
-            "fingerprint": fingerprint,
-            "file": "src/app.py",
-            "rule_part": "ai:logic",
-            "anchor": "a" * 16,
-            "index": None,
-            "source": None,
-            "severity": None,
-            "label": label,
-            "reason": None,
-            "run_id": None,
-            "model": None,
-            "prompt_version": None,
-            "recorded_at": recorded_at,
-        }
-    )
-
-
-def summarise(
-    reports: list[dict[str, Any]],
-    labels: list[FeedbackRecord] | None = None,
-    *,
-    since: date | None = None,
-    until: date | None = None,
-    prices: Prices | None = None,
-) -> RunMetrics:
-    return summarise_runs(
-        map(parsed, reports), labels or [], since=since, until=until, prices=prices
-    )
-
-
-def timed_report(end_to_end_s: int, review_s: int, **fields: Any) -> dict[str, Any]:
-    finished = datetime(2026, 11, 8, 12, tzinfo=UTC).timestamp()
-    return report(
-        event_at=datetime.fromtimestamp(finished - end_to_end_s, UTC).isoformat(),
-        started_at=datetime.fromtimestamp(finished - review_s, UTC).isoformat(),
-        finished_at=datetime.fromtimestamp(finished, UTC).isoformat(),
-        **fields,
-    )
-
-
-def gate_sample() -> tuple[list[dict[str, Any]], list[FeedbackRecord]]:
-    """34 would-be comments on 4 PRs: 21 accepted, 9 rejected as wrong, 2 duplicates."""
-    reports = [
-        report(*(entry(key(number)) for number in range(first, first + 10)), number=pr)
-        for pr, first in ((1, 0), (2, 10), (3, 20))
-    ]
-    reports.append(report(*(entry(key(number)) for number in range(30, 34)), number=4))
-    labels: list[FeedbackRecord] = []
-    for number in range(32):
-        pr = 1 + number // 10
-        if number < 21:
-            labels.append(shadow_label(key(number), pr=pr))
-        elif number < 30:
-            labels.append(
-                shadow_label(key(number), FeedbackLabel.REJECT, RejectReason.WRONG, pr=pr)
-            )
-        else:
-            duplicate = shadow_label(
-                key(number), FeedbackLabel.REJECT, RejectReason.DUPLICATE, pr=pr
-            )
-            labels.append(duplicate)
-    return reports, labels
-
+from review_bot.pr.run_metrics import OutcomeCount, Percentiles, TokenTotals
 
 # --- Runs: outcomes, latency, tokens and cost ---------------------------------------------------
 
@@ -420,90 +283,3 @@ def test_shadow_labels_never_enter_comment_precision() -> None:
     metrics = summarise(reports, labels)
 
     assert metrics.shadow.verdicts.judged == metrics.comment.verdicts.judged == 1
-
-
-# --- Rendering ----------------------------------------------------------------------------------
-
-
-def test_json_holds_the_gate_samples_numbers_as_metrics_v1() -> None:
-    reports, labels = gate_sample()
-
-    document = json.loads(render_metrics_json(summarise(reports, labels)))
-
-    assert document["schema"] == "metrics/v1"
-    shadow = document["shadow_precision"]
-    assert (shadow["precision"], shadow["wilson_low"], shadow["wilson_high"]) == (
-        0.7,
-        0.521,
-        0.833,
-    )
-    assert (shadow["lower_bound"], shadow["coverage"], shadow["duplicates"]) == (0.656, 0.941, 2)
-    assert shadow["splits"]["reject_reason"]["duplicate"] == {"count": 2}
-    assert shadow["splits"]["source"]["ai"]["accepted"] == 21
-    assert document["cost"] is None
-
-
-def test_json_shows_cost_as_cent_strings_and_runs_with_their_outcomes() -> None:
-    reports = [timed_report(90, 30, report=usage(1_000_000, 100_000))]
-
-    document = json.loads(render_metrics_json(summarise(reports, prices=PRICES)))
-
-    assert document["cost"] == {"usd": "22.50", "per_accepted_finding_usd": None}
-    assert document["runs"]["latency_s"]["end_to_end"] == {"runs": 1, "p50": 90.0, "p95": 90.0}
-    assert document["runs"]["outcomes"] == [
-        {"mode": "shadow", "origin": "event", "outcome": "reviewed", "reason": None, "count": 1}
-    ]
-    assert document["tokens"]["input"] == {
-        "total": 1_000_000,
-        "mean": 1_000_000.0,
-        "max": 1_000_000,
-    }
-
-
-def test_json_is_one_ascii_line_even_with_unicode_from_a_report() -> None:
-    reports = [report(entry(key(1, "régle")))]
-
-    rendered = render_metrics_json(summarise(reports, [shadow_label(key(1, "régle"))]))
-
-    assert rendered.isascii()
-    assert "\n" not in rendered
-
-
-def test_text_shows_percentages_cents_and_n_a() -> None:
-    reports, labels = gate_sample()
-    reports.append(report(report=usage(1_000_000, 100_000), number=9))
-
-    text = render_metrics_text(summarise(reports, labels, prices=PRICES))
-
-    assert "precision=70.0% (21/30)" in text
-    assert "wilson_95=52.1% to 83.3%" in text
-    assert "lower_bound=65.6% (21/32)" in text
-    assert "coverage=94.1%" in text
-    assert "cost total=" in text
-    assert "comment_precision units=0 judged=0 coverage=n/a" in text
-    assert all(line.startswith("metrics: ") for line in text.splitlines())
-
-
-def test_text_without_prices_says_not_priced() -> None:
-    assert "metrics: cost=not priced" in render_metrics_text(summarise([report()])).splitlines()
-
-
-def test_text_quotes_report_text_so_it_cant_forge_a_line() -> None:
-    reports = [report(outcome="failed", reason="bad\nmetrics: forged", report=None)]
-
-    text = render_metrics_text(summarise(reports))
-
-    assert 'reason="bad\\nmetrics: forged"' in text
-    assert "metrics: forged" not in text.splitlines()
-
-
-def test_text_with_only_since_shows_until_as_any() -> None:
-    text = render_metrics_text(summarise([], since=date(2026, 11, 1)))
-
-    assert text.splitlines()[0] == "metrics: runs count=0 since=2026-11-01 until=any"
-
-
-def test_text_with_only_until_shows_since_as_any() -> None:
-    text = render_metrics_text(summarise([], until=date(2026, 11, 8)))
-
-    assert text.splitlines()[0] == "metrics: runs count=0 since=any until=2026-11-08"
