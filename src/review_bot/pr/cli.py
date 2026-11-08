@@ -1,14 +1,15 @@
-"""Command line for pull requests: ``python -m review_bot.pr shadow <diff> --out DIR``.
+"""Command line for pull requests: ``python -m review_bot.pr shadow|run ... --out DIR``.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
-with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0 (Phase 2 design, Commands
-and exit codes).
+with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusable event or git
+command exits 19 (Phase 2 design, Commands and exit codes).
 """
 
 import os
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -16,12 +17,20 @@ from review_bot.audit import AuditLog, Stage, utc_now
 from review_bot.cli import (
     RaisingArgumentParser,
     add_setting_arguments,
+    build_provider,
     record_failed_end,
     report_failure,
     run_review,
+    run_to_completion,
+    then_discard_unraisable,
+    uses_own_claude,
 )
 from review_bot.console import keep_library_logs_off_stderr, write_diagnostic
 from review_bot.errors import ConfigError, ProviderError
+from review_bot.pr.event import read_event
+from review_bot.pr.git import GitRepo
+from review_bot.pr.outcome import Reason
+from review_bot.pr.runner import run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
     ReportedError,
@@ -41,6 +50,26 @@ _AUDIT_LOG_VARIABLE: Final = "REVIEW_BOT_AUDIT_LOG"
 _AUDIT_LOG_NAME: Final = "audit.jsonl"
 _JSON_NAME: Final = "shadow.json"
 _MARKDOWN_NAME: Final = "shadow.md"
+_GIT_TIMEOUT_S: Final = 60
+_NO_CREDENTIAL_HINT: Final = (
+    "review-bot pr: ANTHROPIC_API_KEY is unset or empty in CI, so nothing was reviewed. Add it "
+    "as a repository secret to review pull requests."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ShadowCommand:
+    diff_path: Path
+    out_dir: Path
+    settings: Settings
+
+
+@dataclass(frozen=True, slots=True)
+class _RunCommand:
+    event_path: Path
+    repo_dir: Path
+    out_dir: Path
+    settings: Settings
 
 
 def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
@@ -48,33 +77,39 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
 
     Args:
         argv: The arguments; None means the process's own.
-        provider: The provider to use; None means ``review_bot.cli.build_provider`` picks it
-            from the settings.
+        provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
+            from the settings, and only if the run calls one.
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
         failure, such as 2 for a usage error or an unwritable ``--out``, 3 for a missing diff,
-        4 for one the system can't read, and 7 to 13 for a provider failure, whose report is
-        still written.
+        4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
+        written, and 19 for an unusable event or git command.
     """
     keep_library_logs_off_stderr()
     try:
-        diff_path, out_dir, settings = _parse_args(sys.argv[1:] if argv is None else argv)
-        # Before the diff is read, so an unwritable --out costs no review.
-        _require_writable_directory(out_dir)
-        audit = AuditLog(settings.audit_log, clock=utc_now)
+        command = _parse_args(sys.argv[1:] if argv is None else argv)
+        # Before any input is read, so an unwritable --out costs no review.
+        _require_writable_directory(command.out_dir)
+        audit = AuditLog(command.settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
     try:
-        return _shadow(diff_path, out_dir, settings, provider, audit)
+        match command:
+            case _ShadowCommand():
+                shadow = _shadow(command, provider, audit)
+            case _RunCommand():
+                shadow = _run(command, provider, audit)
+        _write_report(shadow, command.out_dir)
+        return _finish(shadow, command.out_dir, audit)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         exit_code = report_failure(exc)
         record_failed_end(audit, exit_code, exc)
         return exit_code
 
 
-def _parse_args(argv: Sequence[str]) -> tuple[Path, Path, Settings]:
-    """Parse the command line into the diff path, the output directory and the settings.
+def _parse_args(argv: Sequence[str]) -> _ShadowCommand | _RunCommand:
+    """Parse the command line into the subcommand, its paths and the settings.
 
     The audit log goes in the output directory unless ``REVIEW_BOT_AUDIT_LOG`` names one.
 
@@ -87,23 +122,50 @@ def _parse_args(argv: Sequence[str]) -> tuple[Path, Path, Settings]:
         allow_abbrev=False,
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    shadow = commands.add_parser(
+    shadow = _add_command(
+        commands.add_parser,
         "shadow",
-        help="write the comments and summary the bot would post for a diff file, posting nothing",
-        description="Each option except --out can also be set with REVIEW_BOT_<OPTION>.",
-        allow_abbrev=False,
+        "write the comments and summary the bot would post for a diff file, posting nothing",
     )
     shadow.add_argument("diff_path", help="the diff file to review")
-    shadow.add_argument(
-        "--out", type=Path, required=True, help="the directory to write shadow.json and shadow.md"
+    run = _add_command(
+        commands.add_parser,
+        "run",
+        "review a pull request from its event file and a clone, posting nothing",
     )
-    add_setting_arguments(shadow)
+    run.add_argument(
+        "--event", type=Path, required=True, help="the pull_request event file (GITHUB_EVENT_PATH)"
+    )
+    run.add_argument(
+        "--repo", type=Path, required=True, help="the clone holding the base and head commits"
+    )
     flags = vars(parser.parse_args(argv))
-    del flags["command"]
-    diff_path, out_dir = Path(flags.pop("diff_path")), flags.pop("out")
+    name, out_dir = flags.pop("command"), flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
-    return diff_path, out_dir, load_settings(flags)
+    if name == "shadow":
+        diff_path = Path(flags.pop("diff_path"))
+        return _ShadowCommand(diff_path, out_dir, load_settings(flags))
+    event_path, repo_dir = flags.pop("event"), flags.pop("repo")
+    return _RunCommand(event_path, repo_dir, out_dir, load_settings(flags))
+
+
+def _add_command(
+    add_parser: Callable[..., RaisingArgumentParser], name: str, summary: str
+) -> RaisingArgumentParser:
+    """Add a subcommand with ``--out`` and the setting flags."""
+    command = add_parser(
+        name,
+        help=summary,
+        description="The setting options, from --provider to --deadline-s, can also be set with "
+        "REVIEW_BOT_<OPTION>.",
+        allow_abbrev=False,
+    )
+    command.add_argument(
+        "--out", type=Path, required=True, help="the directory to write shadow.json and shadow.md"
+    )
+    add_setting_arguments(command)
+    return command
 
 
 def _require_writable_directory(out_dir: Path) -> None:
@@ -120,38 +182,44 @@ def _require_writable_directory(out_dir: Path) -> None:
         raise _unwritable(out_dir, exc) from exc
 
 
-def _shadow(
-    diff_path: Path,
-    out_dir: Path,
-    settings: Settings,
-    provider: LLMProvider | None,
-    audit: AuditLog,
-) -> int:
+def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditLog) -> ShadowReport:
     started_at = utc_now()
     review: PipelineResult | ReportedError
     try:
-        review = run_review(diff_path, settings, provider, audit)
+        review = run_review(command.diff_path, command.settings, provider, audit)
     except REPORTED_ERRORS as exc:
         review = exc
-    shadow = build_shadow_report(
+    return build_shadow_report(
         review,
-        settings=settings,
+        settings=command.settings,
         run_id=audit.run_id,
         started_at=started_at,
         finished_at=utc_now(),
+        pr=None,
     )
-    _write_report(shadow, out_dir)
-    if isinstance(review, ProviderError):
-        write_diagnostic(_written_line(shadow, out_dir))
-        exit_code = report_failure(review)
-        record_failed_end(audit, exit_code, review)
-        return exit_code
-    if not isinstance(review, PipelineResult):
-        # The error's own message says what to do; it names paths only redacted.
-        write_diagnostic(f"review-bot pr: {redact(str(review))}")
-    write_diagnostic(_written_line(shadow, out_dir))
-    audit.record(Stage.RUN, "end", {"exit_code": 0, "error": None})
-    return 0
+
+
+def _run(command: _RunCommand, provider: LLMProvider | None, audit: AuditLog) -> ShadowReport:
+    """Review the pull request in the event file.
+
+    Raises:
+        EventError: If the event file is unusable; nothing else runs.
+        GitError: If a commit is missing or git fails; no provider is called.
+    """
+    pr = read_event(command.event_path)
+    settings = command.settings
+    run = run_pull_request(
+        pr,
+        git=GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S),
+        make_provider=lambda: build_provider(settings) if provider is None else provider,
+        settings=settings,
+        audit=audit,
+        environ=os.environ,
+        clock=utc_now,
+    )
+    if uses_own_claude(settings, provider):
+        run = then_discard_unraisable(run)
+    return run_to_completion(run)
 
 
 def _write_report(shadow: ShadowReport, out_dir: Path) -> None:
@@ -169,6 +237,24 @@ def _write_report(shadow: ShadowReport, out_dir: Path) -> None:
         )
     except OSError as exc:
         raise _unwritable(out_dir, exc) from exc
+
+
+def _finish(shadow: ShadowReport, out_dir: Path, audit: AuditLog) -> int:
+    """Say what was written and why, record the run's end, and return its exit code."""
+    error = shadow.error
+    if isinstance(error, ProviderError):
+        write_diagnostic(_written_line(shadow, out_dir))
+        exit_code = report_failure(error)
+        record_failed_end(audit, exit_code, error)
+        return exit_code
+    if error is not None:
+        # The error's own message says what to do; it names paths only redacted.
+        write_diagnostic(f"review-bot pr: {redact(str(error))}")
+    elif shadow.reason is Reason.NO_CREDENTIAL:
+        write_diagnostic(_NO_CREDENTIAL_HINT)
+    write_diagnostic(_written_line(shadow, out_dir))
+    audit.record(Stage.RUN, "end", {"exit_code": 0, "error": None})
+    return 0
 
 
 def _unwritable(out_dir: Path, exc: OSError) -> ConfigError:

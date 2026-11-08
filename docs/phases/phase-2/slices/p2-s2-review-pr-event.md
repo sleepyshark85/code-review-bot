@@ -1,6 +1,6 @@
 # P2-S2: Review a pull request from its event, within a per-run budget
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S1
 - **Touches:** `pr` (`event`, `git`, `runner`, `cli`), `settings`, `review`, `providers/claude_agent`
 
@@ -40,3 +40,12 @@ One command reviews a PR exactly as CI will, from its event payload and a clone.
 
 ## Notes
 - **README (main session):** describe `run`, and the two new settings.
+- **Build choices (developer):**
+  - The event's fields: `repository.full_name` is `repo`, and the run counts as a fork unless `pull_request.head.repo.full_name` equals it. The number is `pull_request.number`, and a missing `pull_request.draft` reads as false. SHAs may be either case and are stored lowercase. 10 MB means 10,000,000 bytes.
+  - `PullRequestRef` also holds `action`, so the runner can refuse it. `run_pull_request` takes `make_provider` rather than a provider, so a refused run builds none (AC5), and takes `environ` for `CI` and the key. `mode` and `github` wait for S5. `GitRepo.diff` takes `max_bytes` (Limits).
+  - `CI` counts as set when the variable exists, whatever its value.
+  - Exit 19 (event or git) writes no report, as the design lists no report for it. The audit log records the failed end.
+  - `event_at` is written in UTC as `+00:00`, like the other timestamps, not as the event's `Z` text.
+  - Reviewable bytes are the UTF-8 bytes of the text sent to the model (`reviewable_text`). Over the cap raises `DiffTooLargeError`, so `review-bot` exits 6 and `run` skips with `too_large`.
+  - Both new settings also have flags, `--max-review-bytes` and `--max-output-tokens`, as every setting does. The output cap reaches the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, and only when set.
+  - Outside `pr`: `review.review_diff` (the pipeline from diff text), `cli.run_to_completion` and `cli.then_discard_unraisable` (the event loop, shared by `run_review` and `run`), `MockProvider(usage=...)`, and `ShadowReport.error` (the error that ended a run, used for the message and exit code but never written).

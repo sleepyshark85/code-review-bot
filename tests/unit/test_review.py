@@ -12,6 +12,7 @@ from diff_samples import MINIMAL_DIFF, section
 from review_bot.audit import AuditLog
 from review_bot.errors import (
     DiffNotParsableError,
+    DiffTooLargeError,
     ErrorCategory,
     ProviderError,
     SecretDetectedError,
@@ -527,3 +528,34 @@ def test_run_pipeline_records_a_duplicate_with_the_fingerprint_it_repeats(tmp_pa
         duplicate["duplicate_of"] == kept["fingerprint"] == result.verification.kept[0].fingerprint
     )
     assert events(log).count("policy.decided") == 1
+
+
+def review_with_cap(tmp_path: Path, diff: str, cap: int) -> tuple[PipelineResult, MockProvider]:
+    provider = MockProvider(findings=[])
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 6, tzinfo=UTC))
+    settings = Settings(provider="mock", max_review_bytes=cap)
+    result = asyncio.run(run_pipeline(write_diff(tmp_path, diff), settings, provider, audit))
+    return result, provider
+
+
+def test_run_pipeline_counts_only_files_not_skipped_against_the_review_byte_cap(
+    tmp_path: Path,
+) -> None:
+    docs = section("README.md", "+" + "x" * 5_000 + "\n")
+    code = section("app.py", "+print(1)\n")
+
+    result, provider = review_with_cap(tmp_path, docs + code, 1_000)
+
+    assert result.model_called
+    assert len(provider.requests) == 1
+
+
+def test_run_pipeline_over_the_review_byte_cap_records_the_skip_and_calls_no_provider(
+    tmp_path: Path,
+) -> None:
+    code = section("app.py", "+" + "x" * 2_000 + "\n")
+
+    with pytest.raises(DiffTooLargeError, match=r"over the limit of 1000\. .*--max-review-bytes"):
+        review_with_cap(tmp_path, code, 1_000)
+
+    assert data_of(tmp_path / "audit.jsonl", "agent.skipped") == {"reason": "too_large"}

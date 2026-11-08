@@ -88,3 +88,9 @@ def test_provider_error_holds_its_diagnostics_as_a_tuple() -> None:
     assert error.diagnostics == ("d",)
     assert str(error) == "m"
     assert ProviderError(ErrorCategory.AUTH, "m").diagnostics == ()
+
+
+async def test_review_with_scripted_usage_reports_it() -> None:
+    response = await MockProvider(usage=TokenUsage(10, 20_000)).review(REQUEST)
+
+    assert response.usage == TokenUsage(10, 20_000)

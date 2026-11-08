@@ -17,7 +17,12 @@ from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diag
 from review_bot.console import write_diagnostic
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import DecodedPath, ParsedDiff, parse_diff
-from review_bot.errors import DiffNotParsableError, ProviderError, SecretDetectedError
+from review_bot.errors import (
+    DiffNotParsableError,
+    DiffTooLargeError,
+    ProviderError,
+    SecretDetectedError,
+)
 from review_bot.policy import Decision, decide
 from review_bot.prompt import PROMPT_VERSION, build_request
 from review_bot.providers.base import LLMProvider, ReviewResponse, TokenUsage
@@ -27,7 +32,7 @@ from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
-__all__ = ["run_pipeline"]
+__all__ = ["review_diff", "run_pipeline"]
 
 _MAX_NAMED_SECRETS: Final = 5
 # Caps each list in the parse record, so its size doesn't grow with the diff.
@@ -39,6 +44,7 @@ class _AgentSkipReason(StrEnum):
 
     SECRET_DETECTED = "secret_detected"  # noqa: S105 - a reason's name, not a secret
     NOTHING_TO_REVIEW = "nothing_to_review"
+    TOO_LARGE = "too_large"
 
 
 class _VerifyOutcome(StrEnum):
@@ -55,28 +61,47 @@ class _PolicyOutcome(StrEnum):
 async def run_pipeline(
     diff_path: Path, settings: Settings, provider: LLMProvider, audit: AuditLog
 ) -> PipelineResult:
-    """Review the diff at ``diff_path`` with ``provider``, sending only the files not skipped.
+    """Read the diff at ``diff_path``, then review it as ``review_diff`` does.
+
+    Raises:
+        InputError: If the diff file can't be read whole, or as ``review_diff`` raises it.
+        ProviderError: If the provider fails.
+        AuditError: If a record can't be written.
+    """
+    diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
+    return await review_diff(diff, settings, provider, audit, name=redact(str(diff_path)))
+
+
+async def review_diff(
+    diff: str, settings: Settings, provider: LLMProvider, audit: AuditLog, *, name: str
+) -> PipelineResult:
+    """Review ``diff`` with ``provider``, sending only the files not skipped.
 
     The rules' findings come first. A model finding is reported only if its file and line are in
     the diff and it repeats no earlier one, and any finding only if its severity meets the
     threshold. Each stage's decision goes to ``audit``; the run's end is the caller's to record.
     The provider's warnings go to stderr too, before the caller writes the review.
 
+    Args:
+        diff: The diff's text.
+        settings: The run's settings.
+        provider: The model to call.
+        audit: Where each stage's decision goes.
+        name: How messages name the diff; it must already be redacted.
+
     Raises:
-        InputError: If the diff can't be reviewed, or holds a possible secret; the provider is
-            not called.
+        InputError: If the diff isn't a diff, holds a possible secret, or its files to review
+            are over ``max_review_bytes``; the provider is not called.
         ProviderError: If the provider fails.
         AuditError: If a record can't be written.
     """
-    diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
     audit.record(Stage.RUN, "start", _start_data(settings, diff))
     # Before the parser, so nothing the parser misreads or drops can carry a secret past the scan.
     _stop_on_secrets(scan_secrets(diff), audit)
     try:
         parsed = parse_diff(diff)
     except DiffNotParsableError as exc:
-        shown_path = redact(str(diff_path))
-        raise DiffNotParsableError(f"Diff {shown_path} can't be parsed. {exc}") from exc
+        raise DiffNotParsableError(f"Diff {name} can't be parsed. {exc}") from exc
     # Only reached with clean raw text, so no secret is counted twice; before the parse record,
     # which names paths.
     _stop_on_secrets(_scan_decoded_paths(parsed.decoded_paths), audit)
@@ -97,6 +122,7 @@ async def run_pipeline(
             model_called=False,
         )
 
+    _stop_if_too_large_to_review(parsed, settings, name, audit)
     response = await _call_provider(provider, parsed, settings, diff, audit)
     # The model proposes, code disposes: nothing it returns is reported before both checks.
     verification = verify_findings(response.findings, rule_result.findings, parsed)
@@ -147,8 +173,27 @@ async def _call_provider(
     return response
 
 
+def _stop_if_too_large_to_review(
+    parsed: ParsedDiff, settings: Settings, name: str, audit: AuditLog
+) -> None:
+    """Record the skip and raise if the text to send is over ``max_review_bytes``.
+
+    Raises:
+        DiffTooLargeError: If it is over the cap.
+    """
+    limit = settings.max_review_bytes
+    review_bytes = len(parsed.reviewable_text.encode("utf-8"))
+    if limit is None or review_bytes <= limit:
+        return
+    audit.record(Stage.AGENT, "skipped", {"reason": _AgentSkipReason.TOO_LARGE})
+    raise DiffTooLargeError(
+        f"Diff {name} has {review_bytes} bytes of files to review after skipping, over the "
+        f"limit of {limit}. Split the change or raise --max-review-bytes."
+    )
+
+
 def _start_data(settings: Settings, diff: str) -> dict[str, JsonValue]:
-    # ``load_diff`` decoded the file as strict UTF-8, so encoding gives back its exact bytes.
+    # The diff's reader decoded it as strict UTF-8, so encoding gives back its exact bytes.
     diff_bytes = diff.encode("utf-8")
     return {
         "version": version("review-bot"),

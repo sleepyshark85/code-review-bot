@@ -29,6 +29,10 @@ class Settings(BaseModel):
     threshold: Severity = Severity.LOW
     # The upper bound keeps the bounded read's up-front buffer allocatable.
     max_diff_bytes: int = Field(default=400_000, gt=0, le=100_000_000)
+    # None means no cap: the bytes of the files sent to the model, after skipping (ADR 0012).
+    max_review_bytes: int | None = Field(default=None, gt=0)
+    # None means the Claude CLI's own limit.
+    max_output_tokens: int | None = Field(default=None, gt=0)
     max_retries: int = Field(default=2, ge=0)
     api_timeout_ms: int = Field(default=90_000, gt=0)
     # Finite, because an infinite deadline would remove the only wall-clock bound.

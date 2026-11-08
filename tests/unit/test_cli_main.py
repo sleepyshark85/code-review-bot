@@ -862,3 +862,17 @@ def test_main_with_a_diff_that_is_not_utf8_returns_4(
 
     assert main([str(path)], provider=MockProvider(findings=[])) == 4
     assert "is not valid UTF-8" in capsys.readouterr().err
+
+
+def test_main_over_the_review_byte_cap_exits_6_without_a_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diff_path = tmp_path / "change.diff"
+    diff_path.write_text(MINIMAL_DIFF, encoding="utf-8")
+    provider = MockProvider()
+
+    exit_code = main([str(diff_path), "--max-review-bytes", "1"], provider=provider)
+
+    assert exit_code == 6
+    assert "--max-review-bytes" in capsys.readouterr().err
+    assert provider.requests == []

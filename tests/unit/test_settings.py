@@ -63,6 +63,8 @@ def test_load_settings_with_valid_flag_ignores_invalid_environment(
         ("max_diff_bytes", "-1", "--max-diff-bytes"),
         ("max_diff_bytes", "100000001", "--max-diff-bytes"),
         ("max_diff_bytes", "1" + "0" * 30, "--max-diff-bytes"),
+        ("max_review_bytes", "0", "--max-review-bytes"),
+        ("max_output_tokens", "abc", "--max-output-tokens"),
     ],
 )
 def test_load_settings_with_invalid_flag_names_the_flag(field: str, value: str, flag: str) -> None:
@@ -78,6 +80,11 @@ def test_load_settings_with_invalid_flag_names_the_flag(field: str, value: str, 
         ("REVIEW_BOT_THRESHOLD", ""),
         ("REVIEW_BOT_MAX_DIFF_BYTES", "abc"),
         ("REVIEW_BOT_MAX_DIFF_BYTES", "100000001"),
+        *[
+            (variable, value)
+            for variable in ("REVIEW_BOT_MAX_REVIEW_BYTES", "REVIEW_BOT_MAX_OUTPUT_TOKENS")
+            for value in ("0", "-1", "abc")
+        ],
     ],
 )
 def test_load_settings_with_invalid_environment_names_the_variable(
@@ -181,3 +188,20 @@ def test_load_settings_never_reads_triage_from_the_environment(
     monkeypatch.setenv("REVIEW_BOT_TRIAGE", "true")
 
     assert load_settings({}).triage is False
+
+
+def test_load_settings_with_no_caps_set_leaves_both_new_caps_off() -> None:
+    settings = load_settings({})
+
+    assert (settings.max_review_bytes, settings.max_output_tokens) == (None, None)
+
+
+def test_load_settings_reads_both_new_caps_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_MAX_REVIEW_BYTES", "120000")
+    monkeypatch.setenv("REVIEW_BOT_MAX_OUTPUT_TOKENS", "16000")
+
+    settings = load_settings({})
+
+    assert (settings.max_review_bytes, settings.max_output_tokens) == (120_000, 16_000)

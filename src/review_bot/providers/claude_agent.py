@@ -102,7 +102,8 @@ class ClaudeAgentProvider:
         """Prepare the provider; nothing starts until ``review``.
 
         Args:
-            settings: Supplies the CLI's retry and timeout limits, and the overall deadline.
+            settings: Supplies the CLI's retry, timeout and output token limits, and the overall
+                deadline.
             sdk_call: Replaces the real SDK call, so tests stay offline.
         """
         self._settings = settings
@@ -158,14 +159,22 @@ def _build_options(
         hooks=None,
         agents=None,
         max_turns=1,
-        env={
-            "CLAUDE_CODE_MAX_RETRIES": str(settings.max_retries),
-            "API_TIMEOUT_MS": str(settings.api_timeout_ms),
-        },
+        env=_cli_env(settings),
         # Held as diagnostics, never written: it is untrusted, and only our own lines may reach
         # the user.
         stderr=on_stderr,
     )
+
+
+def _cli_env(settings: Settings) -> dict[str, str]:
+    env = {
+        "CLAUDE_CODE_MAX_RETRIES": str(settings.max_retries),
+        "API_TIMEOUT_MS": str(settings.api_timeout_ms),
+    }
+    # Only when set, so without the cap the CLI runs exactly as before (ADR 0012).
+    if settings.max_output_tokens is not None:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(settings.max_output_tokens)
+    return env
 
 
 def _read_message(message: object) -> ReviewResponse | _Signal | None:

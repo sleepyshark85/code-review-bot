@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from audit_records import read_records
 from diff_samples import section
+from git_samples import commit, init_repo
 
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding
@@ -214,3 +215,141 @@ def test_python_m_review_bot_pr_exits_with_mains_code(
 
     assert exit_info.value.code == 2
     assert "Run with --help for usage." in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["run", "--out", "o", "--repo", "r"], ["run", "--event", "e", "--out", "o"]],
+    ids=["no-event", "no-repo"],
+)
+def test_run_without_event_or_repo_exits_2(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv, provider=MockProvider()) == 2
+    assert "Run with --help for usage." in capsys.readouterr().err
+
+
+def pull_request_event(repo: Path, base: str, head: str) -> Path:
+    path = repo.parent / "event.json"
+    full_name = {"full_name": "owner/repo"}
+    document = {
+        "action": "opened",
+        "repository": full_name,
+        "pull_request": {
+            "number": 7,
+            "title": "Title canary-5d1a",
+            "draft": False,
+            "updated_at": "2026-11-08T09:30:00Z",
+            "base": {"sha": base, "repo": full_name},
+            "head": {"sha": head, "repo": full_name},
+        },
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def run_pr(event: Path, repo: Path, out: Path, *flags: str, provider: MockProvider) -> int:
+    argv = ["run", "--event", str(event), "--repo", str(repo), "--out", str(out), *flags]
+    return main([*argv, "--provider", "mock"], provider=provider)
+
+
+@pytest.fixture
+def clone(tmp_path: Path) -> tuple[Path, str, str]:
+    repo = init_repo(tmp_path / "repo")
+    base = commit(repo, {"app.py": "def run():\n    return 1\n"})
+    head = commit(repo, {"app.py": "def run():\n    return 2\n"})
+    return repo, base, head
+
+
+def test_run_writes_the_pull_requests_shadow_report_and_audit_log_in_out(
+    clone: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("REVIEW_BOT_AUDIT_LOG")
+    repo, base, head = clone
+    out = tmp_path / "out"
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head), repo, out, provider=MockProvider(findings=[])
+    )
+
+    document = shadow_json(out)
+    assert exit_code == 0
+    assert (document["origin"], document["outcome"]) == ("event", "reviewed")
+    assert document["pr"] == {"repo": "owner/repo", "number": 7, "base_sha": base, "head_sha": head}
+    assert document["event_at"] == "2026-11-08T09:30:00+00:00"
+    assert read_records(out / "audit.jsonl")[-1]["data"] == {"exit_code": 0, "error": None}
+    assert not any("canary-5d1a" in path.read_text("utf-8") for path in out.iterdir())
+
+
+def test_run_with_an_unusable_event_exits_19_with_one_line_and_no_report(
+    clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, base, _ = clone
+    event = pull_request_event(repo, base, "not-a-sha")
+    out = tmp_path / "out"
+    provider = MockProvider()
+
+    exit_code = run_pr(event, repo, out, provider=provider)
+
+    err = capsys.readouterr().err
+    assert exit_code == 19
+    assert err.count("\n") == 1
+    assert "pull_request.head.sha isn't a 40-hex-digit SHA" in err
+    assert not (out / "shadow.json").exists()
+    assert provider.requests == []
+
+
+def test_run_with_a_head_missing_from_the_clone_exits_19_naming_it(
+    clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, base, _ = clone
+    missing = "f" * 40
+    provider = MockProvider()
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, missing), repo, tmp_path / "out", provider=provider
+    )
+
+    assert exit_code == 19
+    assert f"Commit {missing} isn't in --repo" in capsys.readouterr().err
+    assert provider.requests == []
+
+
+def test_run_with_claude_in_ci_without_a_key_skips_and_says_to_add_the_secret(
+    clone: tuple[Path, str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("CI", "true")
+    repo, base, head = clone
+    out = tmp_path / "out"
+    provider = MockProvider()
+    argv = ["run", "--event", str(pull_request_event(repo, base, head)), "--repo", str(repo)]
+
+    exit_code = main([*argv, "--out", str(out), "--provider", "claude"], provider=provider)
+
+    assert exit_code == 0
+    assert shadow_json(out)["reason"] == "no_credential"
+    assert provider.requests == []
+    assert "Add it as a repository secret" in capsys.readouterr().err
+
+
+def test_run_with_a_provider_failure_keeps_the_key_out_of_every_file_in_out(
+    clone: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("REVIEW_BOT_AUDIT_LOG")
+    key = "sk-ant-canary-" + "0" * 20
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    repo, base, head = clone
+    out = tmp_path / "out"
+    error = ProviderError(ErrorCategory.AUTH, "Log in.", diagnostics=[f"key was {key}"])
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head), repo, out, provider=MockProvider(error=error)
+    )
+
+    assert exit_code == 8
+    assert shadow_json(out)["outcome"] == "failed"
+    assert (out / "audit.jsonl").exists()
+    assert not any(key in path.read_text("utf-8") for path in out.iterdir())

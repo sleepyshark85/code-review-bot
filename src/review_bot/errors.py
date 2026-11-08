@@ -15,6 +15,8 @@ __all__ = [
     "DiffTooLargeError",
     "DiffUnreadableError",
     "ErrorCategory",
+    "EventError",
+    "GitError",
     "InputError",
     "ProviderError",
     "ReviewBotError",
@@ -68,6 +70,14 @@ class SecretDetectedError(InputError):
         """Record where the possible secrets are alongside the message."""
         super().__init__(message)
         self.hits = tuple(hits)
+
+
+class EventError(InputError):
+    """The pull request event payload can't be read, or a field it needs is invalid."""
+
+
+class GitError(InputError):
+    """A git command in the pull request's clone failed, timed out or couldn't start."""
 
 
 class AuditError(ReviewBotError):
