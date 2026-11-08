@@ -1,6 +1,6 @@
 # P2-S8: Turn reactions and resolutions into labels
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S4, P2-S6
 - **Touches:** `pr` (`feedback`, `github`, `cli`), `.github/workflows/review.yml` (main session)
 

@@ -1,6 +1,6 @@
 # P2-S2: Review a pull request from its event, within a per-run budget
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S1
 - **Touches:** `pr` (`event`, `git`, `runner`, `cli`), `settings`, `review`, `providers/claude_agent`
 

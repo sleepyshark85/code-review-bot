@@ -1,6 +1,6 @@
 # P2-S6: Turn comments on with one repository variable
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S5, P2-S3
 - **Touches:** `pr` (`github`: `RestGitHubClient`, `cli`, `runner`), `providers/claude_agent`, `.github/workflows/review.yml` (main session)
 
