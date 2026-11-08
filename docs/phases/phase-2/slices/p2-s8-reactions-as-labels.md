@@ -1,6 +1,6 @@
 # P2-S8: Turn reactions and resolutions into labels
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S4, P2-S6
 - **Touches:** `pr` (`feedback`, `github`, `cli`), `.github/workflows/review.yml` (main session)
 
@@ -28,7 +28,7 @@ Developers' thumbs and resolved threads on the bot's comments become `feedback/v
 - **AC11:** Given two own comments sharing one fingerprint (a moved comment and its old thread), then their reactions combine into one reaction record for that fingerprint. A thumbs-up on one and a thumbs-down on the other give `conflict`; thumbs-ups on both give one `accept`.
 
 ## Limits
-API limits are as in S6. Only reaction content values and resolver identities are read, then reduced to labels. Identities are compared with the bot and dropped.
+API limits are as in S6. Only reaction content values and resolver identities are read, then reduced to labels. Identities are compared with the bot (for reactions, with any bot) and dropped.
 
 ## Interfaces
 A run writes at most one reaction record per fingerprint, combining every own comment that carries it. Adds to `feedback/v1`: the channels `reaction` and `resolution`, and the labels `conflict` and `resolved`.
@@ -38,3 +38,10 @@ A run writes at most one reaction record per fingerprint, combining every own co
 
 ## Notes
 - **Main session:** add the `closed` job from this spec.
+
+Build choices (developer):
+- `GitHubClient.list_signals(pr)` returns each own comment (`BotComment`, with `resolved_by`) and the set of reaction contents by people. **Reactions by any bot (REST user type `Bot`, such as `dependabot[bot]`) are ignored**, not only this bot's (coordinator's decision, review round 1); a reaction with no user (a deleted account) counts as a person's. Reactor identities are checked inside the client and dropped. `RestGitHubClient` lists the comments and threads as `list_bot_comments` does, then `GET /repos/{o}/{r}/pulls/comments/{id}/reactions` per own comment, paged and capped as in S6; errors name `list_signals`.
+- `feedback/v1` is two models told apart by `channel`: `ShadowFeedback` (S4's record, labels `accept` or `reject`) and `SignalFeedback` (`reaction` or `resolution`, with `index`, `source`, `severity`, `reason`, `run_id`, `model` and `prompt_version` null). `parse_feedback_line` reads `channel` first, then validates with that model, so errors name plain keys (`repo: Field required`) and an unknown channel says `Input should be 'shadow', 'reaction' or 'resolution'` without quoting it. A shadow record with another label says `a shadow record's label is 'accept' or 'reject'`.
+- A fingerprint's records name its newest comment's file, rule part and anchor. A fingerprint gets at most one `resolution` record too, even if two of its threads were resolved by a person. Records come in order of each fingerprint's oldest comment, reaction before resolution, all with one `recorded_at`.
+- `collect` always writes `feedback.jsonl`, empty when nothing is labelled, and prints `reaction=N resolution=M`. Without `GITHUB_TOKEN` it exits 2 with its own message, saying to run it in the collect job or set a token that can read the pull request; an unwritable `--out` exits 2. It writes no audit log, as it calls no model.
+- `GITHUB_TOKEN` and `GITHUB_API_URL` format errors now say "so nothing ran" instead of "so nothing was reviewed", since `collect` shares them.

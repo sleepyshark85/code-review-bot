@@ -1,19 +1,16 @@
 name: Review
 
-# Shadow review of every same-repo pull request (P2-S3, ADRs 0008, 0010, 0012).
+# Reviews every same-repo pull request in shadow mode (P2-S3) or with comments (P2-S6),
+# and collects reactions as labels when it closes (P2-S8). ADRs 0008 to 0012.
 # The bot's code and settings come from the base commit; the PR supplies only its diff.
 # Never a required check: branch protection requires only CI's "gate".
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, closed]
 
 permissions:
   contents: read
-
-concurrency:
-  group: review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   check-mode:
@@ -39,8 +36,12 @@ jobs:
     name: shadow review
     needs: check-mode
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.action != 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
       && (vars.REVIEW_BOT_MODE == '' || vars.REVIEW_BOT_MODE == 'shadow')
+    concurrency:
+      group: review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -105,8 +106,12 @@ jobs:
     name: comment review
     needs: check-mode
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.action != 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
       && vars.REVIEW_BOT_MODE == 'comment'
+    concurrency:
+      group: review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -166,5 +171,51 @@ jobs:
             ${{ runner.temp }}/review-bot/shadow.json
             ${{ runner.temp }}/review-bot/shadow.md
             ${{ runner.temp }}/review-bot/audit.jsonl
+          retention-days: 90
+          if-no-files-found: warn
+
+  collect:
+    name: collect feedback
+    needs: check-mode
+    if: >-
+      github.event.action == 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && vars.REVIEW_BOT_MODE != 'off'
+    # Its own group, never cancelled: closing a PR must not cancel a review run part-way,
+    # and a quick reopen must not cancel the collection.
+    concurrency:
+      group: collect-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the base commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: Install the bot from the base commit
+        run: uv sync --locked --no-dev
+
+      - name: Collect reactions and resolutions as labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          uv run --no-sync python -m review_bot.pr collect
+          --event "$GITHUB_EVENT_PATH"
+          --out "$RUNNER_TEMP/review-bot"
+
+      - name: Upload the feedback
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: feedback-pr${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-bot/feedback.jsonl
           retention-days: 90
           if-no-files-found: warn

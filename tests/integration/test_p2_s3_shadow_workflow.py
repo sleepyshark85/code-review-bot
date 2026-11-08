@@ -133,6 +133,22 @@ def run_step_in(job: dict[str, Any]) -> dict[str, Any] | None:
     return found[0] if found else None
 
 
+def collect_step_in(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The step running `python -m review_bot.pr collect` (P2-S8), if the job has one."""
+    found = [
+        step for step in job.get("steps", []) if "review_bot.pr collect" in step.get("run", "")
+    ]
+    assert len(found) <= 1
+    return found[0] if found else None
+
+
+def collect_job_name(workflow: dict[Any, Any]) -> str:
+    """The one job with a `collect` step (P2-S8)."""
+    found = [name for name, job in jobs_of(workflow).items() if collect_step_in(job) is not None]
+    assert len(found) == 1, f"expected one job running `collect`, found {found}"
+    return found[0]
+
+
 def run_step(workflow: dict[Any, Any]) -> dict[str, Any]:
     step = run_step_in(shadow_job(workflow))
     assert step is not None
@@ -271,15 +287,17 @@ def shadow_runs(workflow: dict[Any, Any], *, head_repo: str | None, mode: str) -
     return job_runs(shadow_job(workflow), head_repo=head_repo, mode=mode)
 
 
-def job_runs(job: dict[str, Any], *, head_repo: str | None, mode: str) -> bool:
-    """Whether the job's `if:` holds for a `synchronize` event with this head repo and mode."""
+def job_runs(
+    job: dict[str, Any], *, head_repo: str | None, mode: str, action: str = "synchronize"
+) -> bool:
+    """Whether the job's `if:` holds for an event with this action, head repo and mode."""
     condition = job.get("if", True)
     if condition is True:
         return True
     contexts = {
         "github.event.pull_request.head.repo.full_name": head_repo,
         "github.repository": REPO,
-        "github.event.action": "synchronize",
+        "github.event.action": action,
         "vars.REVIEW_BOT_MODE": mode,
     }
     return evaluate(re.sub(r"^\$\{\{|\}\}$", "", str(condition).strip()), contexts)
@@ -327,8 +345,9 @@ def test_p2_s3_ac1_shadow_job_runs_only_for_the_four_actions(workflow):
     types = set(triggers_of(workflow)["pull_request"]["types"])
     assert types >= SHADOW_ACTIONS
     assert types <= SHADOW_ACTIONS | LATER_ACTIONS
-    if types != SHADOW_ACTIONS:
-        assert "github.event.action" in str(shadow_job(workflow).get("if", ""))
+    for action in types:
+        runs = job_runs(shadow_job(workflow), head_repo=REPO, mode="", action=action)
+        assert runs == (action in SHADOW_ACTIONS), action
 
 
 # --- AC2: permissions ----------------------------------------------------------------------------

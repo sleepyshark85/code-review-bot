@@ -604,3 +604,55 @@ Suite: `tests/integration/test_p2_s9_repo_config.py`, written from the spec, des
 ### Coverage
 
 From this file alone, with `--cov=review_bot`, against the work in progress: `pr/config.py` 100%, `diff_parser.py` 82%, `pr/git.py` 71%, `pr/runner.py` 68%. The rest of `git.py` and `runner.py` is error paths and comment mode, which S2, S5 and S7's suites cover.
+
+## P2-S8: Turn reactions and resolutions into labels
+
+Suite: `tests/integration/test_p2_s8_reactions_as_labels.py`, written from the spec, ADR 0011 and design.md while the developer built the slice, before any of its code was read. Re-run against the developer's final code (before review) and the main session's revised workflow: **83 of 83 pass**, and the P2-S3, P2-S4 and P2-S6 suites pass with it (300 of 300 across the four files). The main session confirmed the seam below.
+
+### Seam and set-up
+
+- AC1 to AC7 and AC11: `review_bot.pr.cli.main(["collect", "--event", PATH, "--out", DIR], github=FakeGitHubClient)`, with P2-S2's event and action `closed`. Comments are seeded with the fake's `add_comment` and `resolve(by="bot"|"person")`, and reactions with `react(comment_id, content, *, by, by_type="User")`. AC7 fails each operation a healthy run called, which is `list_signals`. `ClosedPr` is the one place to change.
+- AC8: `collect` with no injected client, so it builds `RestGitHubClient` from `GITHUB_TOKEN` and `GITHUB_API_URL` and talks to `github_stub.GitHubStub`. The stub now serves `GET /pulls/comments/{id}/reactions` (the build asks for `per_page=100&page=N`; paged, with an endless mode), puts the same reactions in each GraphQL comment node, and counts them in the REST comment's `reactions`. Resolvers come from GraphQL `resolvedBy`, as in S6.
+- Canaries: two reacting usernames, a resolver login, a rationale and another person's comment body. None may appear in any file under `DIR`.
+
+### Criteria
+
+| AC | Tests (`test_p2_s8_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_one_thumbs_up_from_a_person_is_one_reaction_accept_record` | pass |
+| AC2 | `ac2_thumbs_combine_into_one_label`, 6 cases: down only, both from one person, both from two people, a down then ups, two ups (one `accept`), two downs | pass |
+| AC3 | `ac3_no_thumbs_from_a_person_is_no_reaction_record`, 5 cases: heart, laugh and eyes; the bot's up; the bot's down; the bot's both plus a heart; hooray, rocket and confused. `ac3_the_bots_thumbs_up_doesnt_turn_a_persons_reject_into_conflict` | pass |
+| AC4 | `ac4_a_person_resolved_thread_is_one_resolution_record`, `ac4_a_resolution_record_comes_with_the_reaction_record`, `ac4_a_bot_resolved_thread_gives_no_resolution_record` | pass |
+| AC5 | `ac5_a_comment_by_someone_else_gives_no_record`, 4 cases: a person with a valid marker, the bot's login typed `User`, GraphQL's login, another bot. `ac5_a_bot_comment_without_a_valid_marker_gives_no_record`, 5 cases: no marker, an unknown rule, a short fingerprint, text after the marker, a summary marker. Each has thumbs from two people and a person's resolution. `ac5_no_own_comments_writes_no_record` | pass |
+| AC6 | `ac6_records_have_s4s_keys_marker_fields_and_null_join_fields` (the exact key set; fingerprint, file, rule part and anchor from the marker; the 7 join fields null; `recorded_at` UTC). `ac6_no_username_or_body_reaches_dir` (canaries) | pass |
+| AC7 | `ac7_each_failing_github_call_exits_18_with_no_feedback_file`: every operation a healthy `collect` called is made to fail in turn | pass |
+| AC8 | `ac8_rest_client_reads_reactions_and_resolvers` (a person's and the bot's resolution, the bot's reaction, a person's comment; canaries and token absent). `ac8_reactions_over_two_pages_are_all_read`. `ac8_more_than_10_pages_of_reactions_exits_18_naming_the_limit`. `ac8_a_failed_read_exits_18_once_with_one_line_and_no_file`: 7 failure kinds × reactions, threads and comments, with GitHub quoting the token back. `ac8_no_token_exits_2_naming_it_and_sends_nothing`. `ac8_collect_makes_no_write_call` | pass |
+| AC9 | `ac9_closed_is_added_to_the_pull_request_types`, `ac9_collect_runs_for_a_closed_same_repo_pr_unless_mode_is_off`, `ac9_collect_doesnt_run_for_a_fork` (3), `ac9_collect_doesnt_run_for_any_other_action` (4), `ac9_shadow_and_comment_jobs_dont_run_on_closed` (4 modes), `ac9_collect_permissions_are_exactly_contents_and_pull_requests_read`, `ac9_only_the_collect_step_gets_the_token_and_no_other_secret`, `ac9_collect_step_passes_the_event_and_out`, `ac9_feedback_is_uploaded_for_90_days_named_by_pr_and_attempt`, `ac9_collect_has_its_own_concurrency_group_that_never_cancels` (no workflow-level group; collect's group holds the PR number with `cancel-in-progress: false`, and differs from the shadow and comment jobs' groups, which cancel in progress per PR), `ac9_collect_command_is_accepted_by_the_cli` (exit 19 on a broken event). P2-S3's AC6, AC9, AC10 and AC11 tests walk every job, the collect job included | pass |
+| AC10 | `ac10_label_reads_collected_records_and_still_asks_about_the_same_comment`: `collect`'s own file, whose records carry K1's fingerprint, file, rule part and anchor, is `label`'s labels file. K1 is still asked about and the answer is appended | pass |
+| AC11 | `ac11_a_moved_comment_and_its_old_thread_give_one_reaction_record`, 4 cases (up/down `conflict`, up/up `accept`, down/down `reject`, heart/up `accept`), with the old thread bot-resolved so it adds no resolution record. `ac11_different_fingerprints_stay_separate` | pass |
+| Limits | `limits_many_comments_and_reactions_are_reduced_quickly`: 2,000 own comments with 5 reactions each, within 60 s | pass |
+
+### Findings against the workflow (main session)
+
+Both are resolved in the revised workflow:
+
+1. **minor (fixed): a shared concurrency group let `closed` and `collect` cancel each other's work.** The workflow-level group is gone. The shadow and comment jobs each have `review-<PR>` with `cancel-in-progress: true`, and the collect job has `collect-<PR>` with `cancel-in-progress: false`. `ac9_collect_has_its_own_concurrency_group_that_never_cancels` pins this.
+2. **question (fixed): the collect step set an unused `PR_NUMBER`.** It's removed.
+
+### Readings for the designer
+
+1. **Settled by the spec's build notes:** an empty run writes an empty `feedback.jsonl` and exits 0 (asserted by the AC5 empty-PR test).
+2. **Settled by the spec's build notes:** comments sharing a fingerprint give records naming the newest comment's file, rule part and anchor (unit test `test_a_findings_records_name_its_newest_comments_file_and_anchor_and_null_the_rest`).
+3. **Settled by the spec's build notes:** at most one resolution record per fingerprint (unit test `test_a_moved_comment_and_its_person_resolved_old_thread_give_one_resolution_label`).
+4. **Settled in review round 1 (main session): reactions by any bot** (user type `Bot`, such as `dependabot[bot]`) are ignored; only people's reactions become labels.
+
+### Earlier suites changed
+
+- **`github_stub.py`:** reactions per review comment (`add_reaction`, the REST reactions route, GraphQL `reactions` nodes, REST counts) and `endless_reactions`. Resolvers per thread were already there.
+- **P2-S3** (`test_p2_s3_shadow_workflow.py`): `job_runs` takes an `action` (default `synchronize`), and `collect_step_in` and `collect_job_name` are added. `ac1_shadow_job_runs_only_for_the_four_actions` now evaluates the shadow job's `if:` for every trigger type: it runs for the four and not for `closed`. Before, it only checked that `github.event.action` appeared in the `if:`.
+- **P2-S3 AC7 and P2-S6 AC10 concurrency tests:** unchanged. They already read the job's own `concurrency` before falling back to a workflow-level one, so they hold for the per-job groups.
+- **P2-S6** (`test_p2_s6_comments_on.py`): `ac10_comment_job_runs_only_for_the_shadow_jobs_four_actions` evaluates the same way. `ac10_no_other_step_gets_either_credential` adds exactly the collect step's `env` and `env.GITHUB_TOKEN` to the allowed holders, which the new workflow had made it fail. The shadow and comment entries are unchanged.
+
+### Coverage
+
+From the S3, S4, S6 and S8 files together, with `--cov=review_bot.pr`, against the final code: `pr/feedback.py` 97%, `pr/rest_github.py` 95%. `pr/cli.py` and `pr/fake_github.py` are covered further by the S5 and S7 suites.

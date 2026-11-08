@@ -1,4 +1,4 @@
-"""The real ``GitHubClient``: GitHub's REST and GraphQL APIs over ``urllib`` (P2-S6).
+"""The real ``GitHubClient``: GitHub's REST and GraphQL APIs over ``urllib`` (P2-S6, P2-S8).
 
 It has its own module so the pure ``plan`` and ``shadow`` modules, which import the data types in
 ``github``, never load the HTTP stack.
@@ -32,12 +32,13 @@ from review_bot.pr.comments import (
 )
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import (
-    BOT_LOGIN,
-    BOT_USER_TYPE,
     BotComment,
+    CommentSignals,
     NewComment,
     Resolver,
     Summary,
+    is_any_bot,
+    is_bot_user,
 )
 from review_bot.secret_scan import redact
 from review_bot.settings import GITHUB_TOKEN_VARIABLE
@@ -79,12 +80,12 @@ _NO_TOKEN: Final = (
     "reviewed. Run it in the comment job, which sets it, or run with --mode shadow."
 )
 _BAD_TOKEN: Final = (
-    f"{GITHUB_TOKEN_VARIABLE} holds characters a token can't have, so nothing was reviewed. Set "
-    "it to the workflow's token."
+    f"{GITHUB_TOKEN_VARIABLE} holds characters a token can't have, so nothing ran. Set it "
+    "to the workflow's token."
 )
 _BAD_API_URL: Final = (
     f"{API_URL_VARIABLE} must be an https:// URL, or an http:// one on 127.0.0.1 or localhost, "
-    "so nothing was reviewed. Unset it to use https://api.github.com."
+    "so nothing ran. Unset it to use https://api.github.com."
 )
 
 _THREADS_QUERY: Final = """
@@ -171,6 +172,11 @@ class _IssueComment(_Schema):
     user: _User | None
 
 
+class _Reaction(_Schema):
+    content: str
+    user: _User | None
+
+
 class _WithId(_Schema):
     id: int
 
@@ -247,6 +253,7 @@ class _ResolveData(_Schema):
 
 _REVIEW_COMMENTS: Final = TypeAdapter(list[_ReviewComment])
 _ISSUE_COMMENTS: Final = TypeAdapter(list[_IssueComment])
+_REACTIONS: Final = TypeAdapter(list[_Reaction])
 _WITH_ID: Final = TypeAdapter(_WithId)
 _GRAPHQL_RESPONSE: Final = TypeAdapter(_GraphQLResponse)
 _THREADS_DATA: Final = TypeAdapter(_ThreadsData)
@@ -290,14 +297,18 @@ class RestGitHubClient:
         A comment is the bot's when its REST author is ``github-actions[bot]`` of type ``Bot``.
         Its thread is the one its ID starts, and its line is None when that thread is outdated.
         """
-        operation = "list_bot_comments"
-        comments = self._list(operation, f"{self._pull_url(pr)}/comments", _REVIEW_COMMENTS)
-        threads = self._threads_by_comment(operation, pr)
+        return self._bot_comments("list_bot_comments", pr)
+
+    def list_signals(self, pr: PullRequestRef) -> tuple[CommentSignals, ...]:
+        """Return what ``list_bot_comments`` does, each with the content of people's reactions.
+
+        Each comment's reactions are one more listing. A reaction by any user of type ``Bot`` is
+        left out; who left the others is dropped.
+        """
+        operation = "list_signals"
         return tuple(
-            _bot_comment(comment, marker, _thread_of(operation, threads, comment.id))
-            for comment in sorted(comments, key=lambda comment: comment.id)
-            # The author first, so nobody else's text is parsed.
-            if _is_bot(comment.user) and (marker := read_marker(comment.body)) is not None
+            CommentSignals(comment, self._reactions(operation, comment.comment_id))
+            for comment in self._bot_comments(operation, pr)
         )
 
     def read_summary(self, pr: PullRequestRef) -> Summary | None:
@@ -344,6 +355,25 @@ class RestGitHubClient:
         else:
             url = f"{self._repo_url}/issues/comments/{summary.id}"
             self._send(operation, "PATCH", url, payload, _WITH_ID)
+
+    def _bot_comments(self, operation: str, pr: PullRequestRef) -> tuple[BotComment, ...]:
+        """The bot's inline comments on ``pr`` with a valid marker, oldest first."""
+        comments = self._list(operation, f"{self._pull_url(pr)}/comments", _REVIEW_COMMENTS)
+        threads = self._threads_by_comment(operation, pr)
+        return tuple(
+            _bot_comment(comment, marker, _thread_of(operation, threads, comment.id))
+            for comment in sorted(comments, key=lambda comment: comment.id)
+            # The author first, so nobody else's text is parsed.
+            if _is_bot(comment.user) and (marker := read_marker(comment.body)) is not None
+        )
+
+    def _reactions(self, operation: str, comment_id: int) -> frozenset[str]:
+        """The content of every reaction people left on an inline comment."""
+        url = f"{self._repo_url}/pulls/comments/{comment_id}/reactions"
+        reactions = self._list(operation, url, _REACTIONS)
+        return frozenset(
+            reaction.content for reaction in reactions if not _is_any_bot(reaction.user)
+        )
 
     def _summary_comment(self, operation: str, pr: PullRequestRef) -> _IssueComment | None:
         """The bot's oldest issue comment on ``pr`` whose last line is a summary marker."""
@@ -481,7 +511,12 @@ class RestGitHubClient:
 
 
 def _is_bot(user: _User | None) -> bool:
-    return user is not None and user.login == BOT_LOGIN and user.user_type == BOT_USER_TYPE
+    return user is not None and is_bot_user(user.login, user.user_type)
+
+
+def _is_any_bot(user: _User | None) -> bool:
+    """Whether ``user`` is a bot of any kind; a deleted account, with no user, is a person."""
+    return user is not None and is_any_bot(user.user_type)
 
 
 def _thread_of(operation: str, threads: Mapping[int, _Thread], comment_id: int) -> _Thread:

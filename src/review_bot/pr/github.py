@@ -15,15 +15,28 @@ __all__ = [
     "BOT_LOGIN",
     "BOT_USER_TYPE",
     "BotComment",
+    "CommentSignals",
     "GitHubClient",
     "NewComment",
     "Resolver",
     "Summary",
+    "is_any_bot",
+    "is_bot_user",
 ]
 
 # The bot's comments are those by this REST user (ADR 0008, ADR 0009).
 BOT_LOGIN: Final = "github-actions[bot]"
 BOT_USER_TYPE: Final = "Bot"
+
+
+def is_bot_user(login: str, user_type: str) -> bool:
+    """Whether a REST user, by its ``login`` and ``type``, is the bot."""
+    return login == BOT_LOGIN and user_type == BOT_USER_TYPE
+
+
+def is_any_bot(user_type: str) -> bool:
+    """Whether a REST user of this ``type`` is any bot; reactions by any bot are ignored."""
+    return user_type == BOT_USER_TYPE
 
 
 class Resolver(StrEnum):
@@ -54,6 +67,19 @@ class BotComment:
 
 
 @dataclass(frozen=True, slots=True)
+class CommentSignals:
+    """One of the bot's own inline comments, with the reactions people left on it.
+
+    ``reactions`` holds the content values, such as ``+1``, ``-1`` or ``heart``, of the
+    reactions by people: users of any type but ``Bot``. Who left them isn't kept. Who resolved
+    the comment's thread is ``comment.resolved_by``.
+    """
+
+    comment: BotComment
+    reactions: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class NewComment:
     """An inline comment to post on ``line`` of ``path``, on the new side of the diff."""
 
@@ -74,10 +100,17 @@ class Summary:
 
 
 class GitHubClient(Protocol):
-    """The calls a comment-mode run makes. Each raises ``GitHubError`` naming itself on failure."""
+    """The calls a comment-mode run and ``collect`` make.
+
+    Each raises ``GitHubError`` naming itself on failure.
+    """
 
     def list_bot_comments(self, pr: PullRequestRef) -> tuple[BotComment, ...]:
         """Return the bot's own inline comments on ``pr``, oldest first."""
+        ...
+
+    def list_signals(self, pr: PullRequestRef) -> tuple[CommentSignals, ...]:
+        """Return the bot's own inline comments on ``pr``, oldest first, with their reactions."""
         ...
 
     def read_summary(self, pr: PullRequestRef) -> Summary | None:

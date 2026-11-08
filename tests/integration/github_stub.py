@@ -11,6 +11,9 @@ more fields than a client needs, so a client that ignores unknown fields reads t
 - `POST /graphql` with `resolveReviewThread`: the thread-resolve mutation;
 - `POST /repos/{o}/{r}/pulls/{n}/reviews`: review creation;
 - `PATCH /repos/{o}/{r}/pulls/comments/{id}`: a review comment edit;
+- `GET  /repos/{o}/{r}/pulls/comments/{id}/reactions`: a review comment's reactions, paged as
+  above (P2-S8); the same reactions are in each GraphQL comment node's `reactions`, with GraphQL's
+  content names and logins, and summed in the REST comment's `reactions` counts;
 - `GET`, `POST /repos/{o}/{r}/issues/{n}/comments` and `PATCH /repos/{o}/{r}/issues/comments/{id}`:
   issue comments, for the summary.
 
@@ -35,6 +38,18 @@ MAX_INT32 = 2**31 - 1
 # How long a `timeout` failure holds its response; a client with a 30 s timeout capped by the
 # test gives up long before this.
 HOLD_S = 20.0
+
+# REST reaction content -> GraphQL `ReactionContent`.
+GRAPHQL_REACTION = {
+    "+1": "THUMBS_UP",
+    "-1": "THUMBS_DOWN",
+    "laugh": "LAUGH",
+    "confused": "CONFUSED",
+    "heart": "HEART",
+    "hooray": "HOORAY",
+    "rocket": "ROCKET",
+    "eyes": "EYES",
+}
 
 FAILURE_STATUS = {"401": 401, "403": 403, "404": 404, "422": 422, "500": 500}
 FAILURE_KINDS = (*FAILURE_STATUS, "rate_limited", "429", "timeout", "not_json", "over_5_mb")
@@ -69,6 +84,9 @@ class State:
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
     failures: dict[str, str] = field(default_factory=dict)
     endless_review_comments: bool = False
+    # P2-S8: each review comment's reactions as (REST content, REST login, user type).
+    reactions: dict[int, list[tuple[str, str, str]]] = field(default_factory=dict)
+    endless_reactions: bool = False
     # Hostile: a failure's message quotes the request's `Authorization` header back.
     echo_authorization: bool = False
     next_id: int = 900_000
@@ -117,7 +135,8 @@ def review_comment(  # noqa: PLR0913 - one keyword per GitHub fact a comment has
         "pull_request_url": "https://api.example.invalid/pulls/7",
         "author_association": "NONE" if user_type == "Bot" else "MEMBER",
         "_links": {"self": {"href": "https://api.example.invalid"}},
-        "reactions": {"url": "https://api.example.invalid", "total_count": 0, "+1": 0, "-1": 0},
+        "reactions": {"url": "https://api.example.invalid", "total_count": 0}
+        | dict.fromkeys(GRAPHQL_REACTION, 0),
         "start_line": None,
         "original_start_line": None,
         "start_side": None,
@@ -198,6 +217,17 @@ class GitHubStub:
         (thread,) = [t for t in self.state.threads if parent in t.comment_ids]
         thread.comment_ids.append(comment["id"])
 
+    def add_reaction(
+        self, comment_id: int, content: str, login: str, user_type: str = "User"
+    ) -> None:
+        """A reaction on a review comment, by the REST user `login` (P2-S8)."""
+        assert content in GRAPHQL_REACTION, content
+        self.state.reactions.setdefault(comment_id, []).append((content, login, user_type))
+        (comment,) = [c for c in self.state.review_comments if c["id"] == comment_id]
+        counts = comment["reactions"]
+        counts["total_count"] = counts.get("total_count", 0) + 1
+        counts[content] = counts.get(content, 0) + 1
+
     def add_issue_comment(self, comment: dict[str, Any]) -> None:
         self.state.issue_comments.append(comment)
 
@@ -237,6 +267,7 @@ _ROUTES = (
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls/\d+/comments"), "list_review_comments"),
     ("POST", re.compile(r"/repos/[^/]+/[^/]+/pulls/\d+/reviews"), "create_review"),
     ("PATCH", re.compile(r"/repos/[^/]+/[^/]+/pulls/comments/(\d+)"), "edit_review_comment"),
+    ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls/comments/(\d+)/reactions"), "list_reactions"),
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/issues/\d+/comments"), "list_issue_comments"),
     ("POST", re.compile(r"/repos/[^/]+/[^/]+/issues/\d+/comments"), "create_issue_comment"),
     ("PATCH", re.compile(r"/repos/[^/]+/[^/]+/issues/comments/(\d+)"), "edit_issue_comment"),
@@ -353,8 +384,11 @@ def _respond(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[str, st
     state = stub.state
     if request.route == "list_review_comments" and state.endless_review_comments:
         return _endless_page(stub, request)
+    if request.route == "list_reactions" and state.endless_reactions:
+        return _endless_reactions(stub, request)
     responders = {
         "list_review_comments": lambda: _page(stub, request, state.review_comments),
+        "list_reactions": lambda: _page(stub, request, _rest_reactions(state, request)),
         "list_issue_comments": lambda: _page(stub, request, state.issue_comments),
         "list_threads": lambda: (200, _threads_page(state, request.json or {}), {}),
         "graphql_resolve": lambda: (200, _resolved(state, request), {}),
@@ -413,6 +447,48 @@ def _endless_page(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[st
         for offset in range(per_page)
     ]  # fmt: skip
     return 200, chosen, {"Link": _link(stub, request, per_page, page, page + 1)}
+
+
+def _rest_reactions(state: State, request: Request) -> list[dict[str, Any]]:
+    comment_id = int(request.path.rsplit("/", 2)[1])
+    return [
+        {
+            "id": 70_000 + index,
+            "node_id": f"REA_{comment_id}_{index}",
+            "user": user(login, user_type),
+            "content": content,
+            "created_at": "2026-11-02T10:00:00Z",
+        }
+        for index, (content, login, user_type) in enumerate(state.reactions.get(comment_id, []))
+    ]
+
+
+def _endless_reactions(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[str, str]]:
+    per_page, page = _paging(request)
+    chosen = [
+        {"id": page * 1000 + offset, "node_id": f"REA_{page}_{offset}",
+         "user": user("octocat", "User"), "content": "+1", "created_at": "2026-11-02T10:00:00Z"}
+        for offset in range(per_page)
+    ]  # fmt: skip
+    return 200, chosen, {"Link": _link(stub, request, per_page, page, page + 1)}
+
+
+def _graphql_reactions(state: State, comment_id: int) -> dict[str, Any]:
+    nodes = [
+        {
+            "content": GRAPHQL_REACTION[content],
+            "user": {
+                "login": GRAPHQL_BOT_LOGIN if login == BOT_LOGIN else login,
+                "__typename": user_type,
+            },
+        }
+        for content, login, user_type in state.reactions.get(comment_id, [])
+    ]
+    return {
+        "totalCount": len(nodes),
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": nodes,
+    }
 
 
 _ARGUMENTS = re.compile(r"reviewThreads\s*\(([^)]*)\)")
@@ -484,6 +560,7 @@ def _thread_node(state: State, thread: Thread) -> dict[str, Any]:
             "path": comment["path"],
             "outdated": thread.outdated,
             "url": comment["html_url"],
+            "reactions": _graphql_reactions(state, comment["id"]),
         }
         for comment in comments
     ]
