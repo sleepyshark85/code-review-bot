@@ -15,6 +15,14 @@ from datetime import datetime
 from typing import Final
 
 from review_bot.audit import AuditLog, Stage
+from review_bot.context.codeowners import (
+    CODEOWNERS_PATHS,
+    MAX_CODEOWNERS_BYTES,
+    NO_CODEOWNERS,
+    CodeOwners,
+    CodeOwnersStatus,
+    parse_codeowners,
+)
 from review_bot.diff_parser import ParsedDiff, parse_diff
 from review_bot.errors import (
     DiffEmptyError,
@@ -85,7 +93,8 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     GitHub runs, and the report is ``skipped`` with that reason. Otherwise the repository's
     policy is read from the base commit's ``.review-bot.toml`` (``_repo_config``): if it is
     invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
-    provider is made, and called at most once.
+    provider is made, and called at most once. A run that plans comments reads the base
+    commit's CODEOWNERS too (``_code_owners``), to name the owners of each finding.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -211,8 +220,11 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
             settings = with_repo_threshold(settings, config)
             review = await _review(pr, git, github, make_provider, settings, config.exclude, audit)
     existing: tuple[BotComment, ...] = ()
-    if github is not None and review.plans_comments:
-        existing = await asyncio.to_thread(github.list_bot_comments, pr)
+    codeowners: CodeOwners | None = None
+    if review.plans_comments:
+        codeowners = await asyncio.to_thread(_code_owners, git, pr.base_sha)
+        if github is not None:
+            existing = await asyncio.to_thread(github.list_bot_comments, pr)
     shadow = build_shadow_report(
         review.result,
         mode=mode,
@@ -226,6 +238,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         pr=pr,
         since=review.since,
         incremental=review.incremental,
+        codeowners=codeowners,
     )
     # A skip posts and edits nothing (Phase 2 design, Comment state).
     if github is None or shadow.outcome is Outcome.SKIPPED:
@@ -297,6 +310,32 @@ def _repo_config(git: GitRepo, base_sha: str) -> RepoConfig:
     if data is None:
         return DEFAULT_REPO_CONFIG
     return parse_repo_config(data, base_sha=base_sha)
+
+
+def _code_owners(git: GitRepo, base_sha: str) -> CodeOwners:
+    """The CODEOWNERS file at the base commit: the first of GitHub's paths holding a regular file.
+
+    Only the base commit's file counts, as for ``.review-bot.toml`` (ADR 0008). A directory or
+    symbolic link at a path is passed over; if that is all there is, the result is
+    ``not_a_file``, naming the first. A file that can't be used names no owner, and the run
+    goes on.
+
+    Raises:
+        GitError: If the commit isn't in the clone, or git fails.
+    """
+    first_non_file: str | None = None
+    for path in CODEOWNERS_PATHS:
+        source = f"{path}@{base_sha}"
+        try:
+            data = git.read_file(base_sha, path, max_bytes=MAX_CODEOWNERS_BYTES)
+        except NotARegularFileError:
+            first_non_file = first_non_file or source
+            continue
+        if data is not None:
+            return parse_codeowners(data, source=source)
+    if first_non_file is not None:
+        return CodeOwners(source=first_non_file, status=CodeOwnersStatus.NOT_A_FILE)
+    return NO_CODEOWNERS
 
 
 def _missing_commit(pr: PullRequestRef, git: GitRepo) -> Reason | None:

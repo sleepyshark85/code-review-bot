@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final, assert_never
 
+from review_bot.context.codeowners import NO_CODEOWNERS, CodeOwners, owners_for
 from review_bot.diff_parser import ParsedDiff
 from review_bot.errors import (
     DiffEmptyError,
@@ -158,10 +159,12 @@ class ShadowReport:
     with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
     ``withheld`` are in comment order, and ``resolves`` oldest first. ``caps`` are the run's
     effective limits, None where there is no cap. ``config`` is the review policy the run used,
-    or None if it read none: it was refused, or its repository config was invalid. ``since``
-    is the last reviewed commit a comment mode run started from, the head or an ancestor of it,
-    else None. ``error`` is the error that ended the run, if any, for the caller's message and
-    exit code; it is never written.
+    or None if it read none: it was refused, or its repository config was invalid.
+    ``codeowners`` is the base commit's CODEOWNERS, which names each entry's owners, or None if
+    the run read none: it planned no comments, or ran on a local diff. ``since`` is the last
+    reviewed commit a comment mode run started from, the head or an ancestor of it, else None.
+    ``error`` is the error that ended the run, if any, for the caller's message and exit code;
+    it is never written.
     """
 
     run_id: str
@@ -179,6 +182,7 @@ class ShadowReport:
     withheld: tuple[WithheldFinding, ...]
     caps: Mapping[str, int | float | None]
     config: Mapping[str, object] | None
+    codeowners: CodeOwners | None
     over_budget: bool
     since: str | None
     error: ReportedError | GitHubError | None
@@ -203,6 +207,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     pr: PullRequestRef | None,
     since: str | None = None,
     incremental: Incremental | None = None,
+    codeowners: CodeOwners | None = None,
 ) -> ShadowReport:
     """Build the report of a review, of the error that stopped it, or of a refused run.
 
@@ -222,7 +227,8 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
 
     ``settings`` are those the review ran with, the repository's threshold applied, and
     ``config`` the repository's policy, or None if the run read none. Comments are planned up
-    to its ``max_open_comments``.
+    to its ``max_open_comments``. ``codeowners``, if the run read it, names the owners of each
+    entry, and a reviewed summary groups the findings by owner.
 
     Raises:
         ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it;
@@ -264,6 +270,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
             since=since,
             # Shadow mode posts nothing, so no comment of the bot's is open.
             open_comments=0 if mode is Mode.SHADOW else plan.open_after,
+            codeowners=codeowners or NO_CODEOWNERS,
         )
     elif isinstance(review, PipelineResult):
         outcome, reason, summary = _skipped(Reason.NOTHING_TO_REVIEW)
@@ -292,6 +299,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
             "deadline_s": settings.deadline_s,
         },
         config=None if config is None else _config_json(config, settings),
+        codeowners=codeowners,
         over_budget=isinstance(review, PipelineResult) and _is_over_budget(review.usage, settings),
         since=since,
         error=error,
@@ -390,6 +398,7 @@ def render_shadow_json(shadow: ShadowReport) -> str:
     or its ``mergedAt`` when backfilled. A local run's ``event_at`` is its ``started_at``.
     """
     pr = shadow.pr
+    codeowners = shadow.codeowners or NO_CODEOWNERS
     document = {
         "schema": _SCHEMA,
         "run_id": shadow.run_id,
@@ -404,15 +413,16 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "report": shadow.report,
         "summary_body": shadow.summary_body,
         "comments": [
-            *(_comment_json(comment) for comment in shadow.comments),
-            *(_resolve_json(resolve) for resolve in shadow.resolves),
+            *(_comment_json(comment, codeowners) for comment in shadow.comments),
+            *(_resolve_json(resolve, codeowners) for resolve in shadow.resolves),
         ],
-        "withheld": [_withheld_json(item) for item in shadow.withheld],
+        "withheld": [_withheld_json(item, codeowners) for item in shadow.withheld],
         "caps": shadow.caps,
         "over_budget": shadow.over_budget,
         "scope": shadow.scope,
         "since": shadow.since,
         "config": shadow.config,
+        "codeowners": _codeowners_json(shadow.codeowners),
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
 
@@ -430,7 +440,18 @@ def _utc(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat()
 
 
-def _comment_json(comment: ShadowComment) -> dict[str, object]:
+def _codeowners_json(codeowners: CodeOwners | None) -> dict[str, object] | None:
+    if codeowners is None:
+        return None
+    return {
+        "source": codeowners.source,
+        "status": codeowners.status,
+        "rules": len(codeowners.rules),
+        "invalid_lines": codeowners.invalid_lines,
+    }
+
+
+def _comment_json(comment: ShadowComment, codeowners: CodeOwners) -> dict[str, object]:
     # The plan never holds a path that isn't UTF-8, so ``file`` is the path as it is.
     planned = comment.planned
     reviewed = planned.reviewed
@@ -445,10 +466,11 @@ def _comment_json(comment: ShadowComment) -> dict[str, object]:
         "line": reviewed.finding.line,
         "body": comment.body,
         "applied": comment.applied,
+        "owners": list(owners_for(codeowners, reviewed.finding.file)),
     }
 
 
-def _resolve_json(resolve: ShadowResolve) -> dict[str, object]:
+def _resolve_json(resolve: ShadowResolve, codeowners: CodeOwners) -> dict[str, object]:
     # The bot's comment, read back from the pull request, holds no source or body.
     comment = resolve.comment
     return {
@@ -462,10 +484,11 @@ def _resolve_json(resolve: ShadowResolve) -> dict[str, object]:
         "line": comment.line,
         "body": None,
         "applied": resolve.applied,
+        "owners": list(owners_for(codeowners, comment.path)),
     }
 
 
-def _withheld_json(item: WithheldFinding) -> dict[str, object]:
+def _withheld_json(item: WithheldFinding, codeowners: CodeOwners) -> dict[str, object]:
     finding = item.reviewed.finding
     return {
         "fingerprint": item.reviewed.fingerprint,
@@ -473,6 +496,7 @@ def _withheld_json(item: WithheldFinding) -> dict[str, object]:
         "file": path_fields(finding.file)["file"],
         "line": finding.line,
         "reason": item.reason,
+        "owners": list(owners_for(codeowners, finding.file)),
     }
 
 

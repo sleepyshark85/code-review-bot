@@ -72,15 +72,18 @@ SHADOW_KEYS = (
     "since",
     # P2-S9.
     "config",
+    # P3-S11.
+    "codeowners",
 )
-# `applied` joined in P2-S5 (design.md, `shadow/v1`: later slices add keys, never remove them).
+# `applied` joined in P2-S5 and `owners` in P3-S11 (design.md, `shadow/v1`: later slices add keys,
+# never remove them).
 COMMENT_KEYS = frozenset(
     {
         "action", "fingerprint", "rule_part", "anchor", "source", "severity", "file", "line",
-        "body", "applied",
+        "body", "applied", "owners",
     }
 )  # fmt: skip
-WITHHELD_KEYS = frozenset({"fingerprint", "file", "line", "reason"})
+WITHHELD_KEYS = frozenset({"fingerprint", "file", "line", "reason", "owners"})
 TIMESTAMPS = ("event_at", "started_at", "finished_at")
 RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 SUMMARY_LIMIT = 60_000
