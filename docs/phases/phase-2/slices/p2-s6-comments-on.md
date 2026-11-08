@@ -1,6 +1,6 @@
 # P2-S6: Turn comments on with one repository variable
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S5, P2-S3
 - **Touches:** `pr` (`github`: `RestGitHubClient`, `cli`, `runner`), `providers/claude_agent`, `.github/workflows/review.yml` (main session)
 
@@ -39,3 +39,13 @@ List calls follow at most 10 pages of 100; more exits 18, naming the limit. Ever
 ## Notes
 - **Main session:** add the comment job from this spec.
 - **README (main session):** describe `REVIEW_BOT_MODE` (`off`, `shadow`, `comment`), and say that turning comments on is the owner's call.
+
+Build choices (developer):
+- `RestGitHubClient` lives in `pr/rest_github.py`, so the pure `plan` and `shadow` modules, which import `github`'s data types, never load `urllib`. It takes the repository at construction (REST edits need it), and `cli` builds it once the event is read; `GITHUB_TOKEN` and `GITHUB_API_URL` are checked before that.
+- **Summary marker:** the client appends `<!-- review-bot:v1 summary reviewed=none -->` to every summary, and edits the bot's oldest issue comment whose last line matches `reviewed=\S+`. `none` isn't a SHA, so S7 (AC5) reviews the whole PR until it writes one. `read_summary` waits for S7. `shadow.json`'s `summary_body` has no marker.
+- **Paging:** REST lists ask for `per_page=100` and stop at the first page that isn't full; a full 10th page exits 18, so exactly 1,000 items does too. Review threads page by GraphQL cursor, with the same cap.
+- **Threads:** a comment's thread is the one whose first comment has its ID, read from GraphQL's `fullDatabaseId` (`databaseId` is 32-bit and deprecated). Its line is None when the thread's `isOutdated` is true. A resolved thread whose `resolvedBy` is null or `github-actions` counts as resolved by the bot (GraphQL's `resolvedBy` is a `User`); AC12 checks this on GitHub.
+- **AC8:** the SDK lays `options.env` over the inherited environment and can't remove a variable, so `options.env` stays exactly as before (P0-S2 AC3). Instead every entry point (`review-bot`, each `review_bot.pr` subcommand, and `review_bot.evals`) first calls `settings.take_github_token`, which removes `GITHUB_TOKEN` from `os.environ` before any provider is built. Only `run --mode comment` keeps the value, for its client.
+- Text from a response body (only GraphQL error messages are shown) has the token replaced by `[token]` and goes through `redact`, since GitHub may quote the request back.
+- Redirects are refused (a 3xx exits 18), so the token never follows one. The 30-second timeout is urllib's per socket operation.
+- `FakeGitHubClient` doesn't reject comments on lines outside the diff, as GitHub does with a 422: it holds no diff. A 422 still exits 18, naming `post_review`.

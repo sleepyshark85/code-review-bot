@@ -43,7 +43,7 @@ from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, load_settings
+from review_bot.settings import Settings, load_settings, take_github_token
 from review_bot.triage import TriageResult, run_triage
 
 __all__ = [
@@ -207,6 +207,8 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         ``docs/phases/phase-1/design.md`` appends.
     """
     keep_library_logs_off_stderr()
+    # Before any provider is built, so the Claude CLI never inherits it.
+    take_github_token()
     try:
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)

@@ -91,11 +91,19 @@ def jobs_of(workflow: dict[Any, Any]) -> dict[str, dict[str, Any]]:
     return jobs
 
 
-def shadow_job(workflow: dict[Any, Any]) -> dict[str, Any]:
-    """The one job that runs the review: the job with a step running `review_bot.pr run`."""
-    found = [job for job in jobs_of(workflow).values() if run_step_in(job) is not None]
-    assert len(found) == 1, f"expected one job running `review_bot.pr run`, found {len(found)}"
+def review_job(workflow: dict[Any, Any], mode: str) -> dict[str, Any]:
+    """The one job whose step runs `review_bot.pr run --mode <mode>` (P2-S6 adds `comment`)."""
+    found = [
+        job
+        for job in jobs_of(workflow).values()
+        if (step := run_step_in(job)) is not None and option_value(argv_of(step), "--mode") == mode
+    ]
+    assert len(found) == 1, f"expected one job running `--mode {mode}`, found {len(found)}"
     return found[0]
+
+
+def shadow_job(workflow: dict[Any, Any]) -> dict[str, Any]:
+    return review_job(workflow, "shadow")
 
 
 def check_job_name(workflow: dict[Any, Any]) -> str:
@@ -156,11 +164,15 @@ def same_dir(path: str) -> str:
     return re.sub(r"\$\{\{\s*runner\.temp\s*\}\}", "$RUNNER_TEMP", path).strip().strip('"')
 
 
-def run_command_argv(workflow: dict[Any, Any]) -> list[str]:
-    """The run step's arguments after `python -m review_bot.pr`, as the shell would split them."""
-    words = shlex.split(run_step(workflow)["run"])
+def argv_of(step: dict[str, Any]) -> list[str]:
+    """A run step's arguments after `python -m review_bot.pr`, as the shell would split them."""
+    words = shlex.split(step["run"])
     start = words.index("review_bot.pr")
     return words[start + 1 :]
+
+
+def run_command_argv(workflow: dict[Any, Any]) -> list[str]:
+    return argv_of(run_step(workflow))
 
 
 def option_value(argv: list[str], option: str) -> str:
@@ -256,7 +268,12 @@ def _loose_equal(left: Any, right: Any) -> bool:
 
 
 def shadow_runs(workflow: dict[Any, Any], *, head_repo: str | None, mode: str) -> bool:
-    condition = shadow_job(workflow).get("if", True)
+    return job_runs(shadow_job(workflow), head_repo=head_repo, mode=mode)
+
+
+def job_runs(job: dict[str, Any], *, head_repo: str | None, mode: str) -> bool:
+    """Whether the job's `if:` holds for a `synchronize` event with this head repo and mode."""
+    condition = job.get("if", True)
     if condition is True:
         return True
     contexts = {
@@ -411,18 +428,20 @@ def test_p2_s3_ac4_dependencies_install_locked_without_dev_after_checkout(workfl
 # --- AC5: the key, and only the key, reaches only the run step ----------------------------------
 
 
-def test_p2_s3_ac5_api_key_is_only_in_the_run_steps_env(workflow, text):
+def test_p2_s3_ac5_api_key_is_only_in_the_run_steps_env(workflow):
+    """Scoped to the shadow job since P2-S6, whose comment job has its own rule (its AC10)."""
+    job = shadow_job(workflow)
     assert run_step(workflow)["env"]["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
-    holders = [
-        path for path, value in walk(workflow) if isinstance(value, str) and "secrets." in value
-    ]
-    assert [path[-2:] for path in holders] == [("env", "ANTHROPIC_API_KEY")]
-    assert text.count("secrets.") == 1
+    holders = [path for path, value in walk(job) if isinstance(value, str) and "secrets." in value]
+    run_index = steps_of(job).index(run_step(workflow))
+    assert holders == [("steps", run_index, "env", "ANTHROPIC_API_KEY")]
+    assert yaml.safe_dump(job).count("secrets.") == 1
 
 
 @pytest.mark.parametrize("token", ["GITHUB_TOKEN", "github.token"])
-def test_p2_s3_ac5_no_github_token_is_passed_anywhere(text, token):
-    assert token.casefold() not in text.casefold()
+def test_p2_s3_ac5_no_github_token_is_passed_anywhere_in_the_shadow_job(workflow, token):
+    """Keys and values alike; scoped to the shadow job since P2-S6 (its AC10)."""
+    assert token.casefold() not in yaml.safe_dump(shadow_job(workflow)).casefold()
 
 
 def test_p2_s3_ac5_no_job_or_workflow_env_carries_values_to_every_step(workflow):
@@ -523,11 +542,11 @@ def test_p2_s3_ac7_concurrency_is_one_group_per_pr_cancelling_in_progress(workfl
 
 
 def summary_step(workflow: dict[Any, Any]) -> dict[str, Any]:
-    found = [
-        step
-        for step in steps_of(shadow_job(workflow))
-        if "GITHUB_STEP_SUMMARY" in step.get("run", "")
-    ]
+    return summary_step_in(shadow_job(workflow))
+
+
+def summary_step_in(job: dict[str, Any]) -> dict[str, Any]:
+    found = [step for step in steps_of(job) if "GITHUB_STEP_SUMMARY" in step.get("run", "")]
     assert len(found) == 1
     return found[0]
 
@@ -554,7 +573,11 @@ def test_p2_s3_ac8_summary_step_writes_shadow_md_from_out(workflow, tmp_path):
 
 
 def upload_step(workflow: dict[Any, Any]) -> dict[str, Any]:
-    found = steps_using(shadow_job(workflow), "actions/upload-artifact")
+    return upload_step_in(shadow_job(workflow))
+
+
+def upload_step_in(job: dict[str, Any]) -> dict[str, Any]:
+    found = steps_using(job, "actions/upload-artifact")
     assert len(found) == 1
     return found[0]
 

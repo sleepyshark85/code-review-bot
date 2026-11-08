@@ -100,3 +100,71 @@ jobs:
             ${{ runner.temp }}/review-bot/audit.jsonl
           retention-days: 90
           if-no-files-found: warn
+
+  comment:
+    name: comment review
+    needs: check-mode
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && vars.REVIEW_BOT_MODE == 'comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out the base commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the head commit (not checked out)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: Install the bot from the base commit
+        run: uv sync --locked --no-dev
+
+      - name: Review the pull request and post comments
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_BOT_MAX_RETRIES: "0"
+          REVIEW_BOT_MAX_DIFF_BYTES: "400000"
+          REVIEW_BOT_MAX_REVIEW_BYTES: "120000"
+          REVIEW_BOT_MAX_OUTPUT_TOKENS: "16000"
+          REVIEW_BOT_DEADLINE_S: "240"
+        run: >-
+          uv run --no-sync python -m review_bot.pr run
+          --event "$GITHUB_EVENT_PATH"
+          --repo .
+          --mode comment
+          --out "$RUNNER_TEMP/review-bot"
+
+      - name: Show the report in the job summary
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/review-bot/shadow.md"
+          if [ -f "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report was written; see the review step's log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: comment-pr${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/review-bot/shadow.json
+            ${{ runner.temp }}/review-bot/shadow.md
+            ${{ runner.temp }}/review-bot/audit.jsonl
+          retention-days: 90
+          if-no-files-found: warn

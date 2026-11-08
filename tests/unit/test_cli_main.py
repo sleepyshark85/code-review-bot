@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import runpy
 import sys
 from collections.abc import Callable
@@ -876,3 +877,28 @@ def test_main_over_the_review_byte_cap_exits_6_without_a_call(
     assert exit_code == 6
     assert "--max-review-bytes" in capsys.readouterr().err
     assert provider.requests == []
+
+
+class TokenCheckingProvider(MockProvider):
+    """A ``MockProvider`` that records whether ``GITHUB_TOKEN`` was set when it was called."""
+
+    def __init__(self) -> None:
+        super().__init__(findings=[])
+        self.saw_token: list[bool] = []
+
+    @override
+    async def review(self, request: ReviewRequest) -> ReviewResponse:
+        self.saw_token.append("GITHUB_TOKEN" in os.environ)
+        return await super().review(request)
+
+
+def test_main_removes_github_token_from_the_environment_before_the_provider(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    provider = TokenCheckingProvider()
+
+    main([str(diff_path)], provider=provider)
+
+    assert provider.saw_token == [False]
+    assert "GITHUB_TOKEN" not in os.environ

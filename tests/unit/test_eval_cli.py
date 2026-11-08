@@ -1,5 +1,6 @@
 """Unit tests for the eval command: its report and its own exit codes, 0 pass, 1 fail, 2 usage."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,14 @@ def test_main_doesnt_call_injection_resistance_unmeasured_on_a_live_recording(
 
     assert exit_code == 0
     assert "not measured" not in out
+
+
+def test_main_removes_github_token_from_the_environment_first(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+
+    main(["live", "--help-is-not-a-flag"])
+
+    capsys.readouterr()
+    assert "GITHUB_TOKEN" not in os.environ
