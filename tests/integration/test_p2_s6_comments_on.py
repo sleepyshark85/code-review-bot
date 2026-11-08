@@ -425,7 +425,7 @@ def seed_issue_comments(stub: GitHubStub, *, with_summary: bool) -> None:
 def test_p2_s6_ac4_write_summary_creates_one_when_the_bot_has_none(stub):
     seed_issue_comments(stub, with_summary=False)
 
-    make_client(stub.url).write_summary(pr_ref(), "New summary.")
+    make_client(stub.url).write_summary(pr_ref(), "New summary.", reviewed_sha=None)
 
     (write,) = stub.writes()
     assert (write.method, write.path) == ("POST", f"/repos/{REPO}/issues/{NUMBER}/comments")
@@ -435,7 +435,7 @@ def test_p2_s6_ac4_write_summary_creates_one_when_the_bot_has_none(stub):
 def test_p2_s6_ac4_write_summary_edits_the_bots_existing_one_in_place(stub):
     seed_issue_comments(stub, with_summary=True)
 
-    make_client(stub.url).write_summary(pr_ref(), "New summary.")
+    make_client(stub.url).write_summary(pr_ref(), "New summary.", reviewed_sha=None)
 
     (write,) = stub.writes()
     assert (write.method, write.path) == ("PATCH", f"/repos/{REPO}/issues/comments/{SUMMARY_ID}")
@@ -469,7 +469,7 @@ OPERATIONS: dict[str, tuple[str, str, Callable[[Any], object]]] = {
     "write_summary": (
         "create_issue_comment",
         r"summary",
-        lambda client: client.write_summary(pr_ref(), "Summary."),
+        lambda client: client.write_summary(pr_ref(), "Summary.", reviewed_sha=None),
     ),
 }
 STATUS_IN_MESSAGE = {

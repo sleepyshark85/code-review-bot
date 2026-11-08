@@ -1,6 +1,6 @@
 # P2-S7: Re-review only what changed since the last reviewed commit
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S5; in CI, P2-S3's full-history checkout (`fetch-depth: 0`), without which `A` is never found and every run is full
 - **Touches:** `pr` (`git`, `runner`, `plan`, `comments`, `github`)
 
@@ -32,3 +32,18 @@ Two diffs per run, each bounded by the byte caps and by P2-S2's git timeout. The
 - Incremental shadow runs: shadow mode keeps no state ([ADR 0009](../../../adr/0009-comment-state-on-the-pr.md)).
 
 ## Notes
+Changed in build, main session, 2026-11-08:
+- **AC9** can't be reached end to end: the reviewed diff is a subset of the PR diff's hunks, so a line the PR diff lacks is never sent, and verify would drop such a finding before planning. AC9 is covered at the `plan_comments` level.
+- **Secret scan:** an incremental run scans only the hunks it sends, not the whole PR diff. Every other line was scanned when it last changed: `reviewed` moves only after a `reviewed` run, and `blocked_secret` keeps `A`.
+- **Unusable diff since `A`** (over `max_diff_bytes`, not UTF-8 or unreadable, after a large merge from the base, say): the run reviews the whole PR diff instead, scope `full`, so no problem of that diff alone can skip a PR for good (changed in review round 1, main session; reverses the earlier byte-cap note).
+- **Known limit:** a merge commit that reverts a change from the base (an "evil merge") leaves a line that is unchanged since `A` but new to the PR diff, so an incremental run doesn't review it. A force-push or a full re-review covers it.
+- **Summary wording.** An incremental run names its start and always counts the bot's open comments after the run, for example `` **Review bot:** `reviewed`. Changes since `abc1234` reviewed. No new findings at or above medium. Open bot comments on this pull request: 2. `` With findings, its counts read `N comments, M withheld.` instead. `no_new_changes` reads `` **Review bot:** `reviewed` (`no_new_changes`). No changes to review since `abc1234`, so nothing was sent to the model. Open bot comments on this pull request: 2. `` A full comment-mode run keeps P2-S5's wording and adds `Open bot comments on this pull request: N.` when N isn't 0. Shadow mode adds nothing. The count is the plan's: open comments, less resolves, plus creates.
+
+Build choices (developer):
+- **Order:** the PR diff comes first. A diff that can't be reviewed, or whose files are all skipped, ends with no GitHub call (keeping P2-S5 AC11). Otherwise comment mode calls `read_summary`: head equal to `reviewed` is `already_reviewed`; an ancestor of the head (`is_ancestor`, False for a commit missing from the clone) is incremental; anything else is reviewed whole.
+- **Changed lines:** the diff from `A` to `B` is git's diff `A...B`, which equals `A..B` since `A` is an ancestor. A PR hunk is reviewed if one of its new-side lines (added or context) is added since `A`, or sits next to a line removed since `A`. An empty `A..B` (an empty commit) is `no_new_changes`.
+- **AC6:** in an incremental run, an unpaired open comment whose file is in the PR diff and existed at `A` is resolved only if it is gone (P2-S5's rule) and the diff since `A` removes a line with its anchor in that file. Any other comment, such as one left on a path renamed before `A` or one in a file added since `A`, follows P2-S5's rule alone, so it is resolved once its anchored line is gone and never stays open for good.
+- **Renames:** a comment's path follows the renames in the PR diff or in the diff since `A`.
+- **Marker:** it records the head only when the outcome is `reviewed` and every GitHub call before the summary was done; otherwise it rewrites the commit read (`none` if there was none or it wasn't 40 hex). `write_summary` takes `reviewed_sha` as a required keyword; None writes `none`.
+- **`shadow.json`:** `scope` and `since` come last. `since` is also set on an `already_reviewed` skip and on a failed incremental run.
+- **`FakeGitHubClient.fail_on`** keeps P2-S5's behaviour: every later call to that operation fails.

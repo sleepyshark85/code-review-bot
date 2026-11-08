@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from review_bot.diff_parser import ParsedDiff
+from review_bot.diff_parser import LineKind, ParsedDiff
 from review_bot.findings import ReviewedFinding
 from review_bot.fingerprint import Fingerprinter, anchor_for
 from review_bot.pr.github import BotComment, Resolver
@@ -92,12 +92,57 @@ class WithheldFinding:
 class CommentPlan:
     """The planned comments and withheld findings, each in comment order, and the resolves.
 
-    ``resolved`` are the bot's open comments to resolve, oldest first.
+    ``resolved`` are the bot's open comments to resolve, oldest first. ``open_after`` is how
+    many of the bot's comments are open once the plan is applied: a move resolves one thread
+    and posts another, so only resolves and creates change it.
     """
 
     comments: tuple[PlannedComment, ...] = ()
     withheld: tuple[WithheldFinding, ...] = ()
     resolved: tuple[BotComment, ...] = ()
+    open_after: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Since:
+    """What the diff since the last reviewed commit says about the files in the head.
+
+    ``added`` are the files new since then. ``removed`` holds, for each file that existed then
+    and still does, the anchors of the lines it removed or edited since.
+    """
+
+    added: frozenset[str]
+    removed: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def of(cls, changed: ParsedDiff) -> "_Since":
+        """Read ``changed``, the diff from the last reviewed commit to the head."""
+        added = frozenset(
+            file.path for file in changed.files if file.path is not None and file.old_path is None
+        )
+        removed = {
+            file.path: frozenset(
+                anchor_for(line.text)
+                for hunk in file.hunks
+                for line in hunk.lines
+                if line.kind is LineKind.REMOVED
+            )
+            for file in changed.files
+            if file.path is not None and file.old_path is not None
+        }
+        return cls(added, removed)
+
+    def may_resolve(self, comment: BotComment, renamed: Mapping[str, str], lines: _Lines) -> bool:
+        """Whether a gone comment may be resolved in an incremental run.
+
+        If its file is in the PR diff and existed at the last reviewed commit, only a line with
+        its anchor removed since then makes it gone; otherwise the full run's rule decides, as
+        for a comment left on a path renamed earlier, or in a file added since.
+        """
+        path = renamed.get(comment.path, comment.path)
+        if path not in lines or path in self.added:
+            return True
+        return comment.anchor in self.removed.get(path, frozenset())
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +164,12 @@ def plan_comments(
     *,
     pr_diff: ParsedDiff,
     max_open_comments: int,
+    changed: ParsedDiff | None = None,
 ) -> CommentPlan:
     """Plan each finding's comment against the bot's ``existing`` comments.
+
+    ``changed`` is the diff since the last reviewed commit in an incremental run, whose findings
+    come only from the hunks it changed; None when the whole PR diff was reviewed.
 
     Comment order is severity, highest first, then file, then line. A finding is withheld
     ``not_commentable`` if its line isn't an added or context line of ``pr_diff``, or its path
@@ -139,10 +188,17 @@ def plan_comments(
 
     Of two open comments with one fingerprint, the one that isn't outdated, else the older, is
     kept and the other resolved. An unpaired open comment is resolved if its anchored line is
-    gone (``_is_gone``).
+    gone (``_is_gone``). In an incremental run, a comment whose file is in ``pr_diff`` and
+    existed at the last reviewed commit is resolved only if ``changed`` also removes a line
+    with its anchor there, so a comment on a line nobody re-reviewed stays (``_Since``). A
+    comment's path follows the renames in ``pr_diff`` or ``changed``.
     """
     lines = _new_side_lines(pr_diff)
     renamed = _renamed_paths(pr_diff)
+    since: _Since | None = None
+    if changed is not None:
+        renamed.update(_renamed_paths(changed))
+        since = _Since.of(changed)
     pairable, withheld = _pairable_findings(findings, lines)
     duplicates = _duplicates(existing)
     duplicate_ids = {comment.comment_id for comment in duplicates}
@@ -160,6 +216,7 @@ def plan_comments(
         if comment.resolved_by is None
         and comment.comment_id not in paired_ids
         and _is_gone(comment, lines, renamed)
+        and (since is None or since.may_resolve(comment, renamed, lines))
     ]
     resolved = sorted((*duplicates, *gone), key=lambda comment: comment.comment_id)
     still_open = sum(comment.resolved_by is None for comment in existing) - len(resolved)
@@ -179,7 +236,8 @@ def plan_comments(
         else:
             withheld.append(WithheldFinding(finding.reviewed, WithholdReason.OVER_LIMIT))
     withheld.sort(key=lambda item: _comment_order(item.reviewed))
-    return CommentPlan(tuple(planned), tuple(withheld), tuple(resolved))
+    open_after = still_open + sum(item.action is Action.CREATE for item in planned)
+    return CommentPlan(tuple(planned), tuple(withheld), tuple(resolved), open_after)
 
 
 def _pairable_findings(
@@ -333,10 +391,10 @@ def _new_side_lines(pr_diff: ParsedDiff) -> dict[str, dict[int, str]]:
     return lines
 
 
-def _renamed_paths(pr_diff: ParsedDiff) -> dict[str, str]:
-    """Each path the PR diff renames, mapped to its new path."""
+def _renamed_paths(diff: ParsedDiff) -> dict[str, str]:
+    """Each path ``diff`` renames, mapped to its new path."""
     return {
         file.old_path: file.path
-        for file in pr_diff.files
+        for file in diff.files
         if file.old_path is not None and file.path is not None and file.old_path != file.path
     }

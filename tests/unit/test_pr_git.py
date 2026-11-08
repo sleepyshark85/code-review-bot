@@ -168,3 +168,34 @@ def test_has_commit_is_true_only_for_a_commit_in_the_clone(repo: Path) -> None:
 def test_has_commit_outside_a_repository_says_git_failed(tmp_path: Path) -> None:
     with pytest.raises(GitError, match="git rev-parse failed"):
         GitRepo(tmp_path, timeout_s=60).has_commit("c" * 40)
+
+
+def test_is_ancestor_holds_for_an_older_commit_and_for_the_commit_itself(repo: Path) -> None:
+    older = commit(repo, {"app.py": "one\n"})
+    newer = commit(repo, {"app.py": "one\ntwo\n"})
+    clone = GitRepo(repo, timeout_s=60)
+
+    assert clone.is_ancestor(older, newer)
+    assert clone.is_ancestor(newer, newer)
+    assert not clone.is_ancestor(newer, older)
+
+
+def test_is_ancestor_is_false_after_a_force_push(repo: Path) -> None:
+    base = commit(repo, {"app.py": "one\n"})
+    reviewed = commit(repo, {"app.py": "one\ntwo\n"})
+    git(repo, "reset", "-q", "--hard", base)
+    rewritten = commit(repo, {"app.py": "one\nthree\n"})
+
+    assert not GitRepo(repo, timeout_s=60).is_ancestor(reviewed, rewritten)
+
+
+def test_is_ancestor_is_false_for_a_commit_the_clone_lacks(repo: Path) -> None:
+    head = commit(repo, {"app.py": "one\n"})
+
+    assert not GitRepo(repo, timeout_s=60).is_ancestor("c" * 40, head)
+    assert not GitRepo(repo, timeout_s=60).is_ancestor(head, "c" * 40)
+
+
+def test_is_ancestor_raises_when_git_fails(tmp_path: Path) -> None:
+    with pytest.raises(GitError, match="git rev-parse failed"):
+        GitRepo(tmp_path / "not-a-repo", timeout_s=60).is_ancestor("a" * 40, "b" * 40)

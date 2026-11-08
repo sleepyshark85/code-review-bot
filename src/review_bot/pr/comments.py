@@ -2,7 +2,8 @@
 
 Model and diff text reaches these bodies only through ``render.escape_markdown`` and
 ``render.markdown_path``, so it can't mention, link, reference or hide anything (Phase 2 design,
-Safety on the PR path). ``read_marker`` and ``is_summary`` read posted bodies back.
+Safety on the PR path). ``read_marker``, ``is_summary`` and ``read_reviewed_sha`` read posted
+bodies back.
 """
 
 import re
@@ -22,8 +23,10 @@ __all__ = [
     "blocked_summary",
     "comment_body",
     "is_summary",
+    "no_new_changes_summary",
     "not_reviewed_summary",
     "read_marker",
+    "read_reviewed_sha",
     "reviewed_summary",
     "with_summary_marker",
 ]
@@ -44,10 +47,11 @@ _SEVERITY_HEADING: Final = re.compile(rf"\*\*({'|'.join(Severity)})\*\* ")
 _MARKER: Final = re.compile(
     r"<!-- review-bot:v1 fingerprint=([0-9a-f]{16}) rule=(\S+) anchor=([0-9a-f]{16}) -->"
 )
-# The summary's last line (ADR 0009). P2-S7 records the commit reviewed in it; until then it says
-# ``none``, which isn't a SHA, so no run takes it for one.
-_SUMMARY_MARKER: Final = "<!-- review-bot:v1 summary reviewed=none -->"
-_ANY_SUMMARY_MARKER: Final = re.compile(r"<!-- review-bot:v1 summary reviewed=\S+ -->")
+# The summary's last line records the last commit reviewed, or ``none`` (ADR 0009). Any value
+# marks the bot's summary, so one written before P2-S7, or edited by hand, is still found.
+_NO_REVIEWED_SHA: Final = "none"
+_ANY_SUMMARY_MARKER: Final = re.compile(r"<!-- review-bot:v1 summary reviewed=(\S+) -->")
+_SHA: Final = re.compile(r"[0-9a-f]{40}")
 _RULE_PARTS: Final = frozenset((*RuleId, *(f"ai:{category}" for category in Category)))
 
 
@@ -101,17 +105,41 @@ def read_marker(body: str) -> Marker | None:
     return Marker(fingerprint, rule_part, anchor, Severity(heading.group(1)))
 
 
-def with_summary_marker(body: str) -> str:
-    """Return the summary ``body`` as posted: its last line is the summary marker."""
-    return f"{body}{_NEW_PARAGRAPH}{_SUMMARY_MARKER}"
+def with_summary_marker(body: str, *, reviewed_sha: str | None) -> str:
+    """Return the summary ``body`` as posted: its last line is the summary marker.
+
+    The marker records ``reviewed_sha``, the last commit reviewed, or ``none`` if there is none.
+
+    Raises:
+        ValueError: If ``reviewed_sha`` isn't 40 lowercase hex digits.
+    """
+    if reviewed_sha is not None and _SHA.fullmatch(reviewed_sha) is None:
+        raise ValueError(f"A reviewed commit is 40 lowercase hex digits, not {reviewed_sha!r}.")
+    marker = f"<!-- review-bot:v1 summary reviewed={reviewed_sha or _NO_REVIEWED_SHA} -->"
+    return f"{body}{_NEW_PARAGRAPH}{marker}"
 
 
 def is_summary(body: str) -> bool:
-    """Say whether ``body``'s last line is exactly a summary marker.
+    """Say whether ``body``'s last line is exactly a summary marker, whatever it records.
 
     Call it only on the bot's own comments, as ``read_marker``.
     """
-    return _ANY_SUMMARY_MARKER.fullmatch(body.rsplit("\n", maxsplit=1)[-1]) is not None
+    return _summary_marker(body) is not None
+
+
+def read_reviewed_sha(body: str) -> str | None:
+    """Return the commit a summary's marker records, or None if it records no 40-hex SHA.
+
+    Call it only on the bot's own comments, as ``read_marker``.
+    """
+    marker = _summary_marker(body)
+    if marker is None or _SHA.fullmatch(marker.group(1)) is None:
+        return None
+    return marker.group(1)
+
+
+def _summary_marker(body: str) -> re.Match[str] | None:
+    return _ANY_SUMMARY_MARKER.fullmatch(body.rsplit("\n", maxsplit=1)[-1])
 
 
 def _shown_rationale(rationale: str) -> str:
@@ -120,15 +148,26 @@ def _shown_rationale(rationale: str) -> str:
     return f"{escape_markdown(rationale[:_MAX_RATIONALE_CHARS])} (cut)"
 
 
-def reviewed_summary(plan: CommentPlan, *, threshold: Severity) -> str:
+def reviewed_summary(
+    plan: CommentPlan, *, threshold: Severity, since: str | None = None, open_comments: int = 0
+) -> str:
     """Return the summary of a review: its counts, then up to 20 withheld findings.
 
     With nothing planned or withheld, it says there are no findings at or above ``threshold``.
+    A review of only the changes since the commit ``since`` names that commit, calls its
+    findings new, and always gives ``open_comments``, the bot's comments open on the pull
+    request after the run; a whole review gives that count only when it isn't zero.
     """
     headline = f"{_HEADLINE} `{Outcome.REVIEWED}`."
+    if since is not None:
+        headline = f"{headline} Changes since {_short_sha(since)} reviewed."
     if not plan.comments and not plan.withheld:
-        return f"{headline} No findings at or above {threshold}."
-    counts = f"{headline} {len(plan.comments)} comments, {len(plan.withheld)} withheld."
+        new = "" if since is None else "new "
+        counts = f"{headline} No {new}findings at or above {threshold}."
+    else:
+        counts = f"{headline} {len(plan.comments)} comments, {len(plan.withheld)} withheld."
+    if since is not None or open_comments:
+        counts = f"{counts} {_open_count(open_comments)}"
     if not plan.withheld:
         return counts
     listed = [
@@ -158,6 +197,27 @@ def blocked_summary(hits: Sequence[SecretHit]) -> str:
             "Remove them, and rotate any that are real.",
         )
     )
+
+
+def no_new_changes_summary(*, since: str, open_comments: int) -> str:
+    """Return the summary of a run with nothing new since ``since``, the last commit reviewed.
+
+    It gives ``open_comments``, the bot's comments open on the pull request after the run.
+    """
+    return (
+        f"{_HEADLINE} `{Outcome.REVIEWED}` (`{Reason.NO_NEW_CHANGES}`). No changes to review "
+        f"since {_short_sha(since)}, so nothing was sent to the model. "
+        f"{_open_count(open_comments)}"
+    )
+
+
+def _short_sha(sha: str) -> str:
+    """A commit's first 7 characters, in a code span so it never links."""
+    return f"`{sha[:7]}`"
+
+
+def _open_count(open_comments: int) -> str:
+    return f"Open bot comments on this pull request: {open_comments}."
 
 
 def not_reviewed_summary(outcome: Outcome, reason: Reason | ErrorCategory) -> str:

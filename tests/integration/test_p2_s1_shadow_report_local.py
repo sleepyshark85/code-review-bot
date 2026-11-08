@@ -67,6 +67,9 @@ SHADOW_KEYS = (
     "withheld",
     "caps",
     "over_budget",
+    # P2-S7 (design.md, `shadow/v1`: later slices add keys, never remove them).
+    "scope",
+    "since",
 )
 # `applied` joined in P2-S5 (design.md, `shadow/v1`: later slices add keys, never remove them).
 COMMENT_KEYS = frozenset(
