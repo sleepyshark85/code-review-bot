@@ -1,6 +1,6 @@
 # P2-S10: Measure latency, tokens, cost, outcomes and precision
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S4, P2-S8
 - **Touches:** `pr` (`metrics`, `cli`)
 

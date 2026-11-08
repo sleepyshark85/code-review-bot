@@ -1,6 +1,6 @@
 # P2-S13: Backfill shadow reports over recent merged PRs
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S2
 - **Touches:** `pr` (`runner`, `cli`)
 
