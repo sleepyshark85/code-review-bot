@@ -51,6 +51,8 @@ from test_p2_s3_shadow_workflow import (
     SHADOW_ACTIONS,
     WORKFLOW_PATH,
     argv_of,
+    collect_job_name,
+    collect_step_in,
     job_runs,
     jobs_of,
     option_value,
@@ -759,10 +761,10 @@ def test_p2_s6_ac9_at_most_one_review_job_runs_per_mode(workflow, mode, running)
 
 
 def test_p2_s6_ac10_comment_job_runs_only_for_the_shadow_jobs_four_actions(workflow):
-    """P2-S3 AC1's action list, for this job."""
-    types = set(triggers_of(workflow)["pull_request"]["types"])
-    if types != SHADOW_ACTIONS:
-        assert "github.event.action" in str(comment_job(workflow).get("if", ""))
+    """P2-S3 AC1's action list, for this job; S8's `closed` runs no comment job."""
+    for action in set(triggers_of(workflow)["pull_request"]["types"]):
+        runs = job_runs(comment_job(workflow), head_repo=REPO, mode="comment", action=action)
+        assert runs == (action in SHADOW_ACTIONS), action
 
 
 def test_p2_s6_ac10_comment_job_permissions_are_exactly_contents_read_and_pull_requests_write(
@@ -791,7 +793,8 @@ CREDENTIAL = re.compile(r"secrets\.|github\.token|GITHUB_TOKEN|ANTHROPIC_API_KEY
 
 
 def test_p2_s6_ac10_no_other_step_gets_either_credential(workflow):
-    """Keys and values in every job; the shadow job's key is P2-S3 AC5's."""
+    """Keys and values in every job; the shadow job's key is P2-S3 AC5's, and the collect
+    step's token is P2-S8 AC9's."""
     holders = set()
     for job_name, job in jobs_of(workflow).items():
         for path, node in walk(job):
@@ -806,6 +809,11 @@ def test_p2_s6_ac10_no_other_step_gets_either_credential(workflow):
     shadow_index = steps_of(shadow).index(shadow_step)
     comment_name = next(n for n, j in jobs_of(workflow).items() if j is comment_job(workflow))
     shadow_name = next(n for n, j in jobs_of(workflow).items() if j is shadow)
+    collect_name = collect_job_name(workflow)
+    collect = jobs_of(workflow)[collect_name]
+    collect_step = collect_step_in(collect)
+    assert collect_step is not None
+    collect_index = steps_of(collect).index(collect_step)
 
     allowed = {
         (comment_name, "steps", comment_index, "env"),
@@ -813,6 +821,8 @@ def test_p2_s6_ac10_no_other_step_gets_either_credential(workflow):
         (comment_name, "steps", comment_index, "env", "ANTHROPIC_API_KEY"),
         (shadow_name, "steps", shadow_index, "env"),
         (shadow_name, "steps", shadow_index, "env", "ANTHROPIC_API_KEY"),
+        (collect_name, "steps", collect_index, "env"),
+        (collect_name, "steps", collect_index, "env", "GITHUB_TOKEN"),
     }
     assert holders <= allowed, sorted(map(str, holders - allowed))
     assert "env" not in workflow

@@ -196,7 +196,7 @@ def test_access_refuses_any_other_url_naming_the_variable(url: str) -> None:
     # The URL isn't echoed: it could hold credentials.
     assert str(caught.value) == (
         "GITHUB_API_URL must be an https:// URL, or an http:// one on 127.0.0.1 or localhost, so "
-        "nothing was reviewed. Unset it to use https://api.github.com."
+        "nothing ran. Unset it to use https://api.github.com."
     )
 
 
@@ -313,6 +313,112 @@ def test_listing_more_than_ten_pages_of_threads_fails_naming_the_limit(stub: Stu
         client(stub).list_bot_comments(PR)
 
     assert len(stub.received) == 11
+
+
+# --- list_signals ------------------------------------------------------------------------------
+
+
+def reaction(content: str, user: object) -> dict:
+    return {"id": 1, "node_id": "R", "content": content, "user": user, "created_at": "x"}
+
+
+def test_list_signals_reads_each_bot_comments_reactions_by_people_and_its_resolver(
+    stub: Stub,
+) -> None:
+    reactions = {
+        10: [reaction("+1", PERSON), reaction("heart", None), reaction("-1", BOT)],
+        20: [reaction("+1", {"login": "dependabot[bot]", "type": "Bot"})],
+    }
+
+    def respond(request: Received) -> Reply:
+        if request.path == "/graphql":
+            return reply(
+                threads_page(
+                    [
+                        thread("T10", 10),
+                        thread("T20", 20, isResolved=True, resolvedBy={"login": "alice"}),
+                    ]
+                )
+            )
+        if request.path == "/repos/owner/repo/pulls/7/comments":
+            return reply(
+                [review_comment(20, BOT), review_comment(10, BOT), review_comment(30, PERSON)]
+            )
+        comment_id = int(request.path.split("/")[-2])
+        assert request.path == f"/repos/owner/repo/pulls/comments/{comment_id}/reactions"
+        assert request.query["per_page"] == ["100"]
+        return reply(reactions[comment_id])
+
+    stub.respond = respond
+
+    signals = client(stub).list_signals(PR)
+
+    assert [(s.comment.comment_id, s.reactions) for s in signals] == [
+        (10, frozenset({"+1", "heart"})),
+        (20, frozenset()),
+    ]
+    assert signals[1].comment.resolved_by is Resolver.PERSON
+    assert all(request.method == "GET" for request in stub.received if request.path != "/graphql")
+    assert len(stub.received) == 4
+
+
+def test_list_signals_reads_every_page_of_a_comments_reactions(stub: Stub) -> None:
+    pages = {"1": [reaction("eyes", PERSON)] * 100, "2": [reaction("-1", PERSON)]}
+    stub.respond = lambda request: (
+        reply(threads_page([thread("T1", 1)]))
+        if request.path == "/graphql"
+        else reply([review_comment(1, BOT)])
+        if request.path.endswith("/7/comments")
+        else reply(pages[request.query["page"][0]])
+    )
+
+    (signal,) = client(stub).list_signals(PR)
+
+    assert signal.reactions == frozenset({"eyes", "-1"})
+
+
+def test_list_signals_over_ten_full_pages_of_reactions_fails_naming_the_limit(stub: Stub) -> None:
+    stub.respond = lambda request: (
+        reply(threads_page([thread("T1", 1)]))
+        if request.path == "/graphql"
+        else reply([review_comment(1, BOT)])
+        if request.path.endswith("/7/comments")
+        else reply([reaction("+1", PERSON)] * 100)
+    )
+
+    with pytest.raises(GitHubError, match=r"^GitHub list_signals failed: .*limit of 10 pages"):
+        client(stub).list_signals(PR)
+
+    assert len(stub.received) == 12
+
+
+def test_list_signals_with_a_failed_reactions_call_fails_naming_list_signals(stub: Stub) -> None:
+    stub.respond = lambda request: (
+        reply(threads_page([thread("T1", 1)]))
+        if request.path == "/graphql"
+        else reply([review_comment(1, BOT)])
+        if request.path.endswith("/7/comments")
+        else Reply(403)
+    )
+
+    with pytest.raises(GitHubError, match=r"^GitHub list_signals failed: HTTP 403") as caught:
+        client(stub).list_signals(PR)
+
+    assert TOKEN not in str(caught.value)
+    assert len(stub.received) == 3
+
+
+def test_list_signals_with_a_reaction_lacking_its_content_is_a_shape_error(stub: Stub) -> None:
+    stub.respond = lambda request: (
+        reply(threads_page([thread("T1", 1)]))
+        if request.path == "/graphql"
+        else reply([review_comment(1, BOT)])
+        if request.path.endswith("/7/comments")
+        else reply([{"user": PERSON}])
+    )
+
+    with pytest.raises(GitHubError, match=r"list_signals failed: .*expected shape at 0\.content"):
+        client(stub).list_signals(PR)
 
 
 # --- writes ----------------------------------------------------------------------------------

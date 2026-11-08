@@ -13,6 +13,10 @@ from review_bot.pr.label import MAX_REPORT_BYTES, LabellingResult, run_labelling
 NOW = datetime(2026, 11, 8, 12, tzinfo=UTC)
 VERDICT_PROMPT = "[a]ccept [r]eject [s]kip: "
 REASON_PROMPT = "[w]rong [n]ot worth it [l]ine wrong [d]uplicate: "
+# What a reaction or resolution record has null that a shadow record sets.
+SIGNAL_NULLS = dict.fromkeys(
+    ["index", "source", "severity", "reason", "run_id", "model", "prompt_version"]
+)
 
 
 class Terminal:
@@ -213,13 +217,43 @@ def test_run_labelling_with_a_malformed_labels_line_names_it_and_asks_nothing(
     assert labels.read_bytes() == before
 
 
-def test_run_labelling_with_a_record_missing_a_key_names_the_key(
+def test_run_labelling_with_a_record_missing_its_channel_names_the_channel(
     reports: Path, labels: Path
 ) -> None:
     labels.write_text('{"schema": "feedback/v1"}\n', encoding="ascii")
 
-    with pytest.raises(ConfigError, match=r"Line 1 .*\(channel: Field required\)"):
+    with pytest.raises(
+        ConfigError,
+        match=r"Line 1 .*\(channel: Field required\)",
+    ):
         label(reports, labels, Terminal())
+
+
+def test_run_labelling_with_a_record_missing_a_key_names_the_key(
+    reports: Path, labels: Path
+) -> None:
+    labels.write_text('{"schema": "feedback/v1", "channel": "shadow"}\n', encoding="ascii")
+
+    with pytest.raises(ConfigError, match=r"Line 1 .*\(repo: Field required\)"):
+        label(reports, labels, Terminal())
+
+
+def test_run_labelling_ignores_reaction_and_resolution_records(reports: Path, labels: Path) -> None:
+    write_report(reports, "one", report(entry(K1)))
+    label(reports, labels, Terminal("a"))
+    (shadow,) = records(labels)
+    signals = [
+        shadow | SIGNAL_NULLS | {"channel": channel, "label": verdict}
+        for channel, verdict in [("reaction", "reject"), ("resolution", "resolved")]
+    ]
+    labels.write_text("".join(json.dumps(signal) + "\n" for signal in signals), encoding="ascii")
+    terminal = Terminal("a")
+
+    result = label(reports, labels, terminal)
+
+    assert terminal.prompts == [VERDICT_PROMPT]
+    assert result.judged == 1
+    assert [r["channel"] for r in records(labels)] == ["reaction", "resolution", "shadow"]
 
 
 def test_run_labelling_starts_a_new_line_after_a_last_record_with_no_line_break(

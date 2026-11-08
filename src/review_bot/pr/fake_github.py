@@ -1,16 +1,17 @@
 """An in-memory GitHub for tests, in ``src/`` as ``MockProvider`` is (Phase 2 design, Module map).
 
-It holds one pull request's inline comments, each its own thread with who resolved it, and the
-bot's summary comment. It records every call, and can be told to fail one operation by name.
-It doesn't work out where GitHub would show a comment after a push: a test moves its line, or
-marks it outdated.
+It holds one pull request's inline comments, each its own thread with who resolved it and the
+reactions on it, and the bot's summary comment. It records every call, and can be told to fail
+one operation by name. It doesn't work out where GitHub would show a comment after a push: a
+test moves its line, or marks it outdated.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from review_bot.errors import GitHubError
 from review_bot.pr.comments import (
+    Marker,
     is_summary,
     read_marker,
     read_reviewed_sha,
@@ -21,12 +22,24 @@ from review_bot.pr.github import (
     BOT_LOGIN,
     BOT_USER_TYPE,
     BotComment,
+    CommentSignals,
     NewComment,
     Resolver,
     Summary,
+    is_any_bot,
+    is_bot_user,
 )
 
-__all__ = ["FakeCall", "FakeComment", "FakeGitHubClient", "FakeReview"]
+__all__ = ["FakeCall", "FakeComment", "FakeGitHubClient", "FakeReaction", "FakeReview"]
+
+
+@dataclass(frozen=True, slots=True)
+class FakeReaction:
+    """A reaction on a comment: its content, such as ``+1``, and its REST user's login and type."""
+
+    content: str
+    user: str
+    user_type: str
 
 
 @dataclass(slots=True)
@@ -41,6 +54,7 @@ class FakeComment:
     author_type: str = BOT_USER_TYPE
     is_outdated: bool = False
     resolved_by: Resolver | None = None
+    reactions: list[FakeReaction] = field(default_factory=list)
 
     @property
     def thread_id(self) -> str:
@@ -107,6 +121,10 @@ class FakeGitHubClient:
         """Resolve a comment's thread, as ``bot`` or ``person``."""
         self._held(comment_id).resolved_by = Resolver(by)
 
+    def react(self, comment_id: int, content: str, *, by: str, by_type: str = "User") -> None:
+        """Add a reaction to a comment, by the REST user with login ``by`` and type ``by_type``."""
+        self._held(comment_id).reactions.append(FakeReaction(content, by, by_type))
+
     def fail_on(self, name: str) -> None:
         """Make every later call to the operation ``name`` raise ``GitHubError``, once recorded."""
         self._failing = name
@@ -114,23 +132,21 @@ class FakeGitHubClient:
     def list_bot_comments(self, pr: PullRequestRef) -> tuple[BotComment, ...]:
         """Return the comments by the bot whose body ``read_marker`` reads, oldest first."""
         self._record("list_bot_comments", pr)
+        return tuple(own for _comment, own in self._own_comments())
+
+    def list_signals(self, pr: PullRequestRef) -> tuple[CommentSignals, ...]:
+        """Return what ``list_bot_comments`` does, each with the content of people's reactions."""
+        self._record("list_signals", pr)
         return tuple(
-            BotComment(
-                comment_id=comment.comment_id,
-                thread_id=comment.thread_id,
-                fingerprint=marker.fingerprint,
-                rule_part=marker.rule_part,
-                anchor=marker.anchor,
-                path=comment.path,
-                line=None if comment.is_outdated else comment.line,
-                severity=marker.severity,
-                resolved_by=comment.resolved_by,
+            CommentSignals(
+                own,
+                frozenset(
+                    reaction.content
+                    for reaction in comment.reactions
+                    if not is_any_bot(reaction.user_type)
+                ),
             )
-            for comment in self.comments
-            # The author first, so nobody else's text is parsed.
-            if comment.author == BOT_LOGIN
-            and comment.author_type == BOT_USER_TYPE
-            and (marker := read_marker(comment.body)) is not None
+            for comment, own in self._own_comments()
         )
 
     def read_summary(self, pr: PullRequestRef) -> Summary | None:
@@ -174,6 +190,16 @@ class FakeGitHubClient:
         if name == self._failing:
             raise GitHubError(f"GitHub {name} failed: FakeGitHubClient was told to fail it.")
 
+    def _own_comments(self) -> list[tuple[FakeComment, BotComment]]:
+        """The comments by the bot whose body ``read_marker`` reads, each with its read-back."""
+        return [
+            (comment, _bot_comment(comment, marker))
+            for comment in self.comments
+            # The author first, so nobody else's text is parsed.
+            if is_bot_user(comment.author, comment.author_type)
+            and (marker := read_marker(comment.body)) is not None
+        ]
+
     def _find(self, comment_id: int) -> FakeComment | None:
         return next(
             (comment for comment in self.comments if comment.comment_id == comment_id), None
@@ -184,3 +210,17 @@ class FakeGitHubClient:
         if comment is None:
             raise ValueError(f"FakeGitHubClient holds no comment {comment_id}.")
         return comment
+
+
+def _bot_comment(comment: FakeComment, marker: Marker) -> BotComment:
+    return BotComment(
+        comment_id=comment.comment_id,
+        thread_id=comment.thread_id,
+        fingerprint=marker.fingerprint,
+        rule_part=marker.rule_part,
+        anchor=marker.anchor,
+        path=comment.path,
+        line=None if comment.is_outdated else comment.line,
+        severity=marker.severity,
+        resolved_by=comment.resolved_by,
+    )

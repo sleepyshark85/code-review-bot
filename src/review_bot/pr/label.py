@@ -19,6 +19,8 @@ from review_bot.pr.feedback import (
     FeedbackLabel,
     FeedbackRecord,
     RejectReason,
+    ShadowFeedback,
+    parse_feedback_line,
     render_feedback_line,
 )
 from review_bot.pr.units import ShadowFile, WouldBeComment, would_be_comments
@@ -81,6 +83,8 @@ def run_labelling(
         reports_dir: Searched at any depth for ``*.json`` shadow reports. A file that can't be
             read, is over 10 MB or isn't a ``shadow/v1`` report is skipped with one line.
         labels_path: The ``feedback/v1`` JSONL file; created when the first question is due.
+            Only its ``shadow`` records mark a would-be comment as labelled; records of other
+            channels are checked, then ignored.
         read_line: Shows a prompt and returns the line answered; raises ``EOFError`` at the end
             of input.
         write_line: Writes one line where the person reads the prompts.
@@ -93,7 +97,11 @@ def run_labelling(
             question has been asked, and records appended before it stay.
     """
     existing = _read_labels(labels_path)
-    labelled = {record.unit for record in _parse_labels(existing, labels_path)}
+    labelled = {
+        record.unit
+        for record in _parse_labels(existing, labels_path)
+        if isinstance(record, ShadowFeedback)
+    }
     reports, skipped_files = _read_reports(reports_dir)
     for path, problem in skipped_files:
         write_line(escape_unprintable(f"review-bot pr: skipped {redact(str(path))}: {problem}"))
@@ -149,7 +157,7 @@ def _parse_labels(raw: bytes, path: Path) -> list[FeedbackRecord]:
         if not line.strip():
             continue
         try:
-            records.append(FeedbackRecord.model_validate_json(line, strict=True))
+            records.append(parse_feedback_line(line))
         except ValidationError as exc:
             raise ConfigError(
                 f"Line {number} of the labels file --labels {redact(str(path))} isn't a "
@@ -303,9 +311,9 @@ def _record(
     label: FeedbackLabel,
     reason: RejectReason | None,
     recorded_at: datetime,
-) -> FeedbackRecord:
+) -> ShadowFeedback:
     unit, entry = comment.unit, comment.entry
-    return FeedbackRecord(
+    return ShadowFeedback(
         channel="shadow",
         repo=unit.repo,
         pr=unit.pr,

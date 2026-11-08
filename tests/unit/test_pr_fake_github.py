@@ -178,3 +178,37 @@ def test_read_summary_reads_a_summary_a_test_set(summary: str, expected: Summary
     github.summary = summary
 
     assert github.read_summary(PR) == expected
+
+
+# --- list_signals ------------------------------------------------------------------------------
+
+
+def test_list_signals_gives_each_bot_comment_with_the_content_of_peoples_reactions() -> None:
+    github = FakeGitHubClient()
+    first = github.add_comment(path="a.py", line=3, body=BODY)
+    second = github.add_comment(path="a.py", line=4, body=BODY)
+    github.add_comment(path="a.py", line=5, body=BODY, author="someone", author_type="User")
+    github.react(first, "+1", by="alice")
+    github.react(first, "+1", by="bob")
+    github.react(first, "heart", by="bob")
+    github.react(second, "-1", by="github-actions[bot]", by_type="Bot")
+    github.react(second, "+1", by="dependabot[bot]", by_type="Bot")
+    github.react(3, "-1", by="alice")
+    github.resolve(second, by="person")
+
+    signals = github.list_signals(PR)
+
+    assert [(signal.comment, signal.reactions) for signal in signals] == [
+        (github.list_bot_comments(PR)[0], frozenset({"+1", "heart"})),
+        (github.list_bot_comments(PR)[1], frozenset()),
+    ]
+    assert signals[1].comment.resolved_by is Resolver.PERSON
+    assert github.calls[0] == FakeCall("list_signals", (PR,))
+
+
+def test_list_signals_fails_when_told_to() -> None:
+    github = FakeGitHubClient()
+    github.fail_on("list_signals")
+
+    with pytest.raises(GitHubError, match="GitHub list_signals failed"):
+        github.list_signals(PR)

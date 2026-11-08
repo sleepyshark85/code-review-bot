@@ -1,11 +1,12 @@
-"""Command line for pull requests: ``python -m review_bot.pr shadow|run|backfill|label ...``.
+"""Command line for pull requests: ``python -m review_bot.pr shadow|run|backfill|label|collect``.
 
 ``shadow`` and ``run`` write a shadow report in ``--out DIR``, and ``backfill`` one per merged
 pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
-post.
+post. ``collect`` writes ``feedback.jsonl`` in ``--out DIR``, from the reactions and resolutions
+on the bot's comments, with no model.
 
-``run --mode comment`` also posts on the pull request, through GitHub's API with the token in
-``GITHUB_TOKEN``; without it, it exits 2.
+``run --mode comment`` also posts on the pull request, and ``collect`` reads it, through GitHub's
+API with the token in ``GITHUB_TOKEN``; without it, they exit 2.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
 with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
@@ -46,6 +47,7 @@ from review_bot.console import (
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
+from review_bot.pr.feedback import SignalFeedback, labels_from_signals, render_feedback_line
 from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
@@ -88,6 +90,11 @@ _BACKFILL_IN_CI: Final = (
     "backfill doesn't run in CI (CI is set): it spends the budget you approved, with your own "
     "login or key. Run it from your own shell."
 )
+_FEEDBACK_NAME: Final = "feedback.jsonl"
+_COLLECT_WITHOUT_CREDENTIAL: Final = (
+    "collect needs GITHUB_TOKEN, which is unset or empty, so nothing was collected. Run it in "
+    "the collect job, which sets it, or set it to a token that can read the pull request."
+)
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
     "interactive shell."
@@ -126,6 +133,12 @@ class _LabelCommand:
     labels_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class _CollectCommand:
+    event_path: Path
+    out_dir: Path
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -138,7 +151,7 @@ def main(
         argv: The arguments; None means the process's own.
         provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
             from the settings, and only if the run calls one.
-        github: The GitHub client ``run --mode comment`` uses; None means a
+        github: The GitHub client ``run --mode comment`` and ``collect`` use; None means a
             ``RestGitHubClient`` from ``GITHUB_TOKEN`` and ``GITHUB_API_URL``. ``--mode shadow``
             uses none, and builds no client.
 
@@ -153,10 +166,13 @@ def main(
         ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
         or invalid config's code, an error's code if one stops it, and 2 in CI or over
         ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
-        an invalid labels file.
+        an invalid labels file. ``collect`` returns 0 once ``feedback.jsonl`` is written; 2
+        with no ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an
+        unwritable ``--out``; 18 for a failed GitHub call, and 19 for an unusable event. A
+        failed GitHub call or an unusable event writes nothing.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
-    (``take_github_token``); ``run --mode comment`` keeps it for its client.
+    (``take_github_token``); ``run --mode comment`` and ``collect`` keep it for their client.
     """
     keep_library_logs_off_stderr()
     github_token = take_github_token()
@@ -164,6 +180,8 @@ def main(
         command = _parse_args(sys.argv[1:] if argv is None else argv)
         if isinstance(command, _LabelCommand):
             return _label(command)
+        if isinstance(command, _CollectCommand):
+            return _collect(command, _github_for_collect(github, github_token))
         # Before --out is created: in CI, backfill touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci()
@@ -193,7 +211,7 @@ def main(
 
 def _parse_args(
     argv: Sequence[str],
-) -> _ShadowCommand | _RunCommand | _BackfillCommand | _LabelCommand:
+) -> _ShadowCommand | _RunCommand | _BackfillCommand | _LabelCommand | _CollectCommand:
     """Parse the command line into the subcommand, its paths and the settings.
 
     The audit log goes in the output directory unless ``REVIEW_BOT_AUDIT_LOG`` names one.
@@ -278,10 +296,25 @@ def _parse_args(
     label.add_argument(
         "--labels", type=Path, required=True, help="the feedback/v1 JSONL file to append to"
     )
+    collect = commands.add_parser(
+        "collect",
+        help="turn the reactions and resolutions on the bot's comments into labels, with no model",
+        description="Write feedback.jsonl in --out: one feedback/v1 record per reaction or "
+        "resolution label, read from the pull request through GitHub's API with GITHUB_TOKEN.",
+        allow_abbrev=False,
+    )
+    collect.add_argument(
+        "--event", type=Path, required=True, help="the pull_request event file (GITHUB_EVENT_PATH)"
+    )
+    collect.add_argument(
+        "--out", type=Path, required=True, help="the directory to write feedback.jsonl"
+    )
     flags = vars(parser.parse_args(argv))
     name = flags.pop("command")
     if name == "label":
         return _LabelCommand(flags["reports"], flags["labels"])
+    if name == "collect":
+        return _CollectCommand(flags["event"], flags["out"])
     out_dir = flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
@@ -364,6 +397,47 @@ def _labelled_line(result: LabellingResult) -> str:
     )
 
 
+def _collect(command: _CollectCommand, make_github: Callable[[str], GitHubClient]) -> int:
+    """Read the pull request's signals, and write their labels to ``feedback.jsonl`` in ``--out``.
+
+    ``make_github`` makes the client for the pull request's repository. Nothing is written
+    unless every call succeeded.
+
+    Raises:
+        EventError: If the event file is unusable.
+        GitHubError: If a GitHub call fails.
+        ConfigError: If ``feedback.jsonl`` can't be written.
+    """
+    pr = read_event(command.event_path)
+    signals = make_github(pr.repo).list_signals(pr)
+    records = labels_from_signals(signals, repo=pr.repo, pr=pr.number, recorded_at=utc_now())
+    _write_feedback(records, command.out_dir)
+    channels = Counter(record.channel for record in records)
+    write_diagnostic(
+        f"review-bot pr: wrote {_FEEDBACK_NAME} in {redact(str(command.out_dir))}: "
+        f"reaction={channels['reaction']} resolution={channels['resolution']}"
+    )
+    return 0
+
+
+def _write_feedback(records: Sequence[SignalFeedback], out_dir: Path) -> None:
+    """Write one line per record to ``feedback.jsonl`` in ``out_dir``, creating it if missing.
+
+    Raises:
+        ConfigError: If it can't be written.
+    """
+    lines = "".join(render_feedback_line(record) + "\n" for record in records)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / _FEEDBACK_NAME).write_text(lines, encoding="ascii", newline="\n")
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise ConfigError(
+            f"Can't write {_FEEDBACK_NAME} in --out {redact(str(out_dir))}: {reason}. Pass a "
+            "directory you can write to."
+        ) from exc
+
+
 def _refuse_backfill_in_ci() -> None:
     """Raise ``ConfigError`` if this process runs in CI, where backfill must not run."""
     if in_ci(os.environ):
@@ -384,6 +458,30 @@ def _github_for(
     """
     if mode is Mode.SHADOW:
         return None
+    return _github_client(github, github_token)
+
+
+def _github_for_collect(
+    github: GitHubClient | None, github_token: str | None
+) -> Callable[[str], GitHubClient]:
+    """What makes ``collect``'s GitHub client, as ``_github_for`` does in comment mode.
+
+    Raises:
+        ConfigError: If ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
+    """
+    if github is None and not github_token:
+        raise ConfigError(_COLLECT_WITHOUT_CREDENTIAL)
+    return _github_client(github, github_token)
+
+
+def _github_client(
+    github: GitHubClient | None, github_token: str | None
+) -> Callable[[str], GitHubClient]:
+    """``github`` if given, else a ``RestGitHubClient`` with the token and ``GITHUB_API_URL``.
+
+    Raises:
+        ConfigError: If ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
+    """
     if github is not None:
         return lambda _repo: github
     access = github_access(github_token, os.environ.get(API_URL_VARIABLE))

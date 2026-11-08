@@ -14,9 +14,11 @@ from git_samples import commit, init_repo
 from shadow_samples import K1, K2, entry, report, write_report
 
 from review_bot.errors import ErrorCategory, ProviderError
-from review_bot.findings import Finding
+from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.pr.cli import main
+from review_bot.pr.comments import comment_body
 from review_bot.pr.fake_github import FakeGitHubClient
+from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess
 from review_bot.providers.base import ReviewRequest, ReviewResponse
 from review_bot.providers.mock import MockProvider
@@ -695,3 +697,203 @@ def test_run_with_an_invalid_repository_config_writes_a_failed_report_and_exits_
     assert (document["outcome"], document["reason"]) == ("failed", "invalid_config")
     assert provider.requests == []
     assert "unknown key 'max_retries'" in capsys.readouterr().err
+
+
+# --- collect -----------------------------------------------------------------------------------
+
+CANARY = "canary-7f3e"
+
+
+def bot_body(fingerprint: str = "0123456789abcdef") -> str:
+    finding = ReviewedFinding(
+        Finding.model_construct(
+            file="app.py",
+            line=2,
+            severity=Severity.HIGH,
+            category=Category.LOGIC,
+            rationale=f"Rationale {CANARY}.",
+            confidence=0.9,
+        ),
+        Source.AI,
+        None,
+        fingerprint,
+    )
+    return comment_body(PlannedComment(Action.CREATE, finding, "fedcba9876543210"))
+
+
+def closed_event(tmp_path: Path) -> Path:
+    path = tmp_path / "closed.json"
+    full_name = {"full_name": "owner/repo"}
+    document = {
+        "action": "closed",
+        "repository": full_name,
+        "pull_request": {
+            "number": 7,
+            "title": f"Title {CANARY}",
+            "draft": False,
+            "updated_at": "2026-11-08T09:30:00Z",
+            "base": {"sha": "0" * 40, "repo": full_name},
+            "head": {"sha": "1" * 40, "repo": full_name},
+        },
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def collect(tmp_path: Path, github: FakeGitHubClient | None) -> int:
+    out = tmp_path / "out"
+    return main(
+        ["collect", "--event", str(closed_event(tmp_path)), "--out", str(out)], github=github
+    )
+
+
+def feedback(tmp_path: Path) -> list[dict[str, Any]]:
+    text = (tmp_path / "out" / "feedback.jsonl").read_text(encoding="ascii")
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def test_collect_writes_a_record_per_label_and_says_how_many(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    github = FakeGitHubClient()
+    liked = github.add_comment(path="app.py", line=2, body=bot_body())
+    resolved = github.add_comment(path="app.py", line=4, body=bot_body("0" * 16))
+    github.react(liked, "+1", by=f"user-{CANARY}")
+    github.resolve(resolved, by="person")
+
+    exit_code = collect(tmp_path, github)
+
+    assert exit_code == 0
+    assert [(r["channel"], r["label"], r["fingerprint"]) for r in feedback(tmp_path)] == [
+        ("reaction", "accept", "0123456789abcdef"),
+        ("resolution", "resolved", "0" * 16),
+    ]
+    assert [call.name for call in github.calls] == ["list_signals"]
+    assert capsys.readouterr().err.endswith(": reaction=1 resolution=1\n")
+
+
+def test_collect_writes_no_username_body_rationale_or_title(tmp_path: Path) -> None:
+    github = FakeGitHubClient()
+    comment_id = github.add_comment(path="app.py", line=2, body=bot_body())
+    github.add_comment(path="app.py", line=3, body=f"Reply {CANARY}", author=CANARY)
+    github.react(comment_id, "-1", by=CANARY)
+    github.resolve(comment_id, by="person")
+
+    assert collect(tmp_path, github) == 0
+
+    written = [path.read_bytes() for path in (tmp_path / "out").rglob("*") if path.is_file()]
+    assert len(feedback(tmp_path)) == 2
+    assert all(CANARY.encode() not in content for content in written)
+
+
+def test_collect_with_nothing_to_label_writes_an_empty_file(tmp_path: Path) -> None:
+    github = FakeGitHubClient()
+    github.add_comment(path="app.py", line=2, body=bot_body())
+
+    assert collect(tmp_path, github) == 0
+
+    assert (tmp_path / "out" / "feedback.jsonl").read_bytes() == b""
+
+
+def test_collect_with_a_failed_github_call_exits_18_writing_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    github = FakeGitHubClient()
+    github.fail_on("list_signals")
+
+    exit_code = collect(tmp_path, github)
+
+    assert exit_code == 18
+    assert "list_signals" in capsys.readouterr().err
+    assert not (tmp_path / "out" / "feedback.jsonl").exists()
+
+
+def test_collect_with_an_unusable_event_exits_19_calling_nothing(tmp_path: Path) -> None:
+    github = FakeGitHubClient()
+    event = tmp_path / "event.json"
+    event.write_text("{}", encoding="utf-8")
+
+    exit_code = main(
+        ["collect", "--event", str(event), "--out", str(tmp_path / "out")], github=github
+    )
+
+    assert exit_code == 19
+    assert github.calls == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_collect_that_cannot_write_feedback_exits_2_naming_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "out").write_text("a file", encoding="utf-8")
+
+    exit_code = collect(tmp_path, FakeGitHubClient())
+
+    assert exit_code == 2
+    assert "Can't write feedback.jsonl in --out" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("token", [None, ""])
+def test_collect_without_github_token_exits_2_naming_it_before_reading_the_event(
+    token: str | None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if token is None:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+
+    exit_code = main(["collect", "--event", "missing.json", "--out", str(tmp_path / "out")])
+
+    assert exit_code == 2
+    assert capsys.readouterr().err == (
+        "review-bot: error: collect needs GITHUB_TOKEN, which is unset or empty, so nothing was "
+        "collected. Run it in the collect job, which sets it, or set it to a token that can read "
+        "the pull request.\n"
+    )
+
+
+def test_collect_with_github_token_reads_through_the_rest_client_and_drops_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    monkeypatch.setenv("GITHUB_API_URL", "http://127.0.0.1:9")
+    made: list[tuple[str, GitHubAccess]] = []
+    fake = FakeGitHubClient()
+
+    def rest_client(repo: str, access: GitHubAccess) -> FakeGitHubClient:
+        made.append((repo, access))
+        return fake
+
+    monkeypatch.setattr("review_bot.pr.cli.RestGitHubClient", rest_client)
+
+    exit_code = collect(tmp_path, None)
+
+    assert exit_code == 0
+    assert made == [("owner/repo", GitHubAccess("http://127.0.0.1:9", "ghs_canary"))]
+    assert [call.name for call in fake.calls] == ["list_signals"]
+    assert "GITHUB_TOKEN" not in os.environ
+
+
+def test_collect_with_a_remote_http_api_url_exits_2_naming_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    monkeypatch.setenv("GITHUB_API_URL", "http://api.example.com")
+
+    exit_code = collect(tmp_path, None)
+
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert "GITHUB_API_URL must be an https:// URL" in err
+    assert "ghs_canary" not in err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "argv", [["collect"], ["collect", "--out", "x"], ["collect", "--event", "x"]]
+)
+def test_collect_without_event_or_out_exits_2(argv: list[str]) -> None:
+    assert main(argv, github=FakeGitHubClient()) == 2
