@@ -697,7 +697,7 @@ Suite: `tests/integration/test_p2_s11_value_baseline.py`, written from the spec,
 
 ### Coverage
 
-Not measured yet: the code under test doesn't run.
+Measured by CI's full suite on PR #62 (`gate`, at least 90%).
 
 ## P2-S10: Measure latency, tokens, cost, outcomes and precision
 
@@ -746,4 +746,20 @@ Test names drop the `test_p2_s10_` prefix.
 
 ### Coverage
 
-Not measured yet: the code under test doesn't run.
+Measured by CI's full suite on PR #63 (`gate`, at least 90%).
+
+## P2-S12: Close Phase 2
+
+Released as 0.3.0 on 2026-11-09, at the owner's request, before the gate's evidence existed.
+
+| AC | State | Evidence |
+|---|---|---|
+| AC1 to AC5 | Open | Wait for the shadow-mode weeks, which started 2026-11-08 when `ANTHROPIC_API_KEY` was added ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
+| AC6 | Open | No labelled set yet ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
+| AC7 | Done, except the status line | The README status line says the gate evidence is pending until [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) closes. README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65, this release) |
+| AC8 | Partly done | [Runbook](../../runbook.md) written; the dated branch-protection confirmation is open ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
+| AC9 | Done | `pyproject.toml` at `0.3.0`, [release notes](release-notes.md), tag `v0.3.0` |
+
+**Manual checks:**
+- **S3 AC12 done.** PR #53's shadow run (42450012667) ended `skipped/no_credential` before the key existed. PR #66's run (42503017053) ended `reviewed` with the key.
+- **S6 AC12 open.** It needs comment mode turned on.

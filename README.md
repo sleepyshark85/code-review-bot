@@ -2,14 +2,14 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 in shadow mode (12 of 13 slices merged) · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) (see [Ownership](#ownership)) · **Last updated:** 2026-11-08
+> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 released as 0.3.0 and running in shadow mode; its gate evidence is pending ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) · Phase 3 next · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) (see [Ownership](#ownership)) · **Last updated:** 2026-11-09
 
 ## Usage
 
 Install the [latest release](https://github.com/sleepyshark85/code-review-bot/releases/latest), which requires Python 3.12 or later:
 
 ```
-uv tool install https://github.com/sleepyshark85/code-review-bot/releases/download/v0.2.0/review_bot-0.2.0-py3-none-any.whl
+uv tool install https://github.com/sleepyshark85/code-review-bot/releases/download/v0.3.0/review_bot-0.3.0-py3-none-any.whl
 review-bot <diff>                    # a real review with Claude
 review-bot <diff> --provider mock    # offline smoke test: no model call; its canned finding is dropped (not in the diff), so it exits 0
 ```
@@ -193,6 +193,7 @@ Capability will arrive well before operational maturity. A track record, re-eval
 - **Owner:** [@sleepyshark85](https://github.com/sleepyshark85), who funds the model key.
 - **Spend:** capped by a dedicated Anthropic workspace limit; the key is the `ANTHROPIC_API_KEY` repository secret.
 - **Support:** open an issue labelled `review-bot`.
+- **Runbook:** [docs/runbook.md](docs/runbook.md) covers turning the bot off, rotating the key, checking spend, and reading a failed run.
 
 ## 4. Risks and non-goals
 
