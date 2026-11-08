@@ -25,3 +25,7 @@ class Reason(StrEnum):
     NOT_A_DIFF = "not_a_diff"
     UNREADABLE = "unreadable"
     NOTHING_TO_REVIEW = "nothing_to_review"
+    # A pull request run refused before git or the provider ran.
+    ACTION = "action"
+    FORK = "fork"
+    NO_CREDENTIAL = "no_credential"

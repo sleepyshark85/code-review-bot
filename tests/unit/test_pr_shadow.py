@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, get_args
@@ -17,6 +18,7 @@ from review_bot.errors import (
 )
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.policy import Decision
+from review_bot.pr.event import PullRequestRef
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
@@ -69,6 +71,7 @@ def build(review: PipelineResult | ReportedError) -> dict[str, Any]:
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED + timedelta(seconds=2),
+        pr=None,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -101,7 +104,13 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
     assert (document["outcome"], document["reason"]) == ("reviewed", None)
     assert document["report"] == report_document(review, SETTINGS, "run-1")
-    assert document["caps"] == {"max_diff_bytes": 400_000, "max_retries": 2, "deadline_s": 300}
+    assert document["caps"] == {
+        "max_diff_bytes": 400_000,
+        "max_review_bytes": None,
+        "max_output_tokens": None,
+        "max_retries": 2,
+        "deadline_s": 300,
+    }
     assert document["over_budget"] is False
 
 
@@ -112,6 +121,7 @@ def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() ->
         run_id="run-1",
         started_at=STARTED.astimezone(timezone(timedelta(hours=2))),
         finished_at=STARTED + timedelta(seconds=2),
+        pr=None,
     )
 
     document = json.loads(render_shadow_json(shadow))
@@ -151,6 +161,7 @@ def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
             run_id="run-1",
             started_at=STARTED,
             finished_at=STARTED,
+            pr=None,
         )
     )
 
@@ -205,6 +216,7 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
+        pr=None,
     )
 
     markdown = render_shadow_markdown(shadow)
@@ -218,7 +230,12 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
 
 def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
     shadow = build_shadow_report(
-        result(), settings=SETTINGS, run_id="run-1", started_at=STARTED, finished_at=STARTED
+        result(),
+        settings=SETTINGS,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        pr=None,
     )
 
     assert render_shadow_markdown(shadow) == shadow.summary_body
@@ -227,3 +244,65 @@ def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
 def test_reported_errors_tuple_holds_exactly_the_alias_members() -> None:
     assert set(REPORTED_ERRORS) == set(get_args(ReportedError.__value__))
     assert len(REPORTED_ERRORS) == len(set(REPORTED_ERRORS))
+
+
+PR = PullRequestRef(
+    repo="owner/repo",
+    number=7,
+    base_sha="a" * 40,
+    head_sha="b" * 40,
+    is_fork=False,
+    is_draft=True,
+    event_at=datetime(2026, 11, 8, 9, 30, tzinfo=timezone(timedelta(hours=1))),
+    action="opened",
+)
+
+
+def build_for_pr(review: PipelineResult | Reason, settings: Settings = SETTINGS) -> dict[str, Any]:
+    shadow = build_shadow_report(
+        review, settings=settings, run_id="run-1", started_at=STARTED, finished_at=STARTED, pr=PR
+    )
+    document: dict[str, Any] = json.loads(render_shadow_json(shadow))
+    return document
+
+
+def test_render_shadow_json_for_a_pull_request_has_its_origin_fields_and_event_time() -> None:
+    document = build_for_pr(result())
+
+    assert (document["mode"], document["origin"]) == ("shadow", "event")
+    assert document["pr"] == {
+        "repo": "owner/repo",
+        "number": 7,
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+    }
+    assert document["event_at"] == "2026-11-08T08:30:00+00:00"
+    assert document["started_at"] == "2026-11-08T10:00:00+00:00"
+
+
+@pytest.mark.parametrize("reason", [Reason.FORK, Reason.ACTION, Reason.NO_CREDENTIAL])
+def test_build_shadow_report_for_a_refused_run_is_skipped_with_its_reason(reason: Reason) -> None:
+    document = build_for_pr(reason)
+
+    assert (document["outcome"], document["reason"], document["report"]) == (
+        "skipped",
+        reason,
+        None,
+    )
+    assert f"(`{reason}`)" in document["summary_body"]
+
+
+@pytest.mark.parametrize(
+    ("output_tokens", "cap", "over_budget"),
+    [(16_001, 16_000, True), (16_000, 16_000, False), (20_000, None, False)],
+)
+def test_build_shadow_report_is_over_budget_only_past_the_output_token_cap(
+    output_tokens: int, cap: int | None, over_budget: bool
+) -> None:
+    review = dataclasses.replace(result(), usage=TokenUsage(1, output_tokens))
+    settings = Settings(provider="mock", max_output_tokens=cap)
+
+    document = build_for_pr(review, settings)
+
+    assert (document["outcome"], document["over_budget"]) == ("reviewed", over_budget)
+    assert document["caps"]["max_output_tokens"] == cap

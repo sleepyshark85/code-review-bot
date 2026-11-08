@@ -1,7 +1,7 @@
 """The ``shadow/v1`` report of what the bot would post, and its Markdown (ADR 0010).
 
-Pure: the command line runs the review and passes its result, or the error that stopped it, to
-``build_shadow_report``.
+Pure: the caller runs the review and passes its result, the error that stopped it, or the
+reason it was refused, to ``build_shadow_report``.
 """
 
 import json
@@ -25,6 +25,7 @@ from review_bot.pr.comments import (
     not_reviewed_summary,
     reviewed_summary,
 )
+from review_bot.pr.event import PullRequestRef
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import (
     DEFAULT_MAX_OPEN_COMMENTS,
@@ -32,6 +33,7 @@ from review_bot.pr.plan import (
     WithheldFinding,
     plan_comments,
 )
+from review_bot.providers.base import TokenUsage
 from review_bot.render import markdown_path, report_document
 from review_bot.report import PipelineResult, path_fields
 from review_bot.secret_scan import redact
@@ -48,9 +50,11 @@ __all__ = [
 ]
 
 _SCHEMA: Final = "shadow/v1"
-# A local run has no event and no pull request, and it never posts.
+# Nothing posts before comment mode (S5).
 _MODE: Final = "shadow"
-_ORIGIN: Final = "local"
+# A run from a diff file has no pull request; a run from an event has one.
+_LOCAL_ORIGIN: Final = "local"
+_EVENT_ORIGIN: Final = "event"
 
 # The errors that still end in a report, as ``skipped``, ``blocked_secret`` or ``failed``. The
 # tuple is for ``except``, the alias for types; a unit test keeps them equal.
@@ -86,12 +90,15 @@ class ShadowComment:
 class ShadowReport:
     """One run's ``shadow/v1`` report, before it is written.
 
-    ``report`` is the ``report/v1`` object, with any secret in it redacted, or None if nothing
-    was reviewed. ``comments`` and ``withheld`` are in comment order. ``caps`` are the run's
-    effective limits.
+    ``pr`` is None for a run from a diff file. ``report`` is the ``report/v1`` object, with any
+    secret in it redacted, or None if nothing was reviewed. ``comments`` and ``withheld`` are in
+    comment order. ``caps`` are the run's effective limits, None where there is no cap.
+    ``error`` is the error that ended the run, if any, for the caller's message and exit code;
+    it is never written.
     """
 
     run_id: str
+    pr: PullRequestRef | None
     outcome: Outcome
     reason: _Reason
     started_at: datetime
@@ -100,29 +107,37 @@ class ShadowReport:
     summary_body: str
     comments: tuple[ShadowComment, ...]
     withheld: tuple[WithheldFinding, ...]
-    caps: Mapping[str, int | float]
+    caps: Mapping[str, int | float | None]
+    over_budget: bool
+    error: ReportedError | None
 
 
-def build_shadow_report(
-    review: PipelineResult | ReportedError,
+def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input of the report
+    review: PipelineResult | ReportedError | Reason,
     *,
     settings: Settings,
     run_id: str,
     started_at: datetime,
     finished_at: datetime,
+    pr: PullRequestRef | None,
 ) -> ShadowReport:
-    """Build the report of a review, or of the error that stopped it.
+    """Build the report of a review, of the error that stopped it, or of a refused run.
 
     A review that called the model is ``reviewed``, with its reported findings planned as
     comments against the reviewed diff. A review that skipped every file is ``skipped``,
-    ``nothing_to_review``; a secret is ``blocked_secret``; a diff that can't be reviewed is
-    ``skipped`` with its reason; and a provider error is ``failed`` with its category.
+    ``nothing_to_review``; a refused run is ``skipped`` with its reason; a secret is
+    ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; and a
+    provider error is ``failed`` with its category. A review is over budget when it reports
+    more output tokens than ``max_output_tokens``.
     """
     comments: tuple[ShadowComment, ...] = ()
     withheld: tuple[WithheldFinding, ...] = ()
     report: dict[str, object] | None = None
+    error: ReportedError | None = None
     reason: _Reason
-    if isinstance(review, PipelineResult) and review.model_called:
+    if isinstance(review, Reason):
+        outcome, reason, summary = _skipped(review)
+    elif isinstance(review, PipelineResult) and review.model_called:
         plan = plan_comments(
             review.decision.reported,
             pr_diff=review.parsed,
@@ -138,9 +153,11 @@ def build_shadow_report(
     elif isinstance(review, PipelineResult):
         outcome, reason, summary = _skipped(Reason.NOTHING_TO_REVIEW)
     else:
+        error = review
         outcome, reason, summary = _not_reviewed(review)
     return ShadowReport(
         run_id=run_id,
+        pr=pr,
         outcome=outcome,
         reason=reason,
         started_at=started_at,
@@ -151,10 +168,19 @@ def build_shadow_report(
         withheld=withheld,
         caps={
             "max_diff_bytes": settings.max_diff_bytes,
+            "max_review_bytes": settings.max_review_bytes,
+            "max_output_tokens": settings.max_output_tokens,
             "max_retries": settings.max_retries,
             "deadline_s": settings.deadline_s,
         },
+        over_budget=isinstance(review, PipelineResult) and _is_over_budget(review.usage, settings),
+        error=error,
     )
+
+
+def _is_over_budget(usage: TokenUsage, settings: Settings) -> bool:
+    cap = settings.max_output_tokens
+    return cap is not None and usage.output_tokens > cap
 
 
 def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:
@@ -195,28 +221,38 @@ def _redacted(value: object) -> object:
 def render_shadow_json(shadow: ShadowReport) -> str:
     """Render the report as one line of pure ASCII JSON, schema ``shadow/v1``, keys in order.
 
-    A local run's ``event_at`` is its ``started_at``, and it has no usage cap to exceed.
+    A run from an event has ``origin`` ``event``, and its ``event_at`` is the pull request's
+    ``updated_at``. A local run's ``event_at`` is its ``started_at``.
     """
-    started_at = _utc(shadow.started_at)
+    pr = shadow.pr
     document = {
         "schema": _SCHEMA,
         "run_id": shadow.run_id,
         "mode": _MODE,
-        "origin": _ORIGIN,
+        "origin": _LOCAL_ORIGIN if pr is None else _EVENT_ORIGIN,
         "outcome": shadow.outcome,
         "reason": shadow.reason,
-        "pr": None,
-        "event_at": started_at,
-        "started_at": started_at,
+        "pr": None if pr is None else _pr_json(pr),
+        "event_at": _utc(shadow.started_at if pr is None else pr.event_at),
+        "started_at": _utc(shadow.started_at),
         "finished_at": _utc(shadow.finished_at),
         "report": shadow.report,
         "summary_body": shadow.summary_body,
         "comments": [_comment_json(comment) for comment in shadow.comments],
         "withheld": [_withheld_json(item) for item in shadow.withheld],
         "caps": shadow.caps,
-        "over_budget": False,
+        "over_budget": shadow.over_budget,
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
+
+
+def _pr_json(pr: PullRequestRef) -> dict[str, object]:
+    return {
+        "repo": pr.repo,
+        "number": pr.number,
+        "base_sha": pr.base_sha,
+        "head_sha": pr.head_sha,
+    }
 
 
 def _utc(moment: datetime) -> str:

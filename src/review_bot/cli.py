@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Final, NoReturn, override
 
@@ -27,6 +27,8 @@ from review_bot.errors import (
     DiffTooLargeError,
     DiffUnreadableError,
     ErrorCategory,
+    EventError,
+    GitError,
     InputError,
     ProviderError,
     ReviewBotError,
@@ -52,6 +54,9 @@ __all__ = [
     "record_failed_end",
     "report_failure",
     "run_review",
+    "run_to_completion",
+    "then_discard_unraisable",
+    "uses_own_claude",
 ]
 
 _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
@@ -63,6 +68,9 @@ _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     DiffTooLargeError: 6,
     DiffNotParsableError: 15,
     SecretDetectedError: 16,
+    # Only ``python -m review_bot.pr`` raises these (Phase 2 design, Commands and exit codes).
+    EventError: 19,
+    GitError: 19,
 }
 
 _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
@@ -128,6 +136,13 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", help="the model to request")
     parser.add_argument("--threshold", help=f"the lowest severity to report: {', '.join(Severity)}")
     parser.add_argument("--max-diff-bytes", help="the largest diff file to review, in bytes")
+    parser.add_argument(
+        "--max-review-bytes",
+        help="the most bytes of files to send to the model, after skipping (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-output-tokens", help="the Claude CLI's output token cap (default: the CLI's own)"
+    )
     parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
     parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
     parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
@@ -292,10 +307,26 @@ def run_review(
             becomes one too, so it can't set the exit code itself.
     """
     selected_provider = build_provider(settings) if provider is None else provider
-    is_own_claude = provider is None and settings.provider == "claude"
-    pipeline = _run_pipeline_then_discard_unraisable if is_own_claude else run_pipeline
+    review = run_pipeline(diff_path, settings, selected_provider, audit)
+    if uses_own_claude(settings, provider):
+        review = then_discard_unraisable(review)
+    return run_to_completion(review)
+
+
+def uses_own_claude(settings: Settings, provider: LLMProvider | None) -> bool:
+    """Whether the run builds the settings' own Claude provider, with no provider injected."""
+    return provider is None and settings.provider == "claude"
+
+
+def run_to_completion[T](review: Coroutine[object, object, T]) -> T:
+    """Run ``review`` in the one event loop and return its result.
+
+    Raises:
+        Exception: Whatever ``review`` raises; any other ``BaseException`` becomes a
+            ``ReviewBotError``, so it can't set the exit code itself.
+    """
     try:
-        return asyncio.run(pipeline(diff_path, settings, selected_provider, audit))
+        return asyncio.run(review)
     except Exception:
         raise
     except BaseException as exc:
@@ -340,16 +371,14 @@ def _render_report(
     return render_findings(findings, settings.threshold)
 
 
-async def _run_pipeline_then_discard_unraisable(
-    diff_path: Path, settings: Settings, provider: LLMProvider, audit: AuditLog
-) -> PipelineResult:
-    """Run ``run_pipeline``, then discard ``sys.unraisablehook`` reports until the process exits.
+async def then_discard_unraisable[T](review: Awaitable[T]) -> T:
+    """Await ``review``, then discard ``sys.unraisablehook`` reports until the process exits.
 
-    The hook goes in only once the review has ended, so reports during the review still show
-    (``console.discard_unraisable_reports``).
+    For a review with the settings' own Claude provider. The hook goes in only once the review
+    has ended, so reports during the review still show (``console.discard_unraisable_reports``).
     """
     try:
-        return await run_pipeline(diff_path, settings, provider, audit)
+        return await review
     finally:
         discard_unraisable_reports()
 

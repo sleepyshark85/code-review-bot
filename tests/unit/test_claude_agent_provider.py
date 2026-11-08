@@ -118,6 +118,30 @@ async def test_default_sdk_call_past_the_deadline_closes_query(
     assert fake_query.is_closed
 
 
+async def test_review_with_an_output_token_cap_passes_it_to_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_query = FakeQuery(result_message())
+    monkeypatch.setattr("review_bot.providers.claude_agent.query", fake_query)
+
+    await ClaudeAgentProvider(Settings(max_output_tokens=16_000)).review(REQUEST)
+
+    assert fake_query.options is not None
+    assert fake_query.options.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+
+
+async def test_review_without_an_output_token_cap_leaves_the_cli_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_query = FakeQuery(result_message())
+    monkeypatch.setattr("review_bot.providers.claude_agent.query", fake_query)
+
+    await ClaudeAgentProvider(Settings()).review(REQUEST)
+
+    assert fake_query.options is not None
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in fake_query.options.env
+
+
 def scripted(*script: object) -> SdkCall:
     """An ``sdk_call`` playing ``script``: a step is raised if it is an exception, else yielded."""
 
