@@ -1,6 +1,6 @@
 # P2-S7: Re-review only what changed since the last reviewed commit
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S5; in CI, P2-S3's full-history checkout (`fetch-depth: 0`), without which `A` is never found and every run is full
 - **Touches:** `pr` (`git`, `runner`, `plan`, `comments`, `github`)
 

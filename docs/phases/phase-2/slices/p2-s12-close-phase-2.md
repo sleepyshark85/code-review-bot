@@ -1,6 +1,6 @@
 # P2-S12: Close Phase 2: measure the gate, name the owner, release 0.3.0
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S1 to P2-S11, P2-S13, and Q1's weeks of shadow mode
 - **Touches:** `tests/evals/labelled/`, `docs/phases/phase-2/test-report.md`, `pyproject.toml`; README, runbook and release notes by the main session
 

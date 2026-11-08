@@ -1,6 +1,6 @@
 # P2-S5: Create, update, move and resolve the bot's own comments
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S2
 - **Touches:** `pr` (`github` with the `GitHubClient` protocol, `fake_github`, `plan`, `runner`, `cli`)
 

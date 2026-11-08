@@ -1,6 +1,6 @@
 # P2-S3: See a shadow report on every same-repo PR, from an Action that posts nothing
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S2
 - **Touches:** `.github/workflows/review.yml` (new, written by the main session); otherwise tests only
 

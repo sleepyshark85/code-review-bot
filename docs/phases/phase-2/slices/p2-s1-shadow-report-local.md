@@ -1,6 +1,6 @@
 # P2-S1: Get a shadow report of what the bot would post, for a local diff
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** none (Phase 1 done)
 - **Touches:** `pr` (new: `cli`, `shadow`, `comments`, `plan`), `render`
 

@@ -1,7 +1,7 @@
 # Phase 2: Integrated — design
 
 - **Status:** Draft, for the user's approval (docs PR `docs/phase-2-design`). Criterion IDs are stable once approved.
-- **Review:** reviewer-approved on 2026-11-08 after four rounds. The main session proposes provisional approval while the user is away, citing the user's instruction to continue Phase 2. The specs stay `Draft` and the ADRs `Proposed` until the user approves them, as CLAUDE.md's workflow requires. Q7 and Q11 still need the user's answer.
+- **Review:** reviewer-approved on 2026-11-08 after four rounds. **Approved by the user on 2026-11-08** (PR #46), with the recommended defaults for every open question; Q7 and Q11 answered as below.
 
 ## 1. Goal and gate
 
@@ -310,7 +310,7 @@ The gate closes when the last of these is met. If the window ends short, the sho
 
 **Q6. Where labels live.** **Default:** committed by the main session after each labelling session, as `tests/evals/labelled/labels.jsonl` with a text-free list of would-be comments. They hold PR numbers, keys and verdicts only, and become Phase 3's labelled set. **Alternative:** a local file only, which can be lost.
 
-**Q7. Suggested fixes (needs your answer).** The README lists them for Phase 2. They need a new `Finding` field and a prompt change with a new live eval, and they put model-written code one click from a commit. **Option A:** defer them to Phase 3 and change the README. **Option B:** add a slice after S6.
+**Q7. Suggested fixes (decided by the user, 2026-11-08: deferred to Phase 3).** The README lists them for Phase 2. They need a new `Finding` field and a prompt change with a new live eval, and they put model-written code one click from a commit. **Option A:** defer them to Phase 3 and change the README. **Option B:** add a slice after S6.
 
 **Q8. Escaped-defect proxy for the baseline.** **Default:** issues labelled `bug`, plus merged PRs whose title starts with the word `fix`, per merged PR in the window. **Alternative:** your own count, entered by hand.
 
@@ -318,4 +318,4 @@ The gate closes when the last of these is met. If the window ends short, the sho
 
 **Q10. Drafts.** **Default:** shadow mode reviews drafts too, for more data; comment mode skips drafts until `ready_for_review`.
 
-**Q11. The GitHub App (needs your answer).** The README says "GitHub Action, then a GitHub App". **Option A:** no App in Phase 2, and the README line becomes "a GitHub Action (an App later)". **Option B:** keep an App slice in Phase 2.
+**Q11. The GitHub App (decided by the user, 2026-11-08: Option A, no App in Phase 2).** The README says "GitHub Action, then a GitHub App". **Option A:** no App in Phase 2, and the README line becomes "a GitHub Action (an App later)". **Option B:** keep an App slice in Phase 2.

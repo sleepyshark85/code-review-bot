@@ -1,6 +1,6 @@
 # P2-S4: Judge would-be comments from shadow reports, and keep the labels
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S1
 - **Touches:** `pr` (`label`, `feedback`, `cli`), `console`
 

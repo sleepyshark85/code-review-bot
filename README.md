@@ -130,7 +130,7 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 
 **Goal:** runs on real PRs without creating developer noise.
 
-- GitHub Action, then a GitHub App: inline comments with suggested fixes, plus a summary check.
+- A GitHub Action, dogfooded first on this repository's own pull requests: inline comments plus a summary comment (a GitHub App later, if needed).
 - The bot updates or resolves its own comments (keyed by fingerprint) and re-reviews only new commits.
 - Shadow mode first: a report of what it *would* have posted.
 - Developer reactions and resolutions become accept/reject labels; per-repo config; metrics for latency, tokens, cost, and acceptance.
@@ -143,6 +143,7 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 
 - Agent SDK read-only tools (`Read`, `Grep`, `Glob`) scoped to the repo checkout, so findings can span files ("callers of `total()` already add tax").
 - CODEOWNERS routing, ticket acceptance criteria, and RightShip domain rules (e.g. `Decimal` money in `billing/`).
+- Suggested fixes on comments, moved from Phase 2 (user decision, 2026-11-08).
 - Hooks record the context behind every finding.
 
 **Gate:** precision and recall improve over Phase 2 on the labelled set; cost within budget. **Autonomy:** comment.

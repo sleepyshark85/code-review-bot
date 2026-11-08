@@ -1,6 +1,6 @@
 # P2-S9: Set the review policy per repository
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S2
 - **Touches:** `pr` (`config`, `git`, `runner`), and `review` or `diff_parser` (a skip reason)
 

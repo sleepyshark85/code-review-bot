@@ -1,6 +1,6 @@
 # 0011: Turn shadow judgements, reactions and resolutions into one feedback record, and count only explicit verdicts
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-08
 - **Phase:** 2
 

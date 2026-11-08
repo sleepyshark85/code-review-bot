@@ -1,6 +1,6 @@
 # P2-S11: Capture the value baseline from PR history
 
-- **Status:** Draft
+- **Status:** Approved
 - **Depends on:** P2-S6 (the real client)
 - **Touches:** `pr` (`metrics`, `github`, `cli`)
 
