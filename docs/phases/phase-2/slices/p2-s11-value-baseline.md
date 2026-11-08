@@ -1,6 +1,6 @@
 # P2-S11: Capture the value baseline from PR history
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S6 (the real client)
 - **Touches:** `pr` (`metrics`, `github`, `cli`)
 
@@ -31,3 +31,6 @@ API limits are as in S6. A window can cover at most 1,000 merged PRs; more exits
 
 ## Notes
 - **README (main session):** describe `baseline`.
+- **Build decisions (lead, 2026-11-08):** the window is the UTC days `--since` to `--until`, both whole, applied to merge time; bug issues are counted by `created_at` in the same window, and a PR labelled `bug` isn't one. An empty window gives null `escaped_defects_per_merged_pr`. On failure an earlier `FILE` is left as it was: it is staged as `FILE.tmp` and then replaces `FILE`.
+- **Shape:** `open_to_merge_hours` and `commits_after_open` each hold `median` and `p90`, as floats (hours rounded to 2 places, the ratio to 3). Stdout repeats each value as the JSON writes it, so null reads `null`.
+- **REST:** the search API (`/search/issues`, oldest first, `is:pr is:merged merged:<window>`, each PR kept once; `is:issue label:"bug" created:<window>`, `per_page=1`, its `total_count`), then `/pulls/{n}/commits` per PR. A `total_count` over 1,000, the search API's own cap, exits 18; so does `incomplete_results`.

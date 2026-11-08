@@ -1,13 +1,15 @@
 """An in-memory GitHub for tests, in ``src/`` as ``MockProvider`` is (Phase 2 design, Module map).
 
 It holds one pull request's inline comments, each its own thread with who resolved it and the
-reactions on it, and the bot's summary comment. It records every call, and can be told to fail
-one operation by name. It doesn't work out where GitHub would show a comment after a push: a
-test moves its line, or marks it outdated.
+reactions on it, and the bot's summary comment; and for the value baseline, one repository's
+pull requests and issues. It records every call, and can be told to fail one operation by name.
+It doesn't work out where GitHub would show a comment after a push: a test moves its line, or
+marks it outdated.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 from review_bot.errors import GitHubError
 from review_bot.pr.comments import (
@@ -21,16 +23,28 @@ from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import (
     BOT_LOGIN,
     BOT_USER_TYPE,
+    MAX_MERGED_PULLS,
     BotComment,
     CommentSignals,
+    MergedPullRequest,
     NewComment,
     Resolver,
     Summary,
+    in_window,
     is_any_bot,
     is_bot_user,
+    too_many_merged_pulls,
 )
 
-__all__ = ["FakeCall", "FakeComment", "FakeGitHubClient", "FakeReaction", "FakeReview"]
+__all__ = [
+    "FakeCall",
+    "FakeComment",
+    "FakeGitHubClient",
+    "FakeIssue",
+    "FakePull",
+    "FakeReaction",
+    "FakeReview",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +85,31 @@ class FakeReview:
 
 
 @dataclass(frozen=True, slots=True)
+class FakePull:
+    """A pull request of the repository.
+
+    ``closed_at`` is None while it is open, and ``merged_at`` None unless it was merged.
+    ``commit_dates`` are its commits' committer dates.
+    """
+
+    number: int
+    title: str
+    created_at: datetime
+    closed_at: datetime | None
+    merged_at: datetime | None
+    commit_dates: tuple[datetime, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FakeIssue:
+    """An issue of the repository, which is never a pull request: its label names, and when."""
+
+    number: int
+    labels: tuple[str, ...]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class FakeCall:
     """One call to the client: the operation's name and its arguments."""
 
@@ -84,7 +123,9 @@ class FakeGitHubClient:
     ``comments`` are oldest first, and IDs grow with each one added or posted. ``summary`` is
     the body of the bot's summary comment as posted, its marker last, or None before one is
     written; a test may set it to any body. ``reviews`` are the reviews the bot
-    posted, and ``calls`` every call made through ``GitHubClient``, in order.
+    posted, and ``calls`` every call made through ``GitHubClient``, in order. ``pulls`` and
+    ``issues`` are the repository's, in the order added; they are read whatever repository a
+    call names.
     """
 
     def __init__(self) -> None:
@@ -92,6 +133,8 @@ class FakeGitHubClient:
         self.comments: list[FakeComment] = []
         self.summary: str | None = None
         self.reviews: list[FakeReview] = []
+        self.pulls: list[FakePull] = []
+        self.issues: list[FakeIssue] = []
         self.calls: list[FakeCall] = []
         self._failing: str | None = None
 
@@ -108,6 +151,23 @@ class FakeGitHubClient:
         comment_id = len(self.comments) + 1
         self.comments.append(FakeComment(comment_id, path, line, body, author, author_type))
         return comment_id
+
+    def add_pull_request(  # noqa: PLR0913 - keyword-only, one per fact a pull request has
+        self,
+        *,
+        number: int,
+        title: str,
+        created_at: datetime,
+        closed_at: datetime | None,
+        merged_at: datetime | None,
+        commit_dates: tuple[datetime, ...] = (),
+    ) -> None:
+        """Add a pull request of the repository, open, closed or merged."""
+        self.pulls.append(FakePull(number, title, created_at, closed_at, merged_at, commit_dates))
+
+    def add_issue(self, *, number: int, labels: tuple[str, ...], created_at: datetime) -> None:
+        """Add an issue of the repository, labelled with ``labels``."""
+        self.issues.append(FakeIssue(number, labels, created_at))
 
     def mark_outdated(self, comment_id: int) -> None:
         """Mark a comment outdated, as GitHub does when the diff around its line changes."""
@@ -184,6 +244,35 @@ class FakeGitHubClient:
         """Write the bot's summary with its marker recording ``reviewed_sha``, replacing any."""
         self._record("write_summary", pr, body)
         self.summary = with_summary_marker(body, reviewed_sha=reviewed_sha)
+
+    def list_merged_pull_requests(
+        self, repo: str, since: date, until: date
+    ) -> tuple[MergedPullRequest, ...]:
+        """Return the pulls merged in the window, in the order held.
+
+        Raises:
+            GitHubError: If more than ``MAX_MERGED_PULLS`` were merged in it.
+        """
+        self._record("list_merged_pull_requests", repo, since, until)
+        merged = tuple(
+            MergedPullRequest(
+                pull.number, pull.title, pull.created_at, pull.merged_at, pull.commit_dates
+            )
+            for pull in self.pulls
+            if pull.merged_at is not None and in_window(pull.merged_at, since, until)
+        )
+        if len(merged) > MAX_MERGED_PULLS:
+            raise too_many_merged_pulls(len(merged))
+        return merged
+
+    def count_issues(self, repo: str, label: str, since: date, until: date) -> int:
+        """Return how many issues labelled ``label`` were created in the window."""
+        self._record("count_issues", repo, label, since, until)
+        return sum(
+            1
+            for issue in self.issues
+            if label in issue.labels and in_window(issue.created_at, since, until)
+        )
 
     def _record(self, name: str, *args: object) -> None:
         self.calls.append(FakeCall(name, args))

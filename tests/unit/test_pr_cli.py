@@ -4,6 +4,7 @@ import os
 import runpy
 import sys
 from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -897,3 +898,163 @@ def test_collect_with_a_remote_http_api_url_exits_2_naming_it(
 )
 def test_collect_without_event_or_out_exits_2(argv: list[str]) -> None:
     assert main(argv, github=FakeGitHubClient()) == 2
+
+
+# P2-S11: baseline.
+
+BASELINE_WINDOW = ["--since", "2026-10-01", "--until", "2026-10-31"]
+OPENED = datetime(2026, 10, 10, 9, tzinfo=UTC)
+
+
+def history_client() -> FakeGitHubClient:
+    fake = FakeGitHubClient()
+    for number, (title, hours) in enumerate(
+        [("Fix rounding", 2), ("fix: totals", 5), ("Fixture cleanup", 10), ("Prefix tidy", 30)]
+    ):
+        fake.add_pull_request(
+            number=number,
+            title=title,
+            created_at=OPENED,
+            closed_at=OPENED + timedelta(hours=hours),
+            merged_at=OPENED + timedelta(hours=hours),
+            commit_dates=(OPENED + timedelta(minutes=1),),
+        )
+    fake.add_issue(number=10, labels=("bug",), created_at=OPENED)
+    fake.add_issue(number=11, labels=("bug",), created_at=OPENED)
+    return fake
+
+
+def baseline(out: Path, github: FakeGitHubClient | None, *flags: str) -> int:
+    argv = ["baseline", "--repo", "owner/repo", *BASELINE_WINDOW, "--out", str(out), *flags]
+    return main(argv, github=github)
+
+
+def test_baseline_writes_the_document_and_shows_the_same_numbers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "new" / "baseline.json"
+    github = history_client()
+
+    exit_code = baseline(out, github)
+
+    text = out.read_text(encoding="ascii")
+    document = json.loads(text)
+    assert exit_code == 0
+    assert text.count("\n") == 1
+    assert text.endswith("\n")
+    assert document["schema"] == "baseline/v1"
+    assert document["open_to_merge_hours"] == {"median": 7.5, "p90": 30.0}
+    assert document["escaped_defects_per_merged_pr"] == 1.0
+    stdout = capsys.readouterr().out
+    assert "baseline: open_to_merge_hours median=7.5 p90=30.0\n" in stdout
+    assert "fix_prs=2 bug_issues=2 escaped_defects_per_merged_pr=1.0\n" in stdout
+    assert [(call.name, call.args) for call in github.calls] == [
+        ("list_merged_pull_requests", ("owner/repo", date(2026, 10, 1), date(2026, 10, 31))),
+        ("count_issues", ("owner/repo", "bug", date(2026, 10, 1), date(2026, 10, 31))),
+    ]
+    assert list(out.parent.iterdir()) == [out]
+
+
+@pytest.mark.parametrize(
+    ("flags", "named"),
+    [
+        (["--repo", "owner", *BASELINE_WINDOW], "--repo"),
+        (["--repo", "owner/repo", "--since", "1 Oct", "--until", "2026-10-31"], "--since"),
+        (["--repo", "owner/repo", "--since", "2026-10-01", "--until", "2026-13-01"], "--until"),
+        (["--repo", "owner/repo", "--since", "2026-10-02", "--until", "2026-10-01"], "--until"),
+    ],
+)
+def test_baseline_with_an_invalid_flag_exits_2_naming_it_and_calls_nothing(
+    flags: list[str], named: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    github = FakeGitHubClient()
+
+    exit_code = main(["baseline", *flags, "--out", str(tmp_path / "b.json")], github=github)
+
+    assert exit_code == 2
+    assert named in capsys.readouterr().err
+    assert github.calls == []
+    assert not (tmp_path / "b.json").exists()
+
+
+def test_baseline_accepts_a_one_day_window(tmp_path: Path) -> None:
+    out = tmp_path / "b.json"
+    argv = ["baseline", "--repo", "o/r", "--since", "2026-10-10", "--until", "2026-10-10"]
+
+    exit_code = main([*argv, "--out", str(out)], github=history_client())
+
+    assert exit_code == 0
+    # The PR open for 30 hours merged on 11 October, outside the day.
+    assert json.loads(out.read_text(encoding="ascii"))["pr_count"] == 3
+
+
+@pytest.mark.parametrize("token", [None, ""])
+def test_baseline_without_github_token_exits_2_naming_it(
+    token: str | None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if token is None:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+
+    exit_code = baseline(tmp_path / "b.json", None)
+
+    assert exit_code == 2
+    assert capsys.readouterr().err.startswith(
+        "review-bot: error: baseline needs GITHUB_TOKEN, which is unset or empty"
+    )
+    assert not (tmp_path / "b.json").exists()
+
+
+def test_baseline_with_github_token_reads_through_the_rest_client_and_drops_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_canary")
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+    made: list[tuple[str, GitHubAccess]] = []
+
+    def rest_client(repo: str, access: GitHubAccess) -> FakeGitHubClient:
+        made.append((repo, access))
+        return history_client()
+
+    monkeypatch.setattr("review_bot.pr.cli.RestGitHubClient", rest_client)
+
+    exit_code = baseline(tmp_path / "b.json", None)
+
+    assert exit_code == 0
+    assert made == [("owner/repo", GitHubAccess("https://api.github.com", "ghs_canary"))]
+    assert "GITHUB_TOKEN" not in os.environ
+    assert "ghs_canary" not in (tmp_path / "b.json").read_text(encoding="ascii")
+
+
+@pytest.mark.parametrize("operation", ["list_merged_pull_requests", "count_issues"])
+def test_baseline_with_a_failed_github_call_exits_18_leaving_an_earlier_file_as_it_was(
+    operation: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "b.json"
+    out.write_text("earlier\n", encoding="ascii")
+    github = history_client()
+    github.fail_on(operation)
+
+    exit_code = baseline(out, github)
+
+    assert exit_code == 18
+    assert f"GitHub {operation} failed" in capsys.readouterr().err
+    assert out.read_text(encoding="ascii") == "earlier\n"
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_baseline_that_cannot_write_out_exits_2_naming_it_and_leaves_no_staged_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "taken"
+    out.mkdir()
+
+    exit_code = baseline(out, history_client())
+
+    assert exit_code == 2
+    assert "Can't write the baseline to --out" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == [out]

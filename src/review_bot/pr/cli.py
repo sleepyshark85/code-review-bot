@@ -1,12 +1,13 @@
-"""Command line for pull requests: ``python -m review_bot.pr shadow|run|backfill|label|collect``.
+"""Command line for pull requests: ``python -m review_bot.pr <subcommand>``.
 
 ``shadow`` and ``run`` write a shadow report in ``--out DIR``, and ``backfill`` one per merged
 pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
 post. ``collect`` writes ``feedback.jsonl`` in ``--out DIR``, from the reactions and resolutions
-on the bot's comments, with no model.
+on the bot's comments, with no model. ``baseline`` writes the ``baseline/v1`` document in
+``--out FILE``, from a repository's merged pull requests, with no model.
 
-``run --mode comment`` also posts on the pull request, and ``collect`` reads it, through GitHub's
-API with the token in ``GITHUB_TOKEN``; without it, they exit 2.
+``run --mode comment`` also posts on the pull request, and ``collect`` and ``baseline`` read
+GitHub, through its API with the token in ``GITHUB_TOKEN``; without it, they exit 2.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
 with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
@@ -22,6 +23,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Final
 
@@ -51,6 +53,7 @@ from review_bot.pr.feedback import SignalFeedback, labels_from_signals, render_f
 from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
+from review_bot.pr.metrics import render_baseline_json, render_baseline_text, summarise_baseline
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.rest_github import (
     API_URL_VARIABLE,
@@ -95,6 +98,12 @@ _COLLECT_WITHOUT_CREDENTIAL: Final = (
     "collect needs GITHUB_TOKEN, which is unset or empty, so nothing was collected. Run it in "
     "the collect job, which sets it, or set it to a token that can read the pull request."
 )
+_BASELINE_WITHOUT_CREDENTIAL: Final = (
+    "baseline needs GITHUB_TOKEN, which is unset or empty, so nothing was read. Set it to a "
+    "token that can read the repository's pull requests and issues, such as gh auth token's."
+)
+# The escaped-defect proxy's issue label (Phase 2 design, Q8).
+_BUG_LABEL: Final = "bug"
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
     "interactive shell."
@@ -139,6 +148,14 @@ class _CollectCommand:
     out_dir: Path
 
 
+@dataclass(frozen=True, slots=True)
+class _BaselineCommand:
+    github_repo: str
+    since: date
+    until: date
+    out_path: Path
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -151,9 +168,9 @@ def main(
         argv: The arguments; None means the process's own.
         provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
             from the settings, and only if the run calls one.
-        github: The GitHub client ``run --mode comment`` and ``collect`` use; None means a
-            ``RestGitHubClient`` from ``GITHUB_TOKEN`` and ``GITHUB_API_URL``. ``--mode shadow``
-            uses none, and builds no client.
+        github: The GitHub client ``run --mode comment``, ``collect`` and ``baseline`` use;
+            None means a ``RestGitHubClient`` from ``GITHUB_TOKEN`` and ``GITHUB_API_URL``.
+            ``--mode shadow`` uses none, and builds no client.
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
@@ -169,19 +186,21 @@ def main(
         an invalid labels file. ``collect`` returns 0 once ``feedback.jsonl`` is written; 2
         with no ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an
         unwritable ``--out``; 18 for a failed GitHub call, and 19 for an unusable event. A
-        failed GitHub call or an unusable event writes nothing.
+        failed GitHub call or an unusable event writes nothing. ``baseline`` returns 0 once
+        ``--out FILE`` is written; 2 for an invalid flag, an unwritable ``FILE``, or with no
+        ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``; and 18 for a failed
+        GitHub call, which writes nothing.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
-    (``take_github_token``); ``run --mode comment`` and ``collect`` keep it for their client.
+    (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
+    their client.
     """
     keep_library_logs_off_stderr()
     github_token = take_github_token()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
-        if isinstance(command, _LabelCommand):
-            return _label(command)
-        if isinstance(command, _CollectCommand):
-            return _collect(command, _github_for_collect(github, github_token))
+        if isinstance(command, _LabelCommand | _CollectCommand | _BaselineCommand):
+            return _run_without_review(command, github, github_token)
         # Before --out is created: in CI, backfill touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci()
@@ -209,9 +228,33 @@ def main(
         return exit_code
 
 
+def _run_without_review(
+    command: _LabelCommand | _CollectCommand | _BaselineCommand,
+    github: GitHubClient | None,
+    github_token: str | None,
+) -> int:
+    """Run a subcommand that reviews nothing, so needs no settings, audit log or provider."""
+    match command:
+        case _LabelCommand():
+            return _label(command)
+        case _CollectCommand():
+            client = _github_requiring_token(github, github_token, _COLLECT_WITHOUT_CREDENTIAL)
+            return _collect(command, client)
+        case _BaselineCommand():
+            client = _github_requiring_token(github, github_token, _BASELINE_WITHOUT_CREDENTIAL)
+            return _baseline(command, client(command.github_repo))
+
+
 def _parse_args(
     argv: Sequence[str],
-) -> _ShadowCommand | _RunCommand | _BackfillCommand | _LabelCommand | _CollectCommand:
+) -> (
+    _ShadowCommand
+    | _RunCommand
+    | _BackfillCommand
+    | _LabelCommand
+    | _CollectCommand
+    | _BaselineCommand
+):
     """Parse the command line into the subcommand, its paths and the settings.
 
     The audit log goes in the output directory unless ``REVIEW_BOT_AUDIT_LOG`` names one.
@@ -309,12 +352,15 @@ def _parse_args(
     collect.add_argument(
         "--out", type=Path, required=True, help="the directory to write feedback.jsonl"
     )
+    _add_baseline_command(commands.add_parser)
     flags = vars(parser.parse_args(argv))
     name = flags.pop("command")
     if name == "label":
         return _LabelCommand(flags["reports"], flags["labels"])
     if name == "collect":
         return _CollectCommand(flags["event"], flags["out"])
+    if name == "baseline":
+        return _baseline_command(flags["repo"], flags["since"], flags["until"], flags["out"])
     out_dir = flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
@@ -336,6 +382,54 @@ def _github_repo(text: str) -> str:
     if not REPO_NAME.fullmatch(text):
         raise argparse.ArgumentTypeError(f"{text!r} isn't a repository's OWNER/NAME")
     return text
+
+
+def _add_baseline_command(add_parser: Callable[..., RaisingArgumentParser]) -> None:
+    baseline = add_parser(
+        "baseline",
+        help="record how a repository's merged pull requests went in a window, with no model",
+        description="Write the baseline/v1 document in --out: the open-to-merge hours, commits "
+        "after opening and escaped defects of the pull requests merged from --since to --until "
+        "(UTC days, both included), read through GitHub's API with GITHUB_TOKEN.",
+        allow_abbrev=False,
+    )
+    baseline.add_argument(
+        "--repo", type=_github_repo, required=True, help="the repository, as OWNER/NAME"
+    )
+    baseline.add_argument(
+        "--since", type=_iso_date, required=True, help="the window's first day, as YYYY-MM-DD"
+    )
+    baseline.add_argument(
+        "--until", type=_iso_date, required=True, help="the window's last day, as YYYY-MM-DD"
+    )
+    baseline.add_argument(
+        "--out", type=Path, required=True, help="the file to write the baseline/v1 JSON to"
+    )
+
+
+def _baseline_command(
+    github_repo: str, since: date, until: date, out_path: Path
+) -> _BaselineCommand:
+    """The ``baseline`` command, once its window is known to be in order.
+
+    Raises:
+        ConfigError: If ``--until`` is before ``--since``.
+    """
+    if until < since:
+        raise ConfigError(
+            f"--until {until} is before --since {since}. Pass an --until on or after --since. "
+            "Run with --help for usage."
+        )
+    return _BaselineCommand(github_repo, since, until, out_path)
+
+
+def _iso_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} isn't an ISO 8601 date, such as 2026-11-08"
+        ) from None
 
 
 def _whole_number(text: str) -> int:
@@ -438,6 +532,50 @@ def _write_feedback(records: Sequence[SignalFeedback], out_dir: Path) -> None:
         ) from exc
 
 
+def _baseline(command: _BaselineCommand, github: GitHubClient) -> int:
+    """Read the window's merged pull requests and bug issues, write ``--out``, show the numbers.
+
+    Nothing is written unless every call succeeded, and no pull request's title is written.
+
+    Raises:
+        GitHubError: If a GitHub call fails, or the window holds too many merged pull requests.
+        ConfigError: If ``--out`` can't be written.
+    """
+    repo, since, until = command.github_repo, command.since, command.until
+    pulls = github.list_merged_pull_requests(repo, since, until)
+    bug_issues = github.count_issues(repo, _BUG_LABEL, since, until)
+    baseline = summarise_baseline(
+        pulls, repo=repo, since=since, until=until, bug_issues=bug_issues, captured_at=utc_now()
+    )
+    _write_baseline(render_baseline_json(baseline), command.out_path)
+    write_output(render_baseline_text(baseline))
+    return 0
+
+
+def _write_baseline(document: str, out_path: Path) -> None:
+    """Write ``document`` to ``out_path`` whole or not at all, creating its directory if missing.
+
+    It goes to ``<out_path>.tmp`` first, then replaces ``out_path``, so a failure leaves any
+    earlier file as it was.
+
+    Raises:
+        ConfigError: If it can't be written.
+    """
+    staged = out_path.with_name(f"{out_path.name}.tmp")
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_text(document + "\n", encoding="ascii", newline="\n")
+        staged.replace(out_path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            staged.unlink(missing_ok=True)
+        reason = exc.strerror or type(exc).__name__
+        raise ConfigError(
+            f"Can't write the baseline to --out {redact(str(out_path))}: {reason}. Pass a file "
+            "you can write to."
+        ) from exc
+
+
 def _refuse_backfill_in_ci() -> None:
     """Raise ``ConfigError`` if this process runs in CI, where backfill must not run."""
     if in_ci(os.environ):
@@ -461,16 +599,17 @@ def _github_for(
     return _github_client(github, github_token)
 
 
-def _github_for_collect(
-    github: GitHubClient | None, github_token: str | None
+def _github_requiring_token(
+    github: GitHubClient | None, github_token: str | None, missing: str
 ) -> Callable[[str], GitHubClient]:
-    """What makes ``collect``'s GitHub client, as ``_github_for`` does in comment mode.
+    """What makes a read-only command's GitHub client, as ``_github_for`` does in comment mode.
 
     Raises:
-        ConfigError: If ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
+        ConfigError: Saying ``missing`` if there is neither ``github`` nor a token; or if
+            ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
     """
     if github is None and not github_token:
-        raise ConfigError(_COLLECT_WITHOUT_CREDENTIAL)
+        raise ConfigError(missing)
     return _github_client(github, github_token)
 
 
