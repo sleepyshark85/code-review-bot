@@ -11,7 +11,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from review_bot.findings import Severity, Source
 from review_bot.pr.feedback import Hex16, RepoName, Text, Unit
@@ -53,7 +53,10 @@ class _Review(_ReportPart):
 
 
 class ShadowFile(_ReportPart):
-    """The fields of a ``shadow/v1`` report that would-be comments need."""
+    """The fields of a ``shadow/v1`` report that would-be comments need.
+
+    ``comments`` holds only the ``create`` entries, the only ones that are units.
+    """
 
     # Aliased because ``schema`` is a ``BaseModel`` attribute.
     schema_: Literal["shadow/v1"] = Field(alias="schema")
@@ -65,6 +68,19 @@ class ShadowFile(_ReportPart):
     finished_at: AwareDatetime
     report: _Review | None
     comments: tuple[ShadowEntry, ...]
+
+    @field_validator("comments", mode="before")
+    @classmethod
+    def _creates_only(cls, entries: object) -> object:
+        # Comment mode's other entries have another shape: a resolve has no source or body.
+        if not isinstance(entries, list):
+            return entries
+        # A tuple, as strict validation of a tuple field accepts no list.
+        return tuple(
+            entry
+            for entry in entries
+            if not isinstance(entry, dict) or entry.get("action") == Action.CREATE
+        )
 
     @model_validator(mode="after")
     def _check_review(self) -> Self:
@@ -127,8 +143,7 @@ def _indexed(
     """Each ``create`` entry of one report with its unit, numbering a key's entries by line."""
     by_key: defaultdict[tuple[str, str, str], list[ShadowEntry]] = defaultdict(list)
     for entry in entries:
-        if entry.action == Action.CREATE:
-            by_key[entry.file, entry.rule_part, entry.anchor].append(entry)
+        by_key[entry.file, entry.rule_part, entry.anchor].append(entry)
     for (file, rule_part, anchor), group in by_key.items():
         for index, entry in enumerate(sorted(group, key=lambda entry: entry.line)):
             yield Unit(pr.repo, pr.number, file, rule_part, anchor, index), entry

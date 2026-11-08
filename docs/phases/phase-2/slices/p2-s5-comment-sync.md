@@ -1,6 +1,6 @@
 # P2-S5: Create, update, move and resolve the bot's own comments
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S2
 - **Touches:** `pr` (`github` with the `GitHubClient` protocol, `fake_github`, `plan`, `runner`, `cli`)
 
@@ -13,7 +13,7 @@ In comment mode the bot keeps one comment per finding, never repeats itself, and
 - **AC2:** Given the same findings again, then nothing is posted, both are `keep`, and the summary is edited in place. Given a severity change, then only that comment is edited (`update`).
 - **AC3:** Given an identical line added above a commented one, so the ordinals shift, then the comment stays paired with its own line, and only the new line's finding is created. Given two candidates with one key on the same line, one with the finding's severity, then that one pairs. A nearer candidate wins over an equal-severity one further away. Any remaining tie goes to an open thread over a person-resolved one, then to the oldest comment ID. A thread the bot resolved is never a candidate, even with the same fingerprint.
 - **AC4:** Given an unpaired open comment, then it is resolved if its own line was deleted or edited. It is kept if only other lines changed, including in a new file, or if a rule's issue was fixed below an unchanged anchored line (`pass` replaced by logging under `except Exception:`).
-- **AC5:** Given an outdated open comment paired with a current finding, then its thread is resolved, and the same body and fingerprint are posted on that finding's line (`move`), even if the anchor text is on several lines. The old, bot-resolved thread can't pair again. Given that finding's line can't be commented on in the PR diff, then nothing is resolved or posted, and the finding is withheld `not_commentable`. Given an outdated comment with no pairing finding, then it is resolved if its anchor is on no line of its file's PR diff; otherwise it is kept, and nothing is posted.
+- **AC5:** Given an outdated open comment paired with a current finding, then its thread is resolved, and a comment rendered from that finding, keeping the posted fingerprint, is posted on that finding's line (`move`), even if the anchor text is on several lines. The old, bot-resolved thread can't pair again. Given that finding's line can't be commented on in the PR diff, then nothing is resolved or posted, and the finding is withheld `not_commentable`. Given an outdated comment with no pairing finding, then it is resolved if its anchor is on no line of its file's PR diff; otherwise it is kept, and nothing is posted.
 - **AC6:** Given a file renamed in the PR, with findings found again under the new path, then the outdated comments move there, keeping their fingerprints. Comments not found again are kept, and none is created twice.
 - **AC7:** Given a finding paired with a thread **a person** resolved, then nothing is posted, including after a rename. Given a finding whose only match is a thread **the bot** resolved, then it is unpaired, so it is created.
 - **AC8:** Given two open comments with one fingerprint, then the one that isn't outdated is kept (else the older one), and the other is resolved.
@@ -27,7 +27,7 @@ In comment mode the bot keeps one comment per finding, never repeats itself, and
 - **AC16:** Given a move (AC5), then two further runs with the same finding post, move and resolve nothing; the moved comment is `keep`. Given a commented line deleted (so the comment is resolved) and then restored with the finding back, then the first run after the restore creates one comment, and two further runs post nothing new.
 
 ## Limits
-Own comments are recognised only by author plus an exact marker on the body's last line, so other people's text is never parsed further. Planning is linear in comments plus findings per key.
+Own comments are recognised only by author plus an exact marker on the body's last line, so other people's text is never parsed further. Pairing within one key compares every finding with every comment of that key, so it is quadratic per key; the open-comment cap keeps that small, and 2,000 of each on one key plan in seconds (changed in review round 1, main session).
 
 ## Interfaces
 [Design](../design.md#interfaces). `FakeGitHubClient` holds comments, threads (with their resolver) and a summary. It can mark a comment outdated, records every call, and can fail a named operation.
@@ -36,3 +36,17 @@ Own comments are recognised only by author plus an exact marker on the body's la
 - The real client and the comment job (S6); only new commits (S7).
 
 ## Notes
+Changed in build, main session, 2026-11-08:
+- **Pairing step 1** pairs by the same fingerprint only when the comment's current line is the finding's line. Otherwise step 2 applies: same key, nearest current line (outdated last), then equal severity, then open over person-resolved, then oldest ID. A literal "fingerprint first" contradicts AC3, since an identical line added above takes the old comment's ordinal. Pairs are taken best first across all findings and comments of a key.
+- **Unique fingerprints (affects ADR 0009):** a created comment never takes a fingerprint that an open or person-resolved comment on the PR already holds, nor one another finding in the run has. If its own is held, it takes the next free ordinal. So two open comments never share a fingerprint in a settled state, and the duplicates rule (AC8) fires only on real duplicates. Without this, a comment created on an identical line added above takes the kept comment's ordinal, and is resolved and re-posted on every run. A thread the bot resolved holds nothing, so a restored line's comment gets its original fingerprint back. The embedded `report` keeps the finding's original fingerprint; the comment entry and marker carry the new one.
+- **AC13:** after a failed call the rest of the plan isn't attempted, but the summary is still written, unless writing it is what failed.
+
+Build choices (developer):
+- Apply order: one review with every create and move; then, in comment order, each moved comment's old thread resolved and each update; then each resolve; then the summary. A move posts before resolving, so a failure can't lose it; a move whose resolve fails is `failed`.
+- A paired thread a person resolved is `keep` with no call. `keep` entries are `applied` `done`; shadow-mode entries are `not_attempted`.
+- `shadow.json` lists `resolve` entries after the others, with `source` and `body` null, and `line` null when outdated. `pr.units` reads only `create` entries, so comment-mode reports stay readable by `label`.
+- Comments resolved in a run free their places under `max_open_comments`.
+- A finding withheld `possible_secret` or `not_commentable` doesn't pair, so its comment falls under the resolve rule. With the reviewed diff equal to the PR diff, a pairing finding's line is always commentable, so a blocked move can't happen until S7.
+- Listing the bot's comments failing exits 18 with no report, as exit 19 does. The fake tells comments apart by author first, then `read_marker` (last line exactly a marker with a known rule part, first line a severity heading).
+- The summary marker (`reviewed=<sha>`) and `read_summary` wait for S7. The failed summary now says the review is unavailable (AC12).
+- `run_pull_request` takes `mode` and `github` and checks they agree. `plan_comments` has no `changed` parameter yet (S7).

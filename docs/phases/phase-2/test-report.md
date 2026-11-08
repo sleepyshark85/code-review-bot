@@ -317,3 +317,87 @@ None that point to the product. Two failures in the first run against the implem
 ### Coverage
 
 From this file alone, with `--cov=review_bot.pr`: `pr/shadow.py` 87%, `pr/event.py` 77%, `pr/cli.py` 76%, `pr/runner.py` 76%, `pr/git.py` 67%. These modules also hold `run`, `shadow` and `label`, which this file doesn't exercise. The full suite's coverage wasn't measured here, because the tester ran only this file.
+
+## P2-S5: Create, update, move and resolve the bot's own comments
+
+Spec: [p2-s5-comment-sync.md](slices/p2-s5-comment-sync.md). Tests: [`tests/integration/test_p2_s5_comment_sync.py`](../../../tests/integration/test_p2_s5_comment_sync.py), 53 tests, 79 cases. They were written from the spec, design.md (Comment state, Interfaces, Commands and exit codes) and ADR 0009 while the developer built the slice, before any of the developer's code was read. The only source read was the public `pr/github.py` protocol. The seam was assumed, then confirmed by the main session, and matched. They ran against the developer's finished, uncommitted work (base `35c8f65`), then again after review round 1. That round added the reworded-move test, at the main session's decision.
+
+**Status: AC1 to AC16 pass. All 79 cases pass, from this file alone, on Windows. The AC3 failure found in the first run (below) was fixed in build.**
+
+### Seam and set-up
+
+- **Seam:** `review_bot.pr.cli.main([... "run", "--mode", "comment" ...], provider=P, github=FAKE)`, with `FAKE = review_bot.pr.fake_github.FakeGitHubClient()`. The fake provides:
+  - `add_comment`, `mark_outdated`, `set_line`, `resolve(id, by=)` and `fail_on(name)`;
+  - `calls`, `comments` and `summary`.
+
+  All of this sits in one adapter class, `GitHub`. AC5's not-commentable case calls `plan_comments(findings, existing, *, pr_diff, max_open_comments)` directly.
+- **Sequences of runs:** each PR is a real git repository in `tmp_path`, with one commit per push on `feature` and one fake for the whole PR. Between pushes, the test plays GitHub. It says where GitHub now shows each comment (`set_line`), when it marks one outdated, and when a person resolves a thread.
+- **Reading a run:** the fake's calls during that run (writes are `post_review`, `update_comment`, `resolve_thread`, `write_summary`), its comments, and `shadow.json`'s `comments` and `withheld` entries.
+- **Seeded comments** are used only where runs can't produce the state: candidates whose fingerprints no current finding has (AC3), duplicates (AC8), comments that aren't the bot's own (AC9), and bot-resolved threads (AC3, AC7). Their bodies follow S1's form, with the severity first and the marker last.
+- **`applied` in earlier suites:** S5 adds `applied` to every comment entry, as design.md's `shadow/v1` says it will. S1's shared `COMMENT_KEYS` (`test_p2_s1_shadow_report_local.py`) now includes it. It had failed 27 cases across the S1, S2 and S13 files, among them `test_p2_s13_ac1_each_pr_reviews_only_its_own_changes_anchored_on_its_heads_lines`, which checks keys through S1's `load_shadow`. All 158 cases in those three files pass again.
+
+### Criteria
+
+| AC | Tests (`test_p2_s5_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_first_run_posts_one_review_on_the_head_with_both_comments`: one `post_review` on the head SHA, 2 comments on (file, line, new side), one summary, both entries `create`/`done`. `ac1_posted_bodies_are_s1s_bodies_with_their_markers`: bodies equal a shadow run's bodies, and the marker holds the independently computed fingerprint, rule part and anchor | pass (2) |
+| AC2 | `ac2_same_findings_again_post_nothing_and_edit_the_summary_in_place` (after an unrelated push). `ac2_severity_change_edits_only_that_comment_and_keeps_its_fingerprint`. `ac2_after_the_update_the_same_severity_again_posts_nothing` | pass (3) |
+| AC3 | `ac3_identical_line_added_above_keeps_the_comment_and_creates_only_the_new_one`, and `ac3_identical_lines_settle_and_a_third_run_posts_nothing` | pass (2), after the fix below |
+| AC3 | `ac3_same_key_same_line_pairs_the_candidate_with_the_findings_severity`. `ac3_nearer_candidate_wins_over_an_equal_severity_one_further_away`. `ac3_tie_goes_to_the_open_thread_over_a_person_resolved_one`. `ac3_remaining_tie_goes_to_the_oldest_comment_id`. `ac3_bot_resolved_thread_with_the_same_fingerprint_is_never_a_candidate`. The tie tests make the pairing visible: the finding's severity matches neither candidate, so whichever pairs is updated | pass (5) |
+| AC4 | `ac4_comment_whose_own_line_is_deleted_or_edited_is_resolved` ×2. `ac4_edited_line_github_still_shows_current_is_resolved` (the outdated flag is only a hint). `ac4_only_other_lines_changed_in_a_new_file_keeps_it` ×6 (line above edited, lines inserted above, line below edited; GitHub following the line or marking it outdated). `ac4_only_other_lines_changed_in_an_existing_file_keeps_it`. `ac4_rule_issue_fixed_below_an_unchanged_anchored_line_is_kept` ×2: a real `swallowed-exception` comment, then `pass` replaced by logging | pass (12) |
+| AC5 | `ac5_outdated_paired_comment_is_resolved_and_reposted_on_the_findings_line` (identical rationale, so the same body and fingerprint; one review, `move`/`done`). `ac5_move_goes_to_the_findings_line_when_the_anchor_is_on_several`. `ac5_moved_comment_takes_the_reworded_rationale_and_keeps_its_fingerprint`: the model rewords the rationale between pushes; the moved body holds the new rationale and not the old, and its marker is the old one, fingerprint included. `ac5_the_old_bot_resolved_thread_cant_pair_again`. `ac5_move_to_a_line_not_commentable_resolves_nothing_and_posts_nothing` (plan level: only `withheld:not_commentable`, no resolve, no move). `ac5_outdated_comment_with_no_pairing_finding` ×2 (anchor on no line: resolved; anchor moved to another line: kept). `ac5_anchor_only_in_another_file_doesnt_keep_an_outdated_comment` | pass (8) |
+| AC6 | `ac6_comments_found_again_under_the_new_path_move_there_with_their_fingerprints`: 3 comments, 2 found again after a rename; 2 moves with their old fingerprints, no create, and the third is kept. `ac6_after_the_move_nothing_is_created_twice` | pass (2) |
+| AC7 | `ac7_finding_paired_with_a_person_resolved_thread_posts_nothing`. `ac7_person_resolved_outdated_thread_isnt_moved_or_reposted`. `ac7_person_resolved_thread_isnt_reposted_after_a_rename`. `ac7_finding_whose_only_match_is_bot_resolved_is_created` | pass (4) |
+| AC8 | `ac8_the_one_that_isnt_outdated_is_kept_and_the_other_resolved`. `ac8_both_current_keeps_the_older_and_resolves_the_newer`. `ac8_both_outdated_with_no_finding_keeps_the_older` | pass (3) |
+| AC9 | `ac9_not_own_comment_doesnt_block_a_create` ×6 and `ac9_not_own_comment_on_a_gone_line_isnt_resolved` ×6. The 6 cases: another user with a valid marker; another bot (`dependabot[bot]`) with a valid marker; the bot with no marker; a 15-hex fingerprint; text on a line after the marker; text after the marker on its line | pass (12) |
+| AC10 | `ac10_eight_open_and_five_new_creates_two_and_withholds_three`: the 8 come from a real run and stay on valid lines; of 5 new findings (critical, high, 3 low), critical and high are created, and the 3 low are withheld `over_limit`. `ac10_resolved_threads_dont_count_towards_the_limit`. `ac10_creates_never_take_a_pr_past_the_limit_in_one_run` (12 findings on a fresh PR: 10 created) | pass (3) |
+| AC11 | `ac11_skipped_outcome_records_no_call` ×6 (fork, action, `no_credential`, draft, `nothing_to_review`, and `too_large` from design.md's list). Each run has a seeded own comment whose line is gone, so any plan would resolve it; the fake records no call at all, not even a read | pass (6) |
+| AC12 | `ac12_secret_in_the_diff_changes_only_the_summary_naming_kind_and_line`: only `write_summary`, no provider call, the summary names `aws-access-key` and the secret's line in the PR diff, and the value appears in no call. `ac12_transient_failure_changes_only_the_summary_and_exits_11` | pass (2) |
+| AC13 | `ac13_precondition_the_run_has_three_entry_operations` (update, resolve and create, plus the summary). `ac13_failing_the_second_operation_exits_18_and_reports_what_was_applied`: a rehearsal run learns the write order, then the second write fails; exit 18, stderr names the operation, and each entry is `done`, `failed` or `not_attempted` by its place in that order. `ac13_any_failed_operation_still_writes_the_shadow_report` ×3 | pass (5) |
+| AC14 | `ac14_draft_pr_in_comment_mode_is_skipped_draft`. `ac14_the_same_draft_in_shadow_mode_is_still_reviewed` | pass (2) |
+| AC15 | `ac15_comment_mode_without_a_client_exits_2_before_any_provider_call`. `ac15_shadow_mode_reads_no_token`: `os.environ` is wrapped to record reads by name, with `GITHUB_TOKEN` set. `ac15_shadow_mode_uses_no_client_even_when_one_is_given` | pass (3) |
+| AC16 | `ac16_two_runs_after_a_move_post_move_and_resolve_nothing` (one rerun on the same head, one after an unrelated push; the moved comment is `keep` with its fingerprint). `ac16_restored_line_creates_one_comment_then_nothing` ×2: GitHub keeps the resolved comment outdated, or shows it current on the restored line again | pass (3) |
+| Limits | `limits_huge_foreign_body_full_of_marker_text_is_ignored_quickly`: a 1.3 MB marker-like body, from another user and from the bot, within 60 s. `limits_thousands_of_comments_on_one_key_pair_quickly`: 2,000 identical lines, each with an open comment under another fingerprint and a finding; all pair, nothing is posted, within 60 s | pass (2) |
+
+### Failures
+
+None open.
+
+**Fixed in build: AC3. An identical line added above a commented one made the bot resolve and re-post a comment on every run.** In the first run against the build, the run right after the insert did what AC3 says: it kept the old comment and created only the new line's. But the new comment carried the kept comment's fingerprint. Fingerprint ordinals follow line order, so the new line 2 gets ordinal 0, which the comment posted on old line 3 already has.
+
+From then on, two open comments share one fingerprint, so the duplicate rule (AC8) resolves the newer one. Its finding is then unpaired, since a bot-resolved thread is never a candidate, and it is created again. Each run posts one comment and resolves one, which is the noise AC3 and ADR 0009 exist to prevent. It also gives two comments one identity for labels.
+
+Minimal reproduction:
+1. Push `src/app.py` with `value = eval(data)` on line 3, and run with a finding on line 3. One comment is created, with fingerprint `a41c5ba3d21f1182` (ordinal 0).
+2. Push the file with the same line also inserted as line 2. GitHub shows the comment at line 4. Run with findings on lines 2 and 4.
+   - Entries: `create` line 2 and `keep` line 4, both with fingerprint `a41c5ba3d21f1182`.
+   - Ordinal 1 would be `89762c7d5e31e7c0`.
+3. Run again with the same findings.
+   - Writes: `post_review`, `resolve_thread`, `write_summary`.
+   - Entries: `create` line 2, `keep` line 4, `resolve` line 2.
+   - Each later run repeats this.
+
+The developer fixed it after the first run: a created comment now takes the next ordinal no other comment holds, and both AC3 tests pass. They stay as the regression check.
+
+### Readings for the designer
+
+1. **Pairing step 1** is now the main session's decision: the same fingerprint pairs first only when the comment's current line is the finding's line. A create takes the next free ordinal (the fix above). design.md's pairing list should say both.
+2. **A move re-renders the body** from the pairing finding and keeps the posted fingerprint (the main session's decision; AC5 is being reworded to say so).
+3. **AC13's "three operations".** A comment-mode run always writes the summary too, and it is still written after a failure unless the summary write itself failed (the main session's description). The tests use three entry operations plus the summary and fail the second write in the run's own order, `post_review` then the moves' resolves and the updates, then the resolves, then the summary. The spec could record this order, and that the summary is still written.
+4. **AC5's not-commentable move can't be reached end to end in S5**: the reviewed diff is the PR diff, so verify drops the finding first. It is tested through `plan_comments`; S7's incremental diff will make it reachable.
+5. **"New side" has no field.** `NewComment` documents the new side but carries no `side`. S6's real client has to send `side: RIGHT`, and its tests should check it.
+6. **Behaviour outside the ACs, not tested here:**
+   - A failed `list_bot_comments` exits 18 with no report.
+   - Shadow-mode entries are `applied` `not_attempted`, and `keep` entries are `done`.
+   - `resolve` entries have null `source` and `body`.
+
+   The spec's Interfaces could record all three.
+
+### Gaps
+
+- **GitHub's line tracking is played by hand.** The fake can't know how GitHub re-maps a comment after a push, so each test states it with `set_line` or `outdate`. Where GitHub's choice is uncertain, both are tested: a comment that follows its line and one marked outdated (AC4), and a resolved comment that stays outdated or shows current again (AC16).
+- **The whole-project 90% coverage threshold** fails on any run of one or two files, so it says nothing about this slice.
+
+### Coverage
+
+From this file plus P2-S13's, with `--cov=review_bot.pr`: `pr/plan.py` 97%, `pr/runner.py` 96%, `pr/fake_github.py` 94%, `pr/comments.py` 91%, `pr/cli.py` 85%. `cli.py` also holds `label` and parts of `backfill`, which these files don't exercise.

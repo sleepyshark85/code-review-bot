@@ -17,11 +17,14 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
+from review_bot.fingerprint import anchor_for
 from review_bot.policy import Decision
 from review_bot.pr.event import PullRequestRef
+from review_bot.pr.github import BotComment
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
+    Mode,
     Origin,
     ReportedError,
     build_shadow_report,
@@ -68,6 +71,8 @@ def result(*findings: ReviewedFinding, model_called: bool = True) -> PipelineRes
 def build(review: PipelineResult | ReportedError) -> dict[str, Any]:
     shadow = build_shadow_report(
         review,
+        mode=Mode.SHADOW,
+        existing=(),
         settings=SETTINGS,
         run_id="run-1",
         started_at=STARTED,
@@ -119,6 +124,8 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
 def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() -> None:
     shadow = build_shadow_report(
         result(),
+        mode=Mode.SHADOW,
+        existing=(),
         settings=SETTINGS,
         run_id="run-1",
         started_at=STARTED.astimezone(timezone(timedelta(hours=2))),
@@ -149,6 +156,7 @@ def test_render_shadow_json_writes_each_comment_and_withheld_finding() -> None:
         "severity": "high",
         "file": "a.py",
         "line": 1,
+        "applied": "not_attempted",
     }
     assert comment["body"].endswith(f"anchor={comment['anchor']} -->")
     assert document["withheld"] == [
@@ -160,6 +168,8 @@ def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
     text = render_shadow_json(
         build_shadow_report(
             result(reviewed(1, rationale=f"Leaks {GITHUB_TOKEN}")),
+            mode=Mode.SHADOW,
+            existing=(),
             settings=SETTINGS,
             run_id="run-1",
             started_at=STARTED,
@@ -216,6 +226,8 @@ def test_build_shadow_report_of_a_secret_is_blocked_and_names_where_it_is() -> N
 def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item() -> None:
     shadow = build_shadow_report(
         result(reviewed(1)),
+        mode=Mode.SHADOW,
+        existing=(),
         settings=SETTINGS,
         run_id="run-1",
         started_at=STARTED,
@@ -236,6 +248,8 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
 def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
     shadow = build_shadow_report(
         result(),
+        mode=Mode.SHADOW,
+        existing=(),
         settings=SETTINGS,
         run_id="run-1",
         started_at=STARTED,
@@ -269,6 +283,8 @@ def build_for_pr(
 ) -> dict[str, Any]:
     shadow = build_shadow_report(
         review,
+        mode=Mode.SHADOW,
+        existing=(),
         settings=settings,
         run_id="run-1",
         started_at=STARTED,
@@ -309,6 +325,8 @@ def test_build_shadow_report_refuses_a_pull_request_that_doesnt_match_the_origin
     with pytest.raises(ValueError, match="exactly when its origin isn't local"):
         build_shadow_report(
             result(),
+            mode=Mode.SHADOW,
+            existing=(),
             settings=SETTINGS,
             run_id="run-1",
             started_at=STARTED,
@@ -346,3 +364,72 @@ def test_build_shadow_report_is_over_budget_only_past_the_output_token_cap(
 
     assert (document["outcome"], document["over_budget"]) == ("reviewed", over_budget)
     assert document["caps"]["max_output_tokens"] == cap
+
+
+def bot_comment(comment_id: int, line: int | None, text: str) -> BotComment:
+    return BotComment(
+        comment_id=comment_id,
+        thread_id=f"thread-{comment_id}",
+        fingerprint="c" * 16,
+        rule_part="ai:logic",
+        anchor=anchor_for(text),
+        path="a.py",
+        line=line,
+        severity=Severity.LOW,
+        resolved_by=None,
+    )
+
+
+def build_in_comment_mode(*existing: BotComment) -> dict[str, Any]:
+    shadow = build_shadow_report(
+        result(reviewed(1)),
+        mode=Mode.COMMENT,
+        existing=existing,
+        settings=SETTINGS,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=Origin.EVENT,
+        pr=PR,
+    )
+    document: dict[str, Any] = json.loads(render_shadow_json(shadow))
+    return document
+
+
+def test_render_shadow_json_in_comment_mode_writes_paired_comments_then_resolves() -> None:
+    document = build_in_comment_mode(bot_comment(4, 1, "first"), bot_comment(5, None, "gone"))
+
+    kept, resolved = document["comments"]
+    assert document["mode"] == "comment"
+    assert (kept["action"], kept["fingerprint"], kept["applied"]) == (
+        "update",
+        "c" * 16,
+        "not_attempted",
+    )
+    assert resolved == {
+        "action": "resolve",
+        "fingerprint": "c" * 16,
+        "rule_part": "ai:logic",
+        "anchor": anchor_for("gone"),
+        "source": None,
+        "severity": "low",
+        "file": "a.py",
+        "line": None,
+        "body": None,
+        "applied": "not_attempted",
+    }
+
+
+def test_build_shadow_report_in_shadow_mode_refuses_existing_comments() -> None:
+    with pytest.raises(ValueError, match="reads no comments"):
+        build_shadow_report(
+            result(),
+            mode=Mode.SHADOW,
+            existing=(bot_comment(4, 1, "first"),),
+            settings=SETTINGS,
+            run_id="run-1",
+            started_at=STARTED,
+            finished_at=STARTED,
+            origin=Origin.EVENT,
+            pr=PR,
+        )

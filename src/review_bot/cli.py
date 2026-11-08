@@ -29,6 +29,7 @@ from review_bot.errors import (
     ErrorCategory,
     EventError,
     GitError,
+    GitHubError,
     InputError,
     ProviderError,
     ReviewBotError,
@@ -85,6 +86,8 @@ _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
 
 _INTERNAL_ERROR_EXIT_CODE: Final = 14
 _AUDIT_ERROR_EXIT_CODE: Final = 17
+# Only ``python -m review_bot.pr`` calls GitHub (Phase 2 design, Commands and exit codes).
+_GITHUB_ERROR_EXIT_CODE: Final = 18
 
 _INTERNAL_ERROR_MESSAGE: Final = (
     "The review did not complete, so there is no result. Check the Claude Code login and "
@@ -241,6 +244,9 @@ def report_failure(exc: Exception) -> int:
     if isinstance(exc, AuditError):
         _write_error(str(exc))
         return _AUDIT_ERROR_EXIT_CODE
+    if isinstance(exc, GitHubError):
+        _write_error(str(exc))
+        return _GITHUB_ERROR_EXIT_CODE
     # An escaped exception would exit 1, "findings found". The exception's text can hold untrusted
     # CLI output, so it is never shown.
     _write_error(_INTERNAL_ERROR_MESSAGE)

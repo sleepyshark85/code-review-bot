@@ -1,12 +1,16 @@
+from collections.abc import Callable
+
 import pytest
 from markdown_it import MarkdownIt
 
 from review_bot.errors import ErrorCategory
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
 from review_bot.pr.comments import (
+    Marker,
     blocked_summary,
     comment_body,
     not_reviewed_summary,
+    read_marker,
     reviewed_summary,
 )
 from review_bot.pr.outcome import Outcome, Reason
@@ -200,8 +204,8 @@ def test_blocked_summary_lists_20_hits_then_the_rest_as_a_count() -> None:
         (
             Outcome.FAILED,
             ErrorCategory.AUTH,
-            "**Review bot:** `failed` (`auth`). The review didn't complete, so there are no "
-            "findings.",
+            "**Review bot:** `failed` (`auth`). The review is unavailable: it didn't complete, so "
+            "there are no findings.",
         ),
     ],
 )
@@ -209,3 +213,49 @@ def test_not_reviewed_summary_names_the_outcome_and_reason(
     outcome: Outcome, reason: Reason | ErrorCategory, expected: str
 ) -> None:
     assert not_reviewed_summary(outcome, reason) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "rule", "rule_part"),
+    [
+        (Source.AI, None, "ai:logic"),
+        (Source.RULE, RuleId.SWALLOWED_EXCEPTION, "swallowed-exception"),
+    ],
+)
+def test_read_marker_reads_back_what_comment_body_wrote(
+    source: Source, rule: RuleId | None, rule_part: str
+) -> None:
+    body = body_of(reviewed(source=source, rule=rule, rationale="Line one.\n\n<!-- x -->"))
+
+    assert read_marker(body) == Marker("0123456789abcdef", rule_part, ANCHOR, Severity.HIGH)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda body: body.replace("fingerprint=0123456789abcdef", "fingerprint=0123456789abcde"),
+        lambda body: body + " trailing",
+        lambda body: body + "\nanother line",
+        lambda body: body.replace(" -->", "-->"),
+        lambda body: body.replace("rule=ai:logic", "rule=ai:unknown"),
+        lambda body: body.replace("fingerprint=0123456789abcdef", "fingerprint=0123456789ABCDEF"),
+        lambda body: body.replace("**high**", "**urgent**"),
+        lambda body: body.rpartition("\n")[0],
+        lambda body: body.rpartition("\n")[2],
+    ],
+    ids=[
+        "15-hex-digits",
+        "text-after-it",
+        "not-the-last-line",
+        "spacing",
+        "unknown-rule",
+        "upper-case-hex",
+        "unknown-severity",
+        "no-marker",
+        "marker-only",
+    ],
+)
+def test_read_marker_refuses_a_body_that_isnt_exactly_the_bots(
+    change: Callable[[str], str],
+) -> None:
+    assert read_marker(change(body_of(reviewed()))) is None

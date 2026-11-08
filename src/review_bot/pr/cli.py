@@ -4,11 +4,12 @@
 pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow reports would
 post.
 
-``run --mode`` accepts only ``shadow``, its default, until comment mode arrives (P2-S5, P2-S6).
+``run --mode comment`` also posts on the pull request, through a GitHub client that only tests
+inject until the real one arrives (P2-S6); without one it exits 2.
 
 It uses ``review-bot``'s exit codes, except that findings aren't a failure: a written report
 with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An unusable event or git
-command exits 19 (Phase 2 design, Commands and exit codes).
+command exits 19, and a failed GitHub call 18 (Phase 2 design, Commands and exit codes).
 """
 
 import argparse
@@ -41,14 +42,16 @@ from review_bot.console import (
     write_diagnostic,
     write_output,
 )
-from review_bot.errors import ConfigError, ProviderError
+from review_bot.errors import ConfigError, GitHubError, ProviderError
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.git import GitRepo
+from review_bot.pr.github import GitHubClient
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, read_report, run_labelling
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
+    Mode,
     Origin,
     ReportedError,
     ShadowReport,
@@ -78,6 +81,11 @@ _BACKFILL_IN_CI: Final = (
     "backfill doesn't run in CI (CI is set): it spends the budget you approved, with your own "
     "login or key. Run it from your own shell."
 )
+# Replaced by building the real client from GITHUB_TOKEN (P2-S6 AC1).
+_NO_GITHUB_CLIENT: Final = (
+    "--mode comment needs the GitHub client, which this version doesn't have yet, so nothing "
+    "was reviewed. Run with --mode shadow."
+)
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
     "interactive shell."
@@ -96,6 +104,7 @@ class _RunCommand:
     event_path: Path
     repo_dir: Path
     out_dir: Path
+    mode: Mode
     settings: Settings
 
 
@@ -115,19 +124,27 @@ class _LabelCommand:
     labels_path: Path
 
 
-def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    provider: LLMProvider | None = None,
+    github: GitHubClient | None = None,
+) -> int:
     """Run one subcommand and return the process exit code.
 
     Args:
         argv: The arguments; None means the process's own.
         provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
             from the settings, and only if the run calls one.
+        github: The GitHub client ``run --mode comment`` uses; ``--mode shadow`` never uses it.
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
         failure, such as 2 for a usage error or an unwritable ``--out``, 3 for a missing diff,
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
-        written, and 19 for an unusable event, pulls file or git command. ``backfill`` returns
+        written, 18 for a failed GitHub call, whose report is still written unless listing the
+        bot's comments failed, and 19 for an unusable event, pulls file or git command. A
+        ``run --mode comment`` with no ``github`` exits 2. ``backfill`` returns
         the first provider failure's code, an error's code if one stops it, and 2 in CI or over
         ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
         an invalid labels file.
@@ -140,6 +157,8 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         # Before --out is created: in CI, backfill touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci()
+        if isinstance(command, _RunCommand):
+            _require_client_for_comment_mode(command.mode, github)
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
         if isinstance(command, _BackfillCommand):
@@ -152,7 +171,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
             case _ShadowCommand():
                 shadow = _shadow(command, provider, audit)
             case _RunCommand():
-                shadow = _run(command, provider, audit)
+                shadow = _run(command, provider, github, audit)
         _write_report(shadow, command.out_dir)
         return _finish(shadow, command.out_dir, audit)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
@@ -197,9 +216,9 @@ def _parse_args(
     )
     run.add_argument(
         "--mode",
-        choices=["shadow"],
-        default="shadow",
-        help="shadow (default), the only mode for now",
+        choices=[mode.value for mode in Mode],
+        default=Mode.SHADOW.value,
+        help="shadow (default) only reports; comment also posts on the pull request",
     )
     backfill = _add_command(
         commands.add_parser,
@@ -265,9 +284,8 @@ def _parse_args(
         # ``evals live`` makes, so --max-calls bounds the attempts.
         settings = load_settings(flags).model_copy(update={"max_retries": 0})
         return _BackfillCommand(pulls_path, github_repo, repo_dir, out_dir, max_calls, settings)
-    del flags["mode"]
-    event_path, repo_dir = flags.pop("event"), flags.pop("repo")
-    return _RunCommand(event_path, repo_dir, out_dir, load_settings(flags))
+    event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
+    return _RunCommand(event_path, repo_dir, out_dir, mode, load_settings(flags))
 
 
 def _github_repo(text: str) -> str:
@@ -341,6 +359,12 @@ def _refuse_backfill_in_ci() -> None:
         raise ConfigError(_BACKFILL_IN_CI)
 
 
+def _require_client_for_comment_mode(mode: Mode, github: GitHubClient | None) -> None:
+    """Raise ``ConfigError`` for comment mode with no GitHub client, before anything runs."""
+    if mode is Mode.COMMENT and github is None:
+        raise ConfigError(_NO_GITHUB_CLIENT)
+
+
 def _require_writable_directory(out_dir: Path) -> None:
     """Create ``out_dir`` if it is missing, and prove a file can be written in it.
 
@@ -364,6 +388,8 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
         review = exc
     return build_shadow_report(
         review,
+        mode=Mode.SHADOW,
+        existing=(),
         settings=command.settings,
         run_id=audit.run_id,
         started_at=started_at,
@@ -373,19 +399,27 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
     )
 
 
-def _run(command: _RunCommand, provider: LLMProvider | None, audit: AuditLog) -> ShadowReport:
-    """Review the pull request in the event file.
+def _run(
+    command: _RunCommand,
+    provider: LLMProvider | None,
+    github: GitHubClient | None,
+    audit: AuditLog,
+) -> ShadowReport:
+    """Review the pull request in the event file, and in comment mode apply it with ``github``.
 
     Raises:
         EventError: If the event file is unusable; nothing else runs.
         GitError: If a commit is missing or git fails; no provider is called.
+        GitHubError: If the bot's comments can't be listed; nothing is posted.
     """
     pr = read_event(command.event_path)
     settings = command.settings
     run = run_pull_request(
         pr,
+        mode=command.mode,
         git=GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S),
         make_provider=lambda: build_provider(settings) if provider is None else provider,
+        github=github if command.mode is Mode.COMMENT else None,
         settings=settings,
         audit=audit,
         environ=os.environ,
@@ -532,7 +566,7 @@ def _write_report(shadow: ShadowReport, out_dir: Path) -> None:
 def _finish(shadow: ShadowReport, out_dir: Path, audit: AuditLog) -> int:
     """Say what was written and why, record the run's end, and return its exit code."""
     error = shadow.error
-    if isinstance(error, ProviderError):
+    if isinstance(error, ProviderError | GitHubError):
         write_diagnostic(_written_line(shadow, out_dir))
         exit_code = report_failure(error)
         record_failed_end(audit, exit_code, error)
