@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 from git_samples import commit, git, init_repo
 
-from review_bot.errors import DiffEmptyError, DiffNotUtf8Error, DiffTooLargeError, GitError
+from review_bot.errors import (
+    DiffEmptyError,
+    DiffNotUtf8Error,
+    DiffTooLargeError,
+    GitError,
+    NotARegularFileError,
+)
 from review_bot.pr.git import GitRepo
 
 LIMIT = 100_000
@@ -199,3 +205,65 @@ def test_is_ancestor_is_false_for_a_commit_the_clone_lacks(repo: Path) -> None:
 def test_is_ancestor_raises_when_git_fails(tmp_path: Path) -> None:
     with pytest.raises(GitError, match="git rev-parse failed"):
         GitRepo(tmp_path / "not-a-repo", timeout_s=60).is_ancestor("a" * 40, "b" * 40)
+
+
+def test_read_file_returns_the_file_at_that_commit_not_a_later_one(repo: Path) -> None:
+    first = commit(repo, {"config.toml": "one\n"})
+    commit(repo, {"config.toml": "two\n"})
+
+    assert GitRepo(repo, timeout_s=60).read_file(first, "config.toml", max_bytes=LIMIT) == b"one\n"
+
+
+def test_read_file_returns_none_when_nothing_is_at_the_path(repo: Path) -> None:
+    sha = commit(repo, {"app.py": "x\n"})
+
+    assert GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=LIMIT) is None
+
+
+def test_read_file_reads_at_most_one_byte_over_the_limit(repo: Path) -> None:
+    sha = commit(repo, {"config.toml": "x" * 50})
+
+    assert GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=10) == b"x" * 11
+
+
+def test_read_file_refuses_a_directory(repo: Path) -> None:
+    sha = commit(repo, {"config.toml/inner.txt": "x\n"})
+
+    with pytest.raises(NotARegularFileError, match="is a directory") as caught:
+        GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=LIMIT)
+
+    assert caught.value.kind == "directory"
+
+
+def test_read_file_refuses_a_symbolic_link(repo: Path) -> None:
+    # A symlink's blob, staged directly, so the test needs no symlink support on disk.
+    commit(repo, {"target.toml": "x\n"})
+    target = repo.parent / "link-target"
+    target.write_text("target.toml", encoding="utf-8")
+    link = git(repo, "hash-object", "-w", str(target))
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{link},config.toml")
+    git(repo, "commit", "-q", "-m", "link")
+    sha = git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(NotARegularFileError, match="is a symbolic link"):
+        GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=LIMIT)
+
+
+def test_read_file_names_a_commit_missing_from_the_clone(repo: Path) -> None:
+    commit(repo, {"app.py": "x\n"})
+
+    with pytest.raises(GitError, match="c" * 40):
+        GitRepo(repo, timeout_s=60).read_file("c" * 40, "config.toml", max_bytes=LIMIT)
+
+
+def test_read_file_refuses_a_submodule(repo: Path) -> None:
+    # A gitlink, staged directly, so the test needs no second repository.
+    other = commit(repo, {"app.py": "x\n"})
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{other},config.toml")
+    git(repo, "commit", "-q", "-m", "submodule")
+    sha = git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(NotARegularFileError, match="is a submodule") as caught:
+        GitRepo(repo, timeout_s=60).read_file(sha, "config.toml", max_bytes=LIMIT)
+
+    assert caught.value.kind == "submodule"

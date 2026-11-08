@@ -18,9 +18,9 @@ class Outcome(StrEnum):
 
 
 class Reason(StrEnum):
-    """Why a run was skipped, or reviewed without the model.
+    """Why a run was skipped, reviewed without the model, or failed before any review.
 
-    A failed run's reason is the provider's ``ErrorCategory``.
+    A run the provider failed has the provider's ``ErrorCategory`` as its reason instead.
     """
 
     TOO_LARGE = "too_large"
@@ -41,3 +41,5 @@ class Reason(StrEnum):
     # Not a skip: outcome ``reviewed``, with no hunk changed since the last reviewed commit, so no
     # model call.
     NO_NEW_CHANGES = "no_new_changes"
+    # Failed: the base commit's ``.review-bot.toml`` is invalid, so nothing was reviewed.
+    INVALID_CONFIG = "invalid_config"

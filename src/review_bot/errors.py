@@ -19,7 +19,9 @@ __all__ = [
     "GitError",
     "GitHubError",
     "InputError",
+    "NotARegularFileError",
     "ProviderError",
+    "RepoConfigError",
     "ReviewBotError",
     "SecretDetectedError",
 ]
@@ -79,6 +81,22 @@ class EventError(InputError):
 
 class GitError(InputError):
     """A git command in the pull request's clone failed, timed out or couldn't start."""
+
+
+class NotARegularFileError(InputError):
+    """A path in a commit is a directory, symbolic link or submodule, not a regular file.
+
+    ``kind`` names what it is instead, such as ``directory``.
+    """
+
+    def __init__(self, message: str, *, kind: str) -> None:
+        """Record what the path is alongside the message."""
+        super().__init__(message)
+        self.kind = kind
+
+
+class RepoConfigError(ConfigError):
+    """The repository's ``.review-bot.toml`` at the base commit is invalid; the message says how."""
 
 
 class GitHubError(ReviewBotError):

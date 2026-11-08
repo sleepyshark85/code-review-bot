@@ -32,6 +32,7 @@ from review_bot.errors import (
     GitHubError,
     InputError,
     ProviderError,
+    RepoConfigError,
     ReviewBotError,
     SecretDetectedError,
 )
@@ -72,6 +73,7 @@ _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     # Only ``python -m review_bot.pr`` raises these (Phase 2 design, Commands and exit codes).
     EventError: 19,
     GitError: 19,
+    RepoConfigError: 2,
 }
 
 _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {

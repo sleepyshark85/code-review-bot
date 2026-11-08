@@ -7,7 +7,7 @@ anchors).
 
 import itertools
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, StrEnum, auto
 from fnmatch import fnmatchcase
@@ -43,6 +43,8 @@ class SkipReason(StrEnum):
     LOCK = "lock"
     GENERATED = "generated"
     BINARY = "binary"
+    # Matched by one of the repository's ``exclude`` globs (P2-S9).
+    EXCLUDED_BY_CONFIG = "excluded_by_config"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,10 +187,17 @@ _GENERATED_ROOT_DIRS: Final = frozenset({"dist", "build"})
 _GENERATED_ANY_DEPTH_DIRS: Final = frozenset({"vendor", "node_modules"})
 
 
-def parse_diff(text: str) -> ParsedDiff:
+def parse_diff(text: str, *, exclude: Sequence[str] = ()) -> ParsedDiff:
     """Parse a unified diff, with or without git's file headers.
 
     Git's file headers are ``diff --git``, ``diff --cc`` and ``diff --combined`` lines.
+
+    A file the built-in rules don't skip is skipped ``excluded_by_config`` if its path, the new
+    one or a deleted file's old one, matches a glob in ``exclude``. ``*`` matches within one
+    path segment and ``**`` any number of whole segments, including none. A glob with no ``/``
+    matches the file name at any depth; one with a ``/`` matches the whole path from the root.
+    Matching takes time linear in the number of globs times their segments times the path's
+    segments.
 
     Text before the first file, such as a commit message, is kept in ``reviewable_text``.
 
@@ -207,7 +216,8 @@ def parse_diff(text: str) -> ParsedDiff:
 
     bounds = list(itertools.pairwise([*starts, len(lines)]))
     parsed_files = [
-        _parse_file(lines[start:end], first_diff_line=start + 1) for start, end in bounds
+        _parse_file(lines[start:end], first_diff_line=start + 1, exclude=exclude)
+        for start, end in bounds
     ]
     files = tuple(file for file, _ in parsed_files)
     decoded_paths = tuple(decoded for _, file_paths in parsed_files for decoded in file_paths)
@@ -256,20 +266,18 @@ def _opens_unified_file(lines: list[str], index: int) -> bool:
 
 
 def _parse_file(
-    lines: list[str], *, first_diff_line: int
+    lines: list[str], *, first_diff_line: int, exclude: Sequence[str]
 ) -> tuple[FileDiff, tuple[DecodedPath, ...]]:
     """Parse one file's section, and decode its header lines' paths and quoted strings."""
     first_hunk = next(
         (index for index, line in enumerate(lines) if line.startswith("@@")), len(lines)
     )
     header = _read_file_header(lines[:first_hunk], first_diff_line=first_diff_line)
-    # A deleted file has no new path, so it's classified by its old one.
-    path_reason = _skip_reason_for(header.path or header.old_path or "")
     file = FileDiff(
         path=header.path,
         old_path=header.old_path,
         hunks=_parse_hunks(lines[first_hunk:]),
-        skip_reason=SkipReason.BINARY if header.is_binary else path_reason,
+        skip_reason=_skip_reason(header, exclude),
     )
     return file, header.decoded_paths
 
@@ -287,6 +295,20 @@ class _FileHeader:
     old_path: str | None  # None if new
     is_binary: bool
     decoded_paths: tuple[DecodedPath, ...]
+
+
+def _skip_reason(header: _FileHeader, exclude: Sequence[str]) -> SkipReason | None:
+    """Why the file is skipped: binary, then a built-in path rule, then an ``exclude`` glob."""
+    if header.is_binary:
+        return SkipReason.BINARY
+    # A deleted file has no new path, so it's classified by its old one.
+    path = header.path or header.old_path or ""
+    built_in = _skip_reason_for(path)
+    if built_in is not None:
+        return built_in
+    if any(_glob_matches(path, glob) for glob in exclude):
+        return SkipReason.EXCLUDED_BY_CONFIG
+    return None
 
 
 def _read_file_header(lines: list[str], *, first_diff_line: int) -> _FileHeader:
@@ -494,3 +516,22 @@ def _is_docs(name: str) -> bool:
 
 def _matches_any(name: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatchcase(name, pattern) for pattern in patterns)
+
+
+def _glob_matches(path: str, glob: str) -> bool:
+    """Whether ``path`` matches ``glob``, as ``parse_diff`` describes."""
+    segments = path.split("/")
+    if "/" not in glob:
+        return fnmatchcase(segments[-1], glob)
+    # ``matched[i]``: the glob's segments so far match the path's first ``i`` segments.
+    matched = [True] + [False] * len(segments)
+    for part in glob.split("/"):
+        if part == "**":
+            first = matched.index(True) if True in matched else len(matched)
+            matched = [index >= first for index in range(len(matched))]
+        else:
+            matched = [False] + [
+                matched[index] and fnmatchcase(segment, part)
+                for index, segment in enumerate(segments)
+            ]
+    return matched[-1]

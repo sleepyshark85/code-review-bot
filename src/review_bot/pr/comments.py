@@ -22,6 +22,7 @@ __all__ = [
     "Marker",
     "blocked_summary",
     "comment_body",
+    "invalid_config_summary",
     "is_summary",
     "no_new_changes_summary",
     "not_reviewed_summary",
@@ -227,6 +228,15 @@ def not_reviewed_summary(outcome: Outcome, reason: Reason | ErrorCategory) -> st
     else:
         detail = "Nothing was sent to the model."
     return f"{_HEADLINE} `{outcome}` (`{reason}`). {detail}"
+
+
+def invalid_config_summary(problem: str) -> str:
+    """Return the summary of a run whose repository config is invalid, saying what is wrong."""
+    reason = Reason.INVALID_CONFIG
+    return (
+        f"{_HEADLINE} `{Outcome.FAILED}` (`{reason}`). Nothing was sent to the model. "
+        f"{escape_markdown(problem)}"
+    )
 
 
 def _listed(items: Sequence[str], *, total: int) -> str:

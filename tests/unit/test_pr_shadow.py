@@ -14,11 +14,13 @@ from review_bot.errors import (
     DiffTooLargeError,
     ErrorCategory,
     ProviderError,
+    RepoConfigError,
     SecretDetectedError,
 )
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.fingerprint import anchor_for
 from review_bot.policy import Decision
+from review_bot.pr.config import DEFAULT_REPO_CONFIG, RepoConfig
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import BotComment
 from review_bot.pr.outcome import Outcome, Reason
@@ -69,12 +71,15 @@ def result(*findings: ReviewedFinding, model_called: bool = True) -> PipelineRes
     )
 
 
-def build(review: PipelineResult | ReportedError) -> dict[str, Any]:
+def build(
+    review: PipelineResult | ReportedError, config: RepoConfig | None = DEFAULT_REPO_CONFIG
+) -> dict[str, Any]:
     shadow = build_shadow_report(
         review,
         mode=Mode.SHADOW,
         existing=(),
         settings=SETTINGS,
+        config=config,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED + timedelta(seconds=2),
@@ -109,6 +114,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "over_budget",
         "scope",
         "since",
+        "config",
     ]
     assert document["schema"] == "shadow/v1"
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
@@ -123,6 +129,60 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
     }
     assert document["over_budget"] is False
     assert (document["scope"], document["since"]) == ("full", None)
+    assert document["config"] == {
+        "source": "default",
+        "threshold": "low",
+        "exclude": [],
+        "max_open_comments": 10,
+    }
+
+
+def test_render_shadow_json_shows_the_repository_config_with_the_threshold_used() -> None:
+    config = RepoConfig(
+        source=f".review-bot.toml@{'a' * 40}",
+        threshold=Severity.MEDIUM,
+        exclude=("*.snap",),
+        max_open_comments=3,
+    )
+
+    # The settings' threshold is the one the review used, which a flag can set over the file's.
+    document = build(result(reviewed(2)), config)
+
+    assert document["config"] == {
+        "source": f".review-bot.toml@{'a' * 40}",
+        "threshold": "low",
+        "exclude": ["*.snap"],
+        "max_open_comments": 3,
+    }
+
+
+def test_build_shadow_report_plans_up_to_the_repository_comment_limit() -> None:
+    config = RepoConfig(source="default", max_open_comments=1)
+
+    document = build(result(reviewed(1), reviewed(2)), config)
+
+    assert [entry["line"] for entry in document["comments"]] == [1]
+    assert [(entry["line"], entry["reason"]) for entry in document["withheld"]] == [
+        (2, "over_limit")
+    ]
+
+
+def test_build_shadow_report_without_a_config_refuses_to_plan_comments() -> None:
+    with pytest.raises(ValueError, match="config"):
+        build(result(reviewed(1)), None)
+
+
+def test_build_shadow_report_of_an_invalid_config_has_no_config_and_names_the_problem() -> None:
+    error = RepoConfigError("unknown key 'max_retries'")
+
+    document = build(error, None)
+
+    assert (document["outcome"], document["reason"], document["config"]) == (
+        "failed",
+        "invalid_config",
+        None,
+    )
+    assert r"max\_retries" in document["summary_body"]
 
 
 def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() -> None:
@@ -131,6 +191,7 @@ def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() ->
         mode=Mode.SHADOW,
         existing=(),
         settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED.astimezone(timezone(timedelta(hours=2))),
         finished_at=STARTED + timedelta(seconds=2),
@@ -175,6 +236,7 @@ def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
             mode=Mode.SHADOW,
             existing=(),
             settings=SETTINGS,
+            config=DEFAULT_REPO_CONFIG,
             run_id="run-1",
             started_at=STARTED,
             finished_at=STARTED,
@@ -202,6 +264,7 @@ def test_build_shadow_report_skips_a_run_that_reviewed_nothing() -> None:
         (DiffNotParsableError("x"), Outcome.SKIPPED, Reason.NOT_A_DIFF),
         (DiffNotUtf8Error("x"), Outcome.SKIPPED, Reason.UNREADABLE),
         (ProviderError(ErrorCategory.AUTH, "x"), Outcome.FAILED, ErrorCategory.AUTH),
+        (RepoConfigError("x"), Outcome.FAILED, Reason.INVALID_CONFIG),
     ],
 )
 def test_build_shadow_report_of_an_error_has_its_outcome_and_reason_and_no_review(
@@ -233,6 +296,7 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
         mode=Mode.SHADOW,
         existing=(),
         settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
@@ -255,6 +319,7 @@ def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
         mode=Mode.SHADOW,
         existing=(),
         settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
@@ -290,6 +355,7 @@ def build_for_pr(
         mode=Mode.SHADOW,
         existing=(),
         settings=settings,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
@@ -332,6 +398,7 @@ def test_build_shadow_report_refuses_a_pull_request_that_doesnt_match_the_origin
             mode=Mode.SHADOW,
             existing=(),
             settings=SETTINGS,
+            config=DEFAULT_REPO_CONFIG,
             run_id="run-1",
             started_at=STARTED,
             finished_at=STARTED,
@@ -390,6 +457,7 @@ def build_in_comment_mode(*existing: BotComment) -> dict[str, Any]:
         mode=Mode.COMMENT,
         existing=existing,
         settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,
@@ -431,6 +499,7 @@ def test_build_shadow_report_in_shadow_mode_refuses_existing_comments() -> None:
             mode=Mode.SHADOW,
             existing=(bot_comment(4, 1, "first"),),
             settings=SETTINGS,
+            config=DEFAULT_REPO_CONFIG,
             run_id="run-1",
             started_at=STARTED,
             finished_at=STARTED,
@@ -465,6 +534,7 @@ def build_incremental(
         mode=mode,
         existing=existing,
         settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
         run_id="run-1",
         started_at=STARTED,
         finished_at=STARTED,

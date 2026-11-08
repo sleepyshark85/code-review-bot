@@ -561,3 +561,46 @@ Both found in review round 1 and fixed in build; the tests stay as regression ch
 ### Coverage
 
 From this file alone, with `--cov=review_bot.pr`: `plan.py` 93%, `fake_github.py` 87%, `runner.py` 82%, `comments.py` 81%, `git.py` 69%. `git.py`'s uncovered lines are mostly its error paths (timeout, a missing binary, a failed `git diff`), which S2's suite covers.
+
+## P2-S9: Set the review policy per repository
+
+Suite: `tests/integration/test_p2_s9_repo_config.py`, written from the spec, design.md and ADR 0008 while the developer built the slice, before any of its code was read. Run against the developer's work in progress (uncommitted, before review): **34 of 34 pass**. The seam is still to be confirmed by the main session.
+
+### Seam and set-up
+
+- Each run is `review_bot.pr.cli.main(["run", "--event", ..., "--repo", ..., "--out", ..., "--provider", "mock", "--mode", MODE, *FLAGS], provider=MockProvider(...)[, github=FakeGitHubClient])`, as in S2 and S5 (`run_pr` is the one place to change).
+- Each PR is a real repository: `.review-bot.toml` at the base commit (as a file, a symlink or a directory, built through git's index so no symlink support is needed on disk), then one head commit. **The head stays checked out**, so reading the working tree instead of the base commit would fail AC2.
+- `shadow.json`'s `config` is read as an object with `threshold`, `exclude`, `max_open_comments` and `source`. The tests read those keys by name and don't check the order inside `config`.
+
+### Criteria
+
+| AC | Tests (`test_p2_s9_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_no_file_applies_the_defaults_and_reports_them` (`low`, `[]`, 10, `default`; all four severities planned). `ac1_a_file_only_the_head_adds_is_ignored` (a head-only file with `critical`, `exclude = ["*.py"]` and broken TOML changes nothing) | pass |
+| AC2 | `ac2_base_threshold_medium_drops_low_findings` (`source` is `.review-bot.toml@<base>`), `ac2_head_raising_the_threshold_doesnt_change_its_own_review` | pass |
+| AC3 | `ac3_exactly_the_matching_files_are_skipped_and_not_sent` (the spec's 5 skipped and 2 kept paths; each file holds its own canary, checked in the prompt). `ac3_excluded_files_dont_count_towards_reviewable_bytes` (a 2,000-byte cap: the same PR is `too_large` without the file, `reviewed` with it excluded). `ac3_a_finding_on_an_excluded_file_isnt_planned` | pass |
+| AC4 | `ac4_max_open_comments_3_creates_3_and_withholds_2` (comment mode: 3 posted, 2 withheld `over_limit`) | pass |
+| AC5 | `ac5_invalid_config_fails_invalid_config_without_a_call_and_exits_2`, with 18 cases: invalid TOML, unknown key, caps (`max_review_bytes`, `max_output_tokens`, `mode`, a `[caps]` table), wrong types (threshold int, exclude string, exclude item int, `max_open_comments` string and bool), `max_open_comments` 0 and 26, `threshold = "urgent"`, 51 patterns, a 201-character pattern, 65,559 bytes, non-UTF-8. `ac5_symlink_or_directory_at_the_path_fails_invalid_config` (2 cases). `ac5_limits_a_huge_file_fails_fast` (4 MB within 60 s). `ac5_limits_boundaries_are_accepted` (50 patterns of 200 characters, 25 comments, about 60,000 bytes) | pass |
+| AC6 | `ac6_flag_then_environment_then_file`: env `high` over file `medium`; `--threshold critical` over env and file; `--threshold low` over file `medium` | pass |
+| Limits | `limits_nested_double_star_patterns_match_in_bounded_time`: 50 patterns of 60 `**/` segments each, none matching, against a 31-segment path; within 60 s, the file reviewed | pass |
+
+### Readings for the designer
+
+1. **"64 KB"** may mean 64,000 or 65,536 bytes; the build uses 65,536. The tests stay clear of the boundary: 65,559 bytes is refused and about 60,000 is accepted.
+2. **The summary names "the key or problem".** The tests read the summary as GitHub shows it (Markdown escapes removed, through S1's `summary_text`). They match the key's name for schema errors, and loose patterns for the rest: `TOML` for a parse error (the file name is lowercase, so it doesn't match), `65,?536|64 ?KB|over the limit` for size, `link|regular file|not a file` and `director|not a file` for a symlink and a directory.
+3. **AC6 doesn't say what `config.threshold` shows** when a flag or the environment wins. The AC6 test checks only which findings are planned. AC1 and AC2 check `config.threshold`, where nothing overrides it.
+4. **Non-UTF-8 content** isn't listed in AC5. It's tested as `invalid_config`, since `tomllib` can't parse it.
+5. **AC3, a finding on an excluded file.** That file wasn't reviewed, so the test expects no comment on it. Verify should drop it, since the file isn't in the reviewed diff.
+
+### Gaps
+
+- **What the failed report holds besides the outcome** (`report`, `comments`, `config`) isn't specified, so isn't asserted.
+- **Invalid config in comment mode** (whether the summary comment is written) isn't specified, so it isn't tested. Every AC5 case runs in shadow mode.
+
+### Earlier suites changed
+
+- **P2-S1** (`test_p2_s1_shadow_report_local.py`): `SHADOW_KEYS` gains `config`, last, after `since`. The build's `shadow.json` passes `load_shadow` with it there.
+
+### Coverage
+
+From this file alone, with `--cov=review_bot`, against the work in progress: `pr/config.py` 100%, `diff_parser.py` 82%, `pr/git.py` 71%, `pr/runner.py` 68%. The rest of `git.py` and `runner.py` is error paths and comment mode, which S2, S5 and S7's suites cover.

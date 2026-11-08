@@ -9,7 +9,7 @@ provider and an in-memory GitHub (Phase 2 design, Data flow).
 import asyncio
 import dataclasses
 import functools
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -22,6 +22,17 @@ from review_bot.errors import (
     DiffNotUtf8Error,
     DiffTooLargeError,
     GitHubError,
+    NotARegularFileError,
+    RepoConfigError,
+)
+from review_bot.pr.config import (
+    CONFIG_PATH,
+    DEFAULT_REPO_CONFIG,
+    MAX_CONFIG_BYTES,
+    RepoConfig,
+    invalid_config,
+    parse_repo_config,
+    with_repo_threshold,
 )
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.git import GitRepo
@@ -71,8 +82,10 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
 
     A fork, an action that changes nothing to review, a Claude run in CI with no
     ``ANTHROPIC_API_KEY``, or in comment mode a draft, is refused: neither git, the provider nor
-    GitHub runs, and the report is ``skipped`` with that reason. Otherwise the provider is made,
-    and called at most once.
+    GitHub runs, and the report is ``skipped`` with that reason. Otherwise the repository's
+    policy is read from the base commit's ``.review-bot.toml`` (``_repo_config``): if it is
+    invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
+    provider is made, and called at most once.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -125,7 +138,8 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
     """Review a merged pull request's own changes, as ``run_pull_request`` does an open one's.
 
     A fork, or a pull request whose base or head commit isn't in the clone, is refused: the
-    provider doesn't run, and the report is ``skipped`` with that reason. The report's
+    provider doesn't run, and the report is ``skipped`` with that reason. As in
+    ``run_pull_request``, the base commit's ``.review-bot.toml`` sets the policy. The report's
     ``origin`` is ``backfill``, and its mode ``shadow``.
 
     Args:
@@ -170,6 +184,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
 ) -> ShadowReport:
     """Review the pull request unless ``refusal`` says why not, then report and apply it.
 
+    A review runs under the base commit's repository config, which can set its threshold.
     ``github`` is given exactly in comment mode, as ``run_pull_request`` checks.
     """
     started_at = clock()
@@ -178,11 +193,23 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         "pull_request",
         {"repo": pr.repo, "number": pr.number, "base_sha": pr.base_sha, "head_sha": pr.head_sha},
     )
-    if refusal is None:
-        review = await _review(pr, git, github, make_provider, settings, audit)
-    else:
+    config: RepoConfig | None = None
+    if refusal is not None:
         audit.record(Stage.RUN, "refused", {"reason": refusal})
         review = _Review(refusal)
+    else:
+        try:
+            config = await asyncio.to_thread(_repo_config, git, pr.base_sha)
+        except RepoConfigError as exc:
+            # Kept, so the summary still records the last commit reviewed, and the next run
+            # with a valid config reviews from there.
+            recorded = (
+                None if github is None else await asyncio.to_thread(_recorded_sha, github, pr)
+            )
+            review = _Review(exc, recorded)
+        else:
+            settings = with_repo_threshold(settings, config)
+            review = await _review(pr, git, github, make_provider, settings, config.exclude, audit)
     existing: tuple[BotComment, ...] = ()
     if github is not None and review.plans_comments:
         existing = await asyncio.to_thread(github.list_bot_comments, pr)
@@ -191,6 +218,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         mode=mode,
         existing=existing,
         settings=settings,
+        config=config,
         run_id=audit.run_id,
         started_at=started_at,
         finished_at=clock(),
@@ -252,6 +280,25 @@ def _refusal(
     return None
 
 
+def _repo_config(git: GitRepo, base_sha: str) -> RepoConfig:
+    """The policy in ``.review-bot.toml`` at the base commit, or the defaults if it has none.
+
+    Only the base commit's file counts, so a pull request can't change the rules it is reviewed
+    under (ADR 0008).
+
+    Raises:
+        RepoConfigError: If the file is invalid, or the path holds something else.
+        GitError: If the commit isn't in the clone, or git fails.
+    """
+    try:
+        data = git.read_file(base_sha, CONFIG_PATH, max_bytes=MAX_CONFIG_BYTES)
+    except NotARegularFileError as exc:
+        raise invalid_config(base_sha, f"it is a {exc.kind}, not a regular file") from exc
+    if data is None:
+        return DEFAULT_REPO_CONFIG
+    return parse_repo_config(data, base_sha=base_sha)
+
+
 def _missing_commit(pr: PullRequestRef, git: GitRepo) -> Reason | None:
     """``missing_commit`` if the clone lacks the base or head commit, else None."""
     if git.has_commit(pr.base_sha) and git.has_commit(pr.head_sha):
@@ -265,9 +312,12 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     github: GitHubClient | None,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
+    exclude: Sequence[str],
     audit: AuditLog,
 ) -> _Review:
     """Diff the pull request and review it: all of it, or only what changed since last time.
+
+    Files matching an ``exclude`` glob are skipped, as the built-in skips are.
 
     The PR diff comes first, so a diff that can't be reviewed, or whose files are all skipped,
     is reported with no GitHub call. Otherwise, in comment mode, the bot's summary says the
@@ -282,9 +332,12 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         diff = await asyncio.to_thread(git.diff, pr.base_sha, pr.head_sha, max_bytes=max_bytes)
     except REPORTED_ERRORS as exc:
         return _Review(exc)
-    parsed = _reviewable(diff)
+    parsed = _reviewable(diff, exclude)
+    review_part = functools.partial(
+        _review_diff, make_provider=make_provider, settings=settings, exclude=exclude, audit=audit
+    )
     if github is None or parsed is None:
-        return _Review(await _review_diff(diff, name, make_provider, settings, audit))
+        return _Review(await review_part(diff, name))
     recorded = await asyncio.to_thread(_recorded_sha, github, pr)
     if recorded == pr.head_sha:
         audit.record(Stage.RUN, "refused", {"reason": Reason.ALREADY_REVIEWED})
@@ -293,37 +346,44 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     if recorded is not None and await asyncio.to_thread(git.is_ancestor, recorded, pr.head_sha):
         changed = await asyncio.to_thread(_diff_since, git, recorded, pr.head_sha, max_bytes)
     if changed is None:
-        return _Review(await _review_diff(diff, name, make_provider, settings, audit), recorded)
+        return _Review(await review_part(diff, name), recorded)
     incremental = Incremental(pr_diff=parsed, changed=changed)
     hunks = changed_hunks(diff, parsed, changed)
     if not hunks:
         return _Review(Reason.NO_NEW_CHANGES, recorded, incremental)
     name = f"{name}, its hunks changed since {recorded}"
-    result = await _review_diff(hunks, name, make_provider, settings, audit)
+    result = await review_part(hunks, name)
     return _Review(result, recorded, incremental)
 
 
-async def _review_diff(
+async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     diff: str,
     name: str,
+    *,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
+    exclude: Sequence[str],
     audit: AuditLog,
 ) -> PipelineResult | ReportedError:
-    """Review ``diff``; an error that still ends in a report is returned."""
+    """Review ``diff``, skipping files matching ``exclude``.
+
+    An error that still ends in a report is returned.
+    """
     try:
-        return await review_diff(diff, settings, make_provider(), audit, name=name)
+        return await review_diff(diff, settings, make_provider(), audit, name=name, exclude=exclude)
     except REPORTED_ERRORS as exc:
         return exc
 
 
-def _reviewable(diff: str) -> ParsedDiff | None:
+def _reviewable(diff: str, exclude: Sequence[str]) -> ParsedDiff | None:
     """``diff`` parsed, if it parses and holds a file the review doesn't skip; else None.
+
+    A file matching ``exclude`` is skipped, as ``review_diff`` skips it.
 
     With None, any part of it has nothing to review too, so the summary needn't be read.
     """
     try:
-        parsed = parse_diff(diff)
+        parsed = parse_diff(diff, exclude=exclude)
     except DiffNotParsableError:
         return None
     if all(file.skip_reason is not None for file in parsed.files):
