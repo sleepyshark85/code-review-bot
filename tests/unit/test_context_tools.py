@@ -1,15 +1,16 @@
 import asyncio
 import hashlib
+import io
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from git_samples import commit, git, init_repo
 
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.context.tools import RepoRef, RepoTools, ToolCaps
-from review_bot.errors import GitError
 from review_bot.git import GitRepo
 
 CAPS = ToolCaps(max_calls=12, max_result_bytes=16_000, max_total_bytes=96_000)
@@ -155,8 +156,6 @@ def test_read_refuses_a_blob_over_1_mb(repo: Path) -> None:
     "arguments",
     [
         {},
-        {"path": ""},
-        {"path": "a" * 1001},
         {"path": "a.py", "line_count": 401},
         {"path": "a.py", "line_count": 0},
         {"path": "a.py", "start_line": 0},
@@ -165,8 +164,6 @@ def test_read_refuses_a_blob_over_1_mb(repo: Path) -> None:
         {"path": "a.py", "line_count": 5.0},
         {"path": 7},
         {"path": "a.py", "extra": 1},
-        {"path": "a\x00b.py"},
-        {"path": "a\nb.py"},
     ],
 )
 def test_read_refuses_arguments_outside_its_schema(
@@ -210,33 +207,10 @@ def test_grep_literal_holding_a_nul_is_refused_and_recorded(tools: RepoTools) ->
     assert tools.ledger[-1].reason is RefusalReason.INVALID_ARGUMENTS
 
 
-@pytest.mark.parametrize("path", ["../x", "/README", ":(glob)**"])
-def test_read_of_a_path_git_refuses_is_refused_and_the_review_goes_on(
-    tools: RepoTools, path: str
-) -> None:
-    text = call(tools, "read", {"path": path})
-
-    assert text.startswith("refused: invalid_path: ")
-    assert tools.ledger[-1].reason is RefusalReason.INVALID_PATH
-    assert call(tools, "read", {"path": "billing/invoice.py"}).startswith("1\t")
-
-
 def test_grep_finds_a_literal_holding_a_tab(repo: Path) -> None:
     tools = make_tools(repo, commit(repo, {"a.py": "if x:\n\treturn total(\n"}))
 
     assert call(tools, "grep", {"literal": "\treturn"}) == "a.py:2:\treturn total("
-
-
-def test_read_lets_a_git_timeout_propagate_rather_than_blame_the_path(
-    tools: RepoTools, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def timed_out(*_args: object, **_kwargs: object) -> bytes:
-        raise GitError("git ls-tree took longer than 60 seconds.")
-
-    monkeypatch.setattr(GitRepo, "read_file", timed_out)
-
-    with pytest.raises(GitError, match="took longer"):
-        call(tools, "read", {"path": "billing/invoice.py"})
 
 
 def test_unknown_tool_is_refused_and_its_name_is_not_kept(tools: RepoTools) -> None:
@@ -391,16 +365,22 @@ def test_definitions_name_the_three_tools_with_object_schemas(tools: RepoTools) 
     )
 
 
-def test_grep_on_unreadable_git_output_raises_git_error(
+def test_grep_on_unreadable_git_output_is_refused_and_the_review_goes_on(
     tools: RepoTools, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def garbled(*_args: object, **_kwargs: object) -> bytes:
-        return b"not-the-commit:a.py\x001\x00text\n"
+    real_run_git = GitRepo._run_git
 
-    monkeypatch.setattr(GitRepo, "grep", garbled)
+    def garbled_grep(
+        repo: GitRepo, args: list[str], read: Callable[..., Any], **kwargs: object
+    ) -> object:
+        if args[0] == "grep":
+            return read(io.BytesIO(b"not-the-commit:a.py\x001\x00text\n"))[0]
+        return real_run_git(repo, args, read, **kwargs)
 
-    with pytest.raises(GitError, match="can't be read"):
-        call(tools, "grep", {"literal": "x"})
+    monkeypatch.setattr(GitRepo, "_run_git", garbled_grep)
+
+    assert call(tools, "grep", {"literal": "x"}).startswith("refused: git_failed: ")
+    assert call(tools, "glob", {"pattern": "*.md"}) == "docs/notes.md"
 
 
 @pytest.mark.parametrize(

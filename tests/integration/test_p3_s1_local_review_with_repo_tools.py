@@ -602,7 +602,6 @@ INVALID_CALLS = {
     "read_line_count_as_float": ("read", {"path": CHECKOUT, "line_count": 3.5}),
     "read_path_null": ("read", {"path": None}),
     "read_missing_path": ("read", {"start_line": 1}),
-    "read_path_over_1000": ("read", {"path": "a" * (MAX_STRING_CHARS + 1)}),
     "grep_missing_literal": ("grep", {"ignore_case": True}),
     "grep_unknown_key": ("grep", {"literal": "total(", "regex": True}),
     "grep_literal_not_a_string": ("grep", {"literal": ["total("]}),
@@ -626,6 +625,18 @@ def test_p3_s1_ac5_invalid_arguments_are_refused_and_the_review_goes_on(harness,
 
     refused, after = review.bodies
     assert_refused(refused, "invalid_arguments")
+    assert numbered(after) == file_window(repo.files, CHECKOUT, 10, 5)
+    assert_reported(review)
+
+
+def test_p3_s1_ac5_read_path_over_1000_is_refused_invalid_path_and_the_review_goes_on(
+    harness, repo
+):
+    # Superseded by P3-S2 AC1: path validity is S2's, so this was invalid_arguments in S1.
+    review = harness.review(repo, [("read", {"path": "a" * (MAX_STRING_CHARS + 1)}), READ_CHECKOUT])
+
+    refused, after = review.bodies
+    assert_refused(refused, "invalid_path")
     assert numbered(after) == file_window(repo.files, CHECKOUT, 10, 5)
     assert_reported(review)
 

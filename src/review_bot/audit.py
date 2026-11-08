@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Final
 
 from review_bot.errors import AuditError
-from review_bot.report import has_lone_surrogate, path_fields
+from review_bot.path_quoting import has_lone_surrogate
+from review_bot.report import path_fields
 from review_bot.secret_scan import redact
 
 __all__ = [

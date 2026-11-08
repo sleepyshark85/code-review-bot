@@ -16,8 +16,8 @@ from typing import Final
 from review_bot.diff_parser import LineKind, ParsedDiff
 from review_bot.findings import ReviewedFinding
 from review_bot.fingerprint import Fingerprinter, anchor_for
+from review_bot.path_quoting import has_lone_surrogate
 from review_bot.pr.github import BotComment, Resolver
-from review_bot.report import has_lone_surrogate
 from review_bot.secret_scan import scan_secrets
 
 __all__ = [

@@ -12,7 +12,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, NamedTuple
 
-__all__ = ["SecretHit", "SecretKind", "redact", "scan_secrets"]
+__all__ = [
+    "SecretHit",
+    "SecretKind",
+    "SecretSpan",
+    "path_holds_secret",
+    "redact",
+    "scan_secrets",
+    "secret_line_spans",
+]
 
 
 class SecretKind(StrEnum):
@@ -46,25 +54,41 @@ _PEM_BEGIN: Final = r"-----BEGIN(?:[A-Z0-9 ]* PRIVATE KEY| PGP PRIVATE KEY BLOCK
 _PEM_END: Final = r"-----END(?:[A-Z0-9 ]* PRIVATE KEY| PGP PRIVATE KEY BLOCK)-----"
 
 
-def _vendor_format(value_pattern: str) -> re.Pattern[str]:
-    return re.compile(rf"{_PREFIX_BOUNDARY}(?P<secret>{value_pattern})")
+# In a path, a key may also follow a separator, as in ``cfg_<key>.txt``.
+_PATH_BOUNDARY: Final = r"(?:^|(?<=[/_.-])|(?<![A-Za-z0-9_-]))"
 
-
-# Each pattern's `secret` group is the value. The Anthropic prefix is spelt with a group so the
+# The value of each vendor-format key. The Anthropic prefix is spelt with a group so the
 # repository's key-literal check can't mistake a pattern for a key.
-_VENDOR_FORMATS: Final[Mapping[SecretKind, re.Pattern[str]]] = {
-    SecretKind.AWS_ACCESS_KEY: _vendor_format(r"AKIA[A-Z0-9]{16}(?![A-Z0-9])"),
-    SecretKind.GITHUB_TOKEN: _vendor_format(
+_VENDOR_VALUES: Final[Mapping[SecretKind, str]] = {
+    SecretKind.AWS_ACCESS_KEY: r"AKIA[A-Z0-9]{16}(?![A-Z0-9])",
+    SecretKind.GITHUB_TOKEN: (
         r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{22,}"
     ),
-    SecretKind.ANTHROPIC_KEY: _vendor_format(r"(?:sk)-ant-[A-Za-z0-9_-]{20,}"),
+    SecretKind.ANTHROPIC_KEY: r"(?:sk)-ant-[A-Za-z0-9_-]{20,}",
     # Not where an Anthropic key matches, and with a digit somewhere in the value.
-    SecretKind.OPENAI_KEY: _vendor_format(
+    SecretKind.OPENAI_KEY: (
         r"sk-(?!ant-[A-Za-z0-9_-]{20})(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"
     ),
-    SecretKind.SLACK_TOKEN: _vendor_format(r"xox[abprs]-[A-Za-z0-9-]{10,}"),
+    SecretKind.SLACK_TOKEN: r"xox[abprs]-[A-Za-z0-9-]{10,}",
+}
+
+# Each pattern's `secret` group is the value.
+_VENDOR_FORMATS: Final[Mapping[SecretKind, re.Pattern[str]]] = {
+    **{
+        kind: re.compile(rf"{_PREFIX_BOUNDARY}(?P<secret>{value})")
+        for kind, value in _VENDOR_VALUES.items()
+    },
     SecretKind.PRIVATE_KEY: re.compile(rf"(?P<secret>{_PEM_BEGIN})"),
 }
+_PATH_KEYS: Final = tuple(
+    re.compile(rf"{_PATH_BOUNDARY}(?:{value})")
+    for kind, value in _VENDOR_VALUES.items()
+    if kind is not SecretKind.OPENAI_KEY
+)
+# OpenAI's lookahead for a digit would rescan the rest of the run at each ``sk-`` a separator
+# precedes, so in a path its whole run is matched once and searched for a digit in code. An
+# Anthropic key it takes in is a secret all the same.
+_PATH_OPENAI_KEY: Final = re.compile(rf"{_PATH_BOUNDARY}sk-(?P<value>[A-Za-z0-9_-]{{20,}})")
 
 # The credential's name: its last word is one of these, at the name's start or after `_`, `-`
 # or `.`, and nothing follows it in the name.
@@ -117,6 +141,23 @@ class _Span(NamedTuple):
     kind: SecretKind
 
 
+def path_holds_secret(path: str) -> bool:
+    """Whether ``path`` holds a possible secret anywhere.
+
+    That is any ``scan_secrets`` hit, or a vendor key that starts after ``/``, ``_``, ``-`` or
+    ``.``, as in ``cfg_<key>.txt``. A constant number of passes over ``path``.
+    """
+    return (
+        bool(scan_secrets(path))
+        or any(pattern.search(path) for pattern in _PATH_KEYS)
+        or any(_has_digit(match["value"]) for match in _PATH_OPENAI_KEY.finditer(path))
+    )
+
+
+def _has_digit(text: str) -> bool:
+    return any(character in "0123456789" for character in text)
+
+
 def scan_secrets(text: str) -> tuple[SecretHit, ...]:
     """Return every possible secret in ``text``, in order of line, then position in the line.
 
@@ -127,6 +168,34 @@ def scan_secrets(text: str) -> tuple[SecretHit, ...]:
         for line_number, line in enumerate(text.split("\n"), start=1)
         for span in _find_secrets(line)
     )
+
+
+class SecretSpan(NamedTuple):
+    """Lines ``first_line`` to ``last_line`` of a text, both included and counted from 1."""
+
+    first_line: int
+    last_line: int
+
+
+def secret_line_spans(text: str) -> tuple[SecretSpan, ...]:
+    """Return the lines of ``text`` that may hold a secret, merged so they are sorted and disjoint.
+
+    Each hit of ``scan_secrets`` covers its line, and each private key block covers its lines
+    as ``redact`` bounds the block. Lines end only at a line feed.
+    """
+    spans = sorted(
+        [SecretSpan(hit.diff_line, hit.diff_line) for hit in scan_secrets(text)]
+        + _private_key_block_spans(text)
+    )
+    merged: list[SecretSpan] = []
+    for span in spans:
+        if merged and span.first_line <= merged[-1].last_line:
+            merged[-1] = SecretSpan(
+                merged[-1].first_line, max(merged[-1].last_line, span.last_line)
+            )
+        else:
+            merged.append(span)
+    return tuple(merged)
 
 
 def redact(text: str) -> str:
@@ -203,6 +272,30 @@ def _redact_line(line: str) -> str:
         copied_to = max(copied_to, span.end)
     pieces.append(line[copied_to:])
     return "".join(pieces)
+
+
+def _private_key_block_spans(text: str) -> list[SecretSpan]:
+    """The lines of each private key block, bounded as ``_redact_private_key_blocks`` bounds it.
+
+    A block runs from its ``BEGIN`` line to its ``END`` line, or to the end of the text with no
+    ``END``; an ``END`` with no ``BEGIN`` runs from line 1, or from the line the block before it
+    ends on.
+    """
+    spans: list[SecretSpan] = []
+    line, counted_to = 1, 0
+    block_first: int | None = None
+    previous_end = 1
+    for marker in _PEM_MARKER.finditer(text):
+        line += text.count("\n", counted_to, marker.start())
+        counted_to = marker.start()
+        if marker["begin"] is None:
+            spans.append(SecretSpan(previous_end if block_first is None else block_first, line))
+            previous_end, block_first = line, None
+        elif block_first is None:
+            block_first = line
+    if block_first is not None:
+        spans.append(SecretSpan(block_first, line + text.count("\n", counted_to)))
+    return spans
 
 
 def _redact_private_key_blocks(text: str) -> str:
