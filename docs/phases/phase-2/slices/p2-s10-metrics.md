@@ -1,6 +1,6 @@
 # P2-S10: Measure latency, tokens, cost, outcomes and precision
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S4, P2-S8
 - **Touches:** `pr` (`metrics`, `cli`)
 
@@ -39,3 +39,14 @@ Exit codes: 0 when done, 2 for usage errors or an invalid flag. Prices are the u
 
 ## Notes
 - **README (main session):** describe `metrics`.
+
+Build decisions (lead and developer, 2026-11-08):
+- **Placement:** `pr.reports` reads report and label files, each capped at `MAX_FILE_BYTES` (moved from `label`; used by `label`, `backfill` and `metrics`), and `parse_labels` is the one labels-file parser. The shared statistics (`ratio`, `wilson_interval`, `token_cost_usd`, `to_cents`, `Verdicts`, `Precision`) are in `pr.metrics`, `summarise_runs` in `pr.run_metrics`, and the `metrics/v1` text and JSON renderers in `pr.metrics_report`; each module stays under about 400 lines. `pr.units.distinct_runs` is the one `run_id` dedupe. `ShadowFile` now also parses `reason`, `event_at`, `started_at`, `over_budget` and `report.usage`.
+- **Window:** `--since` and `--until` are each optional UTC days, both included. Labels whose finding is only in runs outside the window are left out silently; a label is an orphan only if no report in `--reports` has its finding.
+- **Latency:** end-to-end covers `reviewed` runs with `origin` `event`; review time covers `reviewed` runs of every origin. Each shows its run count.
+- **Tokens and cost:** over every `reviewed` run in the window. Cost per accepted finding divides the unrounded cost by the accepted shadow labels, then rounds; with none accepted it is null (`n/a`).
+- **Prices:** digits with an optional fraction only, so a sign, exponent, `nan` or `inf` exits 2 naming the flag. With one price, the error names the missing flag.
+- **Labels files:** `--labels` takes several files after one flag (and may repeat). A file that can't be read, is over 10 MB or has any line that isn't `feedback/v1` is skipped whole, with one stderr line naming the file and the first bad line. A report file over 10 MB is skipped with one line.
+- **Comment precision:** units are the distinct (repo, PR, fingerprint) `create` entries with `applied` `done` in `reviewed` comment mode reports; a `failed` or `not_attempted` create was never posted, so it is no unit and no join target; coverage is reaction `accept` or `reject` labels on them over that. `conflict` and `resolved` are counted beside it. A finding's traits come from the latest report with it.
+- **Splits:** by origin, source, rule part, severity, model and prompt version for both channels, plus reject reason. A split's `rejected` excludes duplicates, which have their own count.
+- **Shape:** JSON shares are fractions rounded to 3 places; text shows percentages to 1 place, `n/a` and `not priced`. Money is a cent string. Text from reports is JSON-quoted in text output.

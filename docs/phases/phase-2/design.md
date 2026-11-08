@@ -30,7 +30,10 @@ A new package, `review_bot.pr`, with its own entry point `python -m review_bot.p
 | `pr.units` | Pure: reads `shadow/v1` reports into would-be comments, the unit (repo, PR, key, index), deduped by `run_id`; shared by `label` and `metrics` (added in build, S4) | `would_be_comments`, `WouldBeComment` | S4, S10 |
 | `pr.label` | Interactive judging of downloaded shadow reports | `run_labelling` | S4 |
 | `pr.config` | Parses `.review-bot.toml` from the base commit | `RepoConfig` | S9 |
-| `pr.metrics` | Latency, tokens, cost, outcomes, precision; the baseline | `summarise_runs`, `summarise_baseline` | S10, S11 |
+| `pr.metrics` | Pure statistics: median, nearest rank, Wilson interval, precision, Decimal cost; the baseline | `summarise_baseline`, `wilson_interval`, `token_cost_usd` | S10, S11 |
+| `pr.run_metrics` | Pure: run outcomes, latency, tokens, cost and precision per channel (split from `pr.metrics` in build, S10) | `summarise_runs` | S10 |
+| `pr.metrics_report` | Pure: the `metrics/v1` text and JSON renderers (split from `pr.run_metrics` in build, S10) | `render_metrics_text`, `render_metrics_json` | S10 |
+| `pr.reports` | Reads shadow report and label files, each at most 10 MB; shared by `label`, `backfill` and `metrics` (added in build, S10) | `read_report` | S10 |
 | `render` (changed) | Issue, PR and commit references become inert too (fixes [#37](https://github.com/sleepyshark85/code-review-bot/issues/37)) | | S1 |
 | `settings`, `review`, `providers/claude_agent` (changed) | A cap on the bytes sent to the model, after skipping; an output token cap passed to the Claude CLI | `max_review_bytes`, `max_output_tokens` | S2 |
 

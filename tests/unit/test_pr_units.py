@@ -7,7 +7,7 @@ from shadow_samples import K1, K2, K3, entry, report
 
 from review_bot.pr.cli import main
 from review_bot.pr.feedback import Unit
-from review_bot.pr.units import ShadowFile, WouldBeComment, would_be_comments
+from review_bot.pr.units import ShadowFile, WouldBeComment, distinct_runs, would_be_comments
 from review_bot.providers.mock import MockProvider
 
 
@@ -47,7 +47,11 @@ def test_would_be_comments_shows_each_as_the_report_finished_last_has_it_whateve
         entry(K1, line=12, fingerprint="2" * 16, body="reworded"),
         finished_at="2026-11-08T12:00:00+00:00",
         run_id="later",
-        report={"model": "claude-new", "prompt_version": "p1-v2"},
+        report={
+            "model": "claude-new",
+            "prompt_version": "p1-v2",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
     )
     earlier = report(entry(K1, line=10, fingerprint="1" * 16, body="first"), run_id="earlier")
 
@@ -153,3 +157,10 @@ def test_would_be_comments_keeps_the_same_key_on_two_prs_apart() -> None:
     reports = [report(entry(K1), number=7), report(entry(K1), number=8)]
 
     assert units(would_be_comments(map(parsed, reports))) == [unit(K1, pr=7), unit(K1, pr=8)]
+
+
+def test_distinct_runs_keeps_the_first_report_of_each_run_in_the_order_given() -> None:
+    first, second = parsed(report(run_id="a", number=1)), parsed(report(run_id="b"))
+    again = parsed(report(run_id="a", number=2))
+
+    assert distinct_runs([first, second, again]) == [first, second]

@@ -18,7 +18,7 @@ from review_bot.pr.feedback import Hex16, RepoName, Text, Unit
 from review_bot.pr.outcome import Outcome
 from review_bot.pr.plan import Action
 
-__all__ = ["ShadowEntry", "ShadowFile", "WouldBeComment", "would_be_comments"]
+__all__ = ["ShadowEntry", "ShadowFile", "WouldBeComment", "distinct_runs", "would_be_comments"]
 
 
 class _ReportPart(BaseModel):
@@ -27,7 +27,10 @@ class _ReportPart(BaseModel):
 
 
 class ShadowEntry(_ReportPart):
-    """One entry of a shadow report's ``comments``."""
+    """One entry of a shadow report's ``comments``.
+
+    ``applied`` says whether comment mode posted it; reports from before P2-S5 have none.
+    """
 
     action: str
     fingerprint: Hex16
@@ -38,6 +41,7 @@ class ShadowEntry(_ReportPart):
     file: Text
     line: Annotated[int, Field(ge=1)]
     body: str
+    applied: Literal["done", "failed", "not_attempted"] | None = None
 
 
 class _PullRequest(_ReportPart):
@@ -45,17 +49,24 @@ class _PullRequest(_ReportPart):
     number: Annotated[int, Field(ge=1)]
 
 
+class _Usage(_ReportPart):
+    input_tokens: Annotated[int, Field(ge=0)]
+    output_tokens: Annotated[int, Field(ge=0)]
+
+
 class _Review(_ReportPart):
-    """The fields of the embedded ``report/v1`` object that a label keeps."""
+    """The fields of the embedded ``report/v1`` object that labels and metrics use."""
 
     model: Text
     prompt_version: Text
+    usage: _Usage
 
 
 class ShadowFile(_ReportPart):
-    """The fields of a ``shadow/v1`` report that would-be comments need.
+    """The fields of a ``shadow/v1`` report that would-be comments and metrics need.
 
-    ``comments`` holds only the ``create`` entries, the only ones that are units.
+    ``comments`` holds only the ``create`` entries: the only ones that are units, and the ones
+    that post a comment in comment mode.
     """
 
     # Aliased because ``schema`` is a ``BaseModel`` attribute.
@@ -64,10 +75,14 @@ class ShadowFile(_ReportPart):
     mode: Literal["shadow", "comment"]
     origin: Literal["local", "event", "backfill"]
     outcome: Outcome
+    reason: Text | None
     pr: _PullRequest | None
+    event_at: AwareDatetime
+    started_at: AwareDatetime
     finished_at: AwareDatetime
     report: _Review | None
     comments: tuple[ShadowEntry, ...]
+    over_budget: bool
 
     @field_validator("comments", mode="before")
     @classmethod
@@ -105,23 +120,29 @@ class WouldBeComment:
     report_count: int
 
 
+def distinct_runs(reports: Iterable[ShadowFile]) -> list[ShadowFile]:
+    """The reports in the order given, each run once: the first report with each ``run_id``.
+
+    An artifact downloaded twice is one run, not two reports agreeing.
+    """
+    runs: dict[str, ShadowFile] = {}
+    for report in reports:
+        runs.setdefault(report.run_id, report)
+    return list(runs.values())
+
+
 def would_be_comments(reports: Iterable[ShadowFile]) -> tuple[WouldBeComment, ...]:
     """Group the reports' ``create`` entries into would-be comments.
 
     Only ``shadow`` reports with outcome ``reviewed`` and a pull request count, whatever their
     origin. Within one report, a key's entries are indexed in line order. Each would-be comment
     takes its entry from the report with the latest ``finished_at``; between reports finished at
-    the same moment, the later one given wins. A report given twice, by ``run_id``, counts once.
-    They come in order of repo, PR, file and line.
+    the same moment, the later one given wins. A report given twice, by ``run_id``, counts once
+    (``distinct_runs``). They come in order of repo, PR, file and line.
     """
     latest: dict[Unit, tuple[ShadowEntry, str, _Review]] = {}
     counts: Counter[Unit] = Counter()
-    seen_runs: set[str] = set()
-    for report in sorted(reports, key=lambda report: report.finished_at):
-        # An artifact downloaded twice is one run, not two reports agreeing.
-        if report.run_id in seen_runs:
-            continue
-        seen_runs.add(report.run_id)
+    for report in sorted(distinct_runs(reports), key=lambda report: report.finished_at):
         pr, review = report.pr, report.report
         if report.mode != "shadow" or report.outcome is not Outcome.REVIEWED:
             continue

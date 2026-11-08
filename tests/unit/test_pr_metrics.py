@@ -1,17 +1,24 @@
 import json
 from datetime import UTC, date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
 from review_bot.pr.github import MergedPullRequest
 from review_bot.pr.metrics import (
     Baseline,
+    Prices,
     Spread,
+    Verdicts,
     median,
     nearest_rank,
+    ratio,
     render_baseline_json,
     render_baseline_text,
     summarise_baseline,
+    to_cents,
+    token_cost_usd,
+    wilson_interval,
 )
 
 SINCE = date(2026, 10, 1)
@@ -236,3 +243,66 @@ def test_baseline_text_of_an_empty_window_shows_null() -> None:
         "baseline: commits_after_open median=null p90=null",
         "baseline: fix_prs=0 bug_issues=0 escaped_defects_per_merged_pr=null",
     ]
+
+
+# --- Precision, Wilson interval, coverage and cost (P2-S10) ------------------------------------
+
+
+@pytest.mark.parametrize(("part", "whole", "expected"), [(21, 30, 0.7), (0, 4, 0.0), (3, 0, None)])
+def test_ratio_is_part_over_whole_or_none_for_an_empty_whole(
+    part: int, whole: int, expected: float | None
+) -> None:
+    assert ratio(part, whole) == expected
+
+
+def test_wilson_interval_of_21_out_of_30_is_52_1_to_83_3_percent() -> None:
+    interval = wilson_interval(21, 30)
+
+    assert interval is not None
+    assert (round(interval[0] * 100, 1), round(interval[1] * 100, 1)) == (52.1, 83.3)
+
+
+@pytest.mark.parametrize(("successes", "trials"), [(0, 5), (5, 5), (1, 1)])
+def test_wilson_interval_stays_within_0_and_1(successes: int, trials: int) -> None:
+    interval = wilson_interval(successes, trials)
+
+    assert interval is not None
+    assert 0.0 <= interval[0] < interval[1] <= 1.0
+
+
+def test_wilson_interval_of_no_trials_is_none() -> None:
+    assert wilson_interval(0, 0) is None
+
+
+@pytest.mark.parametrize(("successes", "trials"), [(-1, 3), (4, 3)])
+def test_wilson_interval_refuses_successes_that_dont_fit(successes: int, trials: int) -> None:
+    with pytest.raises(ValueError, match="don't fit"):
+        wilson_interval(successes, trials)
+
+
+def test_verdicts_leave_duplicates_out_of_precision_and_count_them_in_the_lower_bound() -> None:
+    verdicts = Verdicts(accepted=21, rejected=9, duplicates=2)
+
+    assert (verdicts.judged, verdicts.counted) == (32, 30)
+    assert verdicts.precision == 0.7
+    assert verdicts.lower_bound == 21 / 32
+
+
+def test_verdicts_with_no_verdict_have_no_precision_interval_or_lower_bound() -> None:
+    verdicts = Verdicts(0, 0, 0)
+
+    assert (verdicts.precision, verdicts.wilson_95, verdicts.lower_bound) == (None, None, None)
+
+
+def test_token_cost_of_a_million_input_and_100k_output_tokens_at_15_and_75_is_22_50() -> None:
+    prices = Prices(Decimal(15), Decimal(75))
+
+    assert to_cents(token_cost_usd(1_000_000, 100_000, prices)) == Decimal("22.50")
+
+
+@pytest.mark.parametrize(
+    ("amount", "cents"),
+    [("0.125", "0.12"), ("0.135", "0.14"), ("2.5", "2.50"), ("1E+40", "1" + "0" * 40 + ".00")],
+)
+def test_to_cents_rounds_half_even_and_keeps_every_whole_dollar(amount: str, cents: str) -> None:
+    assert str(to_cents(Decimal(amount))) == cents

@@ -8,7 +8,8 @@ import pytest
 from shadow_samples import K1, K2, K3, entry, report, write_report
 
 from review_bot.errors import ConfigError
-from review_bot.pr.label import MAX_REPORT_BYTES, LabellingResult, run_labelling
+from review_bot.pr.label import LabellingResult, run_labelling
+from review_bot.pr.reports import MAX_FILE_BYTES
 
 NOW = datetime(2026, 11, 8, 12, tzinfo=UTC)
 VERDICT_PROMPT = "[a]ccept [r]eject [s]kip: "
@@ -371,7 +372,7 @@ def test_run_labelling_skips_unusable_files_with_one_line_each(reports: Path, la
     write_report(reports, "good", report(entry(K1)))
     (reports / "broken.json").write_text("{", encoding="ascii")
     (reports / "other.json").write_text('{"schema": "report/v1"}', encoding="ascii")
-    (reports / "big.json").write_bytes(b" " * (MAX_REPORT_BYTES + 1))
+    (reports / "big.json").write_bytes(b" " * (MAX_FILE_BYTES + 1))
     (reports / "shadow.md").write_text("not a report", encoding="utf-8")
     terminal = Terminal("a")
 
@@ -380,7 +381,7 @@ def test_run_labelling_skips_unusable_files_with_one_line_each(reports: Path, la
     assert result.files_skipped == 3
     skipped = [line for line in terminal.lines if line.startswith("review-bot pr: skipped")]
     assert skipped == [
-        f"review-bot pr: skipped {reports / 'big.json'}: over {MAX_REPORT_BYTES} bytes",
+        f"review-bot pr: skipped {reports / 'big.json'}: over {MAX_FILE_BYTES} bytes",
         f"review-bot pr: skipped {reports / 'broken.json'}: not JSON",
         f"review-bot pr: skipped {reports / 'other.json'}: not a shadow/v1 report "
         "(schema: Input should be 'shadow/v1')",
