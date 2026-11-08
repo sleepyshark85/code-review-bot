@@ -6,6 +6,12 @@ from typing import Any, get_args
 import pytest
 from diff_samples import section
 
+from review_bot.context.codeowners import (
+    NO_CODEOWNERS,
+    CodeOwners,
+    CodeOwnersStatus,
+    parse_codeowners,
+)
 from review_bot.diff_parser import parse_diff
 from review_bot.errors import (
     DiffEmptyError,
@@ -117,6 +123,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "scope",
         "since",
         "config",
+        "codeowners",
     ]
     assert document["schema"] == "shadow/v1"
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
@@ -224,11 +231,19 @@ def test_render_shadow_json_writes_each_comment_and_withheld_finding() -> None:
         "file": "a.py",
         "line": 1,
         "applied": "not_attempted",
+        "owners": [],
     }
     assert comment["body"].endswith(f"anchor={comment['anchor']} -->")
     assert document["withheld"] == [
-        {"fingerprint": secret.fingerprint, "file": "a.py", "line": 2, "reason": "possible_secret"}
+        {
+            "fingerprint": secret.fingerprint,
+            "file": "a.py",
+            "line": 2,
+            "reason": "possible_secret",
+            "owners": [],
+        }
     ]
+    assert document["codeowners"] is None
 
 
 def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
@@ -453,9 +468,13 @@ def bot_comment(comment_id: int, line: int | None, text: str) -> BotComment:
     )
 
 
-def build_in_comment_mode(*existing: BotComment) -> dict[str, Any]:
+def build_in_comment_mode(
+    *existing: BotComment,
+    findings: tuple[ReviewedFinding, ...] = (reviewed(1),),
+    codeowners: CodeOwners | None = None,
+) -> dict[str, Any]:
     shadow = build_shadow_report(
-        result(reviewed(1)),
+        result(*findings),
         mode=Mode.COMMENT,
         existing=existing,
         settings=SETTINGS,
@@ -465,6 +484,7 @@ def build_in_comment_mode(*existing: BotComment) -> dict[str, Any]:
         finished_at=STARTED,
         origin=Origin.EVENT,
         pr=PR,
+        codeowners=codeowners,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -491,6 +511,7 @@ def test_render_shadow_json_in_comment_mode_writes_paired_comments_then_resolves
         "line": None,
         "body": None,
         "applied": "not_attempted",
+        "owners": [],
     }
 
 
@@ -628,3 +649,53 @@ def test_build_shadow_report_refuses_inconsistent_incremental_inputs(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         build_incremental(review, since=since, incremental=incremental, mode=mode)
+
+
+CODEOWNERS_SOURCE = f".github/CODEOWNERS@{'b' * 40}"
+# A comment, and a finding withheld for the secret its rationale quotes.
+COMMENTED_AND_WITHHELD = (reviewed(1), reviewed(2, rationale=f"Leaks {GITHUB_TOKEN}"))
+
+
+def test_render_shadow_json_names_the_owners_of_every_entry_and_the_codeowners_read() -> None:
+    codeowners = parse_codeowners(b"* @org/core\n!x @bad\n", source=CODEOWNERS_SOURCE)
+
+    document = build_in_comment_mode(
+        bot_comment(5, None, "gone"), findings=COMMENTED_AND_WITHHELD, codeowners=codeowners
+    )
+
+    assert [entry["owners"] for entry in document["comments"]] == [["@org/core"], ["@org/core"]]
+    assert [entry["owners"] for entry in document["withheld"]] == [["@org/core"]]
+    assert document["codeowners"] == {
+        "source": CODEOWNERS_SOURCE,
+        "status": "found",
+        "rules": 1,
+        "invalid_lines": 1,
+    }
+    assert document["summary_body"].endswith("Owners:\n\n- `@org/core`: 2")
+
+
+@pytest.mark.parametrize(
+    ("codeowners", "expected"),
+    [
+        (
+            NO_CODEOWNERS,
+            {"source": None, "status": "absent", "rules": 0, "invalid_lines": 0},
+        ),
+        (
+            CodeOwners(source=CODEOWNERS_SOURCE, status=CodeOwnersStatus.NOT_A_FILE),
+            {"source": CODEOWNERS_SOURCE, "status": "not_a_file", "rules": 0, "invalid_lines": 0},
+        ),
+    ],
+    ids=["absent", "not-a-file"],
+)
+def test_render_shadow_json_without_usable_codeowners_names_no_owner(
+    codeowners: CodeOwners, expected: dict[str, object]
+) -> None:
+    document = build_in_comment_mode(findings=COMMENTED_AND_WITHHELD, codeowners=codeowners)
+
+    assert document["codeowners"] == expected
+    assert [entry["owners"] for entry in (*document["comments"], *document["withheld"])] == [
+        [],
+        [],
+    ]
+    assert "Owners:" not in document["summary_body"]

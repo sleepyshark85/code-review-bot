@@ -78,3 +78,72 @@ P3-S1 appends `mode` and `context` to every `report/v1` document (AC10, AC11), s
 ### Coverage
 
 Not measured by the tester, who ran only this file. For coverage of `git`, `context`, `providers.mock`, `prompt`, `review`, `report` and `cli`, see the main session's `pytest --cov`.
+
+## P3-S11: Route findings to code owners
+
+Spec: [p3-s11-codeowners-routing.md](slices/p3-s11-codeowners-routing.md), as amended by the designer on 2026-11-09. Tests: [`tests/integration/test_p3_s11_codeowners_routing.py`](../../../tests/integration/test_p3_s11_codeowners_routing.py), 84 cases. They were written from the spec's criteria, Limits and Interfaces, design.md (the pipeline, report keys, Q8) and ADR 0008 while the developer built the slice, before any of its code was read.
+
+**Status: every criterion passes. All 84 cases pass, from this file alone, on the developer's uncommitted working tree** (base `4e2b706`).
+
+**History:** the first version had 71 cases against the approved spec. On the developer's tree, 70 passed. The one failure was AC1's own example: a finding on `billing/README.md` can't exist, because Phase 1 skips `.md` files as docs. That test was flagged rather than weakened, and the designer amended the spec (AC1 to AC3, AC5, AC6). The tests were then updated to the amendment:
+- AC1 now uses `*.js @docs` on `billing/widget.js`, and the verbatim README test was removed.
+- AC3 gains anchoring cases.
+- AC2 and AC5 gain directory and symlink cases.
+
+No test was changed to make it pass. The only other edit after a run shortened one Limits test's file name, which hit Windows' path limit.
+
+### Gate
+
+Only this file was run, as the coordinator asked (the full suite runs out of memory locally). One P2-S1 case was also run, to check the changed key lists against a local `shadow` run. `ruff format --check` and `ruff check` are clean on the new file. For the full gate, see the main session's run.
+
+### Seam and set-up (assumed)
+
+- **Every run** calls `review_bot.pr.cli.main(["run", "--event", PATH, "--repo", DIR, "--out", OUT, "--provider", NAME, "--mode", MODE], provider=MockProvider(findings=[...])[, github=FAKE])` in process, as P2-S2's, P2-S5's and P2-S9's suites do. `FAKE` is P2-S5's `GitHub` wrapper over `review_bot.pr.fake_github.FakeGitHubClient`. "Either mode" is checked by running AC1, AC2, AC5, AC6 and AC7 in both `shadow` and `comment`.
+- **Each repository** is a real git repository in `tmp_path` (P2-S2's `GitRepo`). It has a base commit on `main` with `src/base.py` and the CODEOWNERS files under test, then a head commit on `feature`, left checked out so the working tree holds the head's CODEOWNERS. A symbolic link is staged in git's index as mode `120000`, as P2-S9 does, so no symlink support is needed on disk. A directory at a location is a file beneath it (`.github/CODEOWNERS/inner`). The head commit stages only its own files.
+- **Findings** are high `logic` AI findings on lines the head adds, one per line. Owners are read per file from every `comments` and `withheld` entry.
+- **`shadow/v1`** (spec Interfaces): `codeowners` is appended after `config`, and `owners` joins each comment and withheld entry. P2-S1's `load_shadow` pins exact key sets, so its lists were extended (see Earlier suites changed). `codeowners` is compared whole: `{"source": "<path>@<base SHA>", "status": "found", "rules": N, "invalid_lines": M}`. For `too_large` and `invalid`, only `status`, `rules` 0 and `invalid_lines` 0 are checked, not `source`. For `not_a_file`, the whole object is checked in AC2's test, with `source` naming the first non-file (spec Notes).
+- **The summary** is `shadow.json`'s `summary_body`, parsed with P1-S11's parser. In comment mode the posted summary (`FakeGitHubClient.summary`) is checked too. The `Owners:` section is the list right after the line whose visible text is `Owners:`, bold or not. That line may end the paragraph before it, as `Withheld findings:` does. Each item's visible text is `<owner>: <count>`, with the owner as its only code span. The owners are followed by `and K more`, then `no owner: N`, both as list items.
+- **AC7's check** is P2-S1 AC11's: no `@` (so no mention and no email) and no link outside a code span. "Bodies unchanged" compares each comment's body with the same PR's run without CODEOWNERS. In comment mode it also compares each posted body.
+- **"Isn't read"** (AC8) is observed by wrapping `subprocess.Popen.__init__`, as P3-S1 did. Each refusal (`action`, `fork`, `no_credential`) runs on two copies of a PR, one whose base has `.github/CODEOWNERS` and one without it. Both must start the same git commands (repository paths normalised), and none may name CODEOWNERS. `action` and `fork` must start no git at all, and `codeowners` must be null or `absent` with no rules.
+- **3 MB** is read as either 3,000,000 bytes or 3 MiB: the tests use 3,300,000 bytes (over both) and 2,900,000 bytes (under both).
+
+### Criteria
+
+Test names drop the `test_p3_s11_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_last_matching_line_gives_the_owners` ×2 (modes; the spec's example). `ac1_an_earlier_line_doesnt_win_over_a_later_broader_one` | pass (3) |
+| AC2 | `ac2_only_the_first_existing_location_is_read` ×6 (all three, root and docs, docs only; both modes). `ac2_first_location_with_no_rules_still_hides_the_others`. `ac2_head_changing_codeowners_doesnt_change_its_own_routing`. `ac2_head_adding_a_higher_location_is_ignored`. `ac2_head_deleting_codeowners_doesnt_remove_the_owners`. `ac2_head_adding_codeowners_to_a_repo_without_one_is_ignored`. `ac2_non_file_location_is_skipped_for_the_next` ×6 (a directory, then root; a symlink, then root; a symlink and a directory, then `docs/`; both modes). `ac2_no_regular_file_at_any_location_is_not_a_file` ×3 (a directory alone, a symlink to a valid file alone, and non-files at every location) | pass (20) |
+| AC3 | `ac3_pattern_matches_as_github_documents` ×9: `/docs/`, `logs/`, `apps/**` (not `src/apps/x.py`), `**/build` (at depth 1 and 4), `*.js`, `docs/*` (not `docs/x/a.py` or `src/docs/a.py`), `lib/util.py` and `src/*.py` (anchored by a middle `/`), and `**/api/views.py` (at the root and at depth). Each pattern is checked against paths it must and mustn't match | pass (9) |
+| AC4 | `ac4_invalid_line_is_skipped_and_counted` ×10 (`!`, `[`, a bare word, `@org/a/b`, `@`, `@org/`, `alice@`, `@alice@example.com`, `<alice@example.com>`, one bad owner among good ones). `ac4_user_team_and_email_owners_are_kept` ×4. `ac4_pattern_without_owners_matching_last_gives_no_owners`. `ac4_comments_and_blank_lines_are_ignored_and_not_counted`. `ac4_all_invalid_kinds_together` | pass (17) |
+| AC5 | `ac5_no_codeowners_is_absent_and_nobody_owns` ×2. `ac5_unusable_codeowners_has_its_status_and_no_owners` ×8 (over 3 MB, not UTF-8, a symlink, a directory; both modes; same exit and comments as without CODEOWNERS; time-bound). `ac5_just_under_3_mb_is_read` | pass (11) |
+| AC6 | `ac6_every_comment_and_withheld_entry_has_its_owners` ×2 (10 comments, 3 withheld). `ac6_summary_counts_by_owner_then_name_then_no_owner` ×2 (counts that only add up with the withheld findings included, and a two-owner finding counted for each owner). `ac6_posted_summary_has_the_owners_section`. `ac6_more_than_10_owners_lists_10_then_and_k_more`. `ac6_exactly_10_owners_lists_all_10`. `ac6_no_codeowners_has_no_owners_section`. `ac6_codeowners_matching_no_finding_has_no_owners_section`. `ac6_no_findings_has_no_owners_section` | pass (10) |
+| AC7 | `ac7_summary_has_no_mention_outside_a_code_span` ×2. `ac7_posted_summary_and_bodies_have_no_mention_outside_a_code_span`. `ac7_comment_bodies_are_the_same_as_without_codeowners` ×2. `ac7_hostile_owner_text_is_skipped_or_stays_in_code` ×4 (one or two backticks in an email, HTML in an email, `@_x_`). Each must be either skipped or shown in a code span, with no HTML | pass (9) |
+| AC8 | `ac8_refused_run_doesnt_read_codeowners` ×3 (`action`, `fork`, `no_credential`) | pass (3) |
+| Limits | `limits_many_double_star_rules_match_in_bounded_time`: 500 rules of 60 `**` segments against a 30-deep path. `limits_star_heavy_patterns_match_in_bounded_time`: 200 rules of 80 `*a` against an 80-`a` name. Both under 60 s | pass (2) |
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+- **`tests/integration/test_p2_s1_shadow_report_local.py`:** `SHADOW_KEYS` appends `codeowners`, and `COMMENT_KEYS` and `WITHHELD_KEYS` add `owners` (spec Interfaces; design.md's "Report keys, appended only"). Every suite that reads `shadow.json` through `load_shadow` needs this. No assertion was weakened. One P2-S1 case passes on the developer's tree, so local `shadow` runs carry the keys too.
+
+### Readings for the designer
+
+1. **`not_a_file`'s `source`** follows the spec's Build note: it names the first non-file found. `ac2_no_regular_file_at_any_location_is_not_a_file` checks the whole `codeowners` object, `source` included. An earlier Build note sentence, which said there was no fallback to the next location, contradicted the amended AC2. The designer has since removed it.
+2. **AC6's "no owner: N" and "and K more"** are read as list items in the `Owners:` list, after the owners.
+3. **AC6's "no owners at all"** is read as: no finding has an owner. So a CODEOWNERS that matches no finding shows no section, not even `no owner: N`.
+4. **AC6's name order** is plain code-point order (`@org/api` before `alice@example.com`). The tests use only lowercase names, so case folding isn't decided.
+5. **`rules`** counts valid lines, including a pattern with no owners (AC4's `/docs/`). Comments, blank lines and skipped lines aren't counted.
+6. **AC4's owner forms** are tested only where they are clear-cut: `first.last@example.co.uk`, `@alice-b` and `@org/team-name` are expected to be kept. The spec doesn't decide edge forms such as `+` in an email or `_` in a user name. AC7's hostile cases accept either answer, as long as nothing escapes a code span. The Notes' length caps on owner parts aren't tested, as no criterion states them.
+7. **Not tested:**
+   - **`**/build` matching a root `build/` directory:** Phase 1 skips root `build/` as generated, so no finding can land there.
+   - **`*.js` against a directory named `x.js`:** the spec doesn't cover it.
+   - **`source` for files over 3 MB or not UTF-8**, and the git read's own limits (cap-plus-one, timeout), which need a git that misbehaves.
+
+### Coverage
+
+Not measured by the tester, who ran only this file. For coverage of `context.codeowners`, `pr.runner`, `pr.shadow` and `pr.comments`, see the main session's `pytest --cov`.

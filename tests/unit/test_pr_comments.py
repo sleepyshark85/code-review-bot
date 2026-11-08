@@ -3,6 +3,7 @@ from collections.abc import Callable
 import pytest
 from markdown_it import MarkdownIt
 
+from review_bot.context.codeowners import CodeOwners, parse_codeowners
 from review_bot.errors import ErrorCategory
 from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
 from review_bot.pr.comments import (
@@ -392,3 +393,65 @@ def test_a_body_without_a_summary_marker_on_its_last_line_is_not_the_summary(bod
 
 def test_a_summary_marker_with_a_sha_is_recognised_for_the_run_that_records_one() -> None:
     assert is_summary(f"text\n\n<!-- review-bot:v1 summary reviewed={'a' * 40} -->")
+
+
+def owned_plan(*files: str) -> CommentPlan:
+    """One comment on the first file, and one withheld finding on each other file."""
+    first, *rest = files
+    return CommentPlan(
+        comments=(PlannedComment(Action.CREATE, reviewed(file=first), ANCHOR),),
+        withheld=tuple(
+            WithheldFinding(reviewed(file=file), WithholdReason.OVER_LIMIT) for file in rest
+        ),
+    )
+
+
+def owners_of(text: str) -> CodeOwners:
+    return parse_codeowners(text.encode("utf-8"), source="CODEOWNERS@" + "a" * 40)
+
+
+def test_reviewed_summary_groups_comments_and_withheld_findings_by_owner() -> None:
+    codeowners = owners_of("/billing/ @org/billing alice@example.com\n/api/ @org/api\n")
+    plan = owned_plan("billing/a.py", "billing/b.py", "api/c.py", "docs/d.md")
+
+    summary = reviewed_summary(plan, threshold=Severity.LOW, codeowners=codeowners)
+
+    assert summary.split("\n\n")[-2:] == [
+        "Owners:",
+        "- `@org/billing`: 2\n- `alice@example.com`: 2\n- `@org/api`: 1\n- no owner: 1",
+    ]
+
+
+def test_reviewed_summary_lists_10_owners_then_the_rest_as_a_count() -> None:
+    files = [f"d{index:02}/a.py" for index in range(12)]
+    codeowners = owners_of("".join(f"/d{index:02}/ @user{index:02}\n" for index in range(12)))
+
+    summary = reviewed_summary(owned_plan(*files), threshold=Severity.LOW, codeowners=codeowners)
+
+    items = summary.split("\n\n")[-1].split("\n")
+    assert items[0] == "- `@user00`: 1"
+    assert items[9] == "- `@user09`: 1"
+    assert items[10:] == ["- and 2 more"]
+
+
+def test_reviewed_summary_without_owners_has_no_owners_section() -> None:
+    plan = owned_plan("a.py", "b.py")
+
+    assert "Owners:" not in reviewed_summary(plan, threshold=Severity.LOW)
+    unowned = owners_of("/docs/ @docs\n")
+    assert "Owners:" not in reviewed_summary(plan, threshold=Severity.LOW, codeowners=unowned)
+
+
+def test_reviewed_summary_puts_every_owner_in_a_code_span() -> None:
+    codeowners = owners_of("* @org/core alice@example.com @bob\n")
+
+    summary = reviewed_summary(owned_plan("a.py"), threshold=Severity.LOW, codeowners=codeowners)
+
+    tokens = inline_tokens(summary)
+    texts = [content for kind, content in tokens if kind == "text"]
+    assert not any("@" in text for text in texts)
+    assert {content for kind, content in tokens if kind == "code_inline"} >= {
+        "@org/core",
+        "alice@example.com",
+        "@bob",
+    }

@@ -2,15 +2,18 @@
 
 Model and diff text reaches these bodies only through ``render.escape_markdown`` and
 ``render.markdown_path``, so it can't mention, link, reference or hide anything (Phase 2 design,
-Safety on the PR path). ``read_marker``, ``is_summary`` and ``read_reviewed_sha`` read posted
+Safety on the PR path). A code owner from CODEOWNERS goes in a code span, which its syntax
+keeps whole. ``read_marker``, ``is_summary`` and ``read_reviewed_sha`` read posted
 bodies back.
 """
 
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from review_bot.context.codeowners import NO_CODEOWNERS, CodeOwners, owners_for
 from review_bot.errors import ErrorCategory
 from review_bot.findings import Category, RuleId, Severity
 from review_bot.pr.outcome import Outcome, Reason
@@ -35,6 +38,8 @@ __all__ = [
 _MAX_RATIONALE_CHARS: Final = 2_000
 # How many withheld findings or secrets a summary names.
 _MAX_LISTED: Final = 20
+# How many owners a summary names.
+_MAX_LISTED_OWNERS: Final = 10
 # Bounds each listed path, so a summary stays under the design's 60,000 characters: escaped and
 # fenced, 100 characters take at most about 1,000, and a summary names at most 20 paths.
 _MAX_LISTED_PATH_CHARS: Final = 100
@@ -150,14 +155,20 @@ def _shown_rationale(rationale: str) -> str:
 
 
 def reviewed_summary(
-    plan: CommentPlan, *, threshold: Severity, since: str | None = None, open_comments: int = 0
+    plan: CommentPlan,
+    *,
+    threshold: Severity,
+    since: str | None = None,
+    open_comments: int = 0,
+    codeowners: CodeOwners = NO_CODEOWNERS,
 ) -> str:
-    """Return the summary of a review: its counts, then up to 20 withheld findings.
+    """Return the summary of a review: its counts, up to 20 withheld findings, then owners.
 
     With nothing planned or withheld, it says there are no findings at or above ``threshold``.
     A review of only the changes since the commit ``since`` names that commit, calls its
     findings new, and always gives ``open_comments``, the bot's comments open on the pull
-    request after the run; a whole review gives that count only when it isn't zero.
+    request after the run; a whole review gives that count only when it isn't zero. Last, it
+    counts the findings of each owner ``codeowners`` names (``_owners_section``).
     """
     headline = f"{_HEADLINE} `{Outcome.REVIEWED}`."
     if since is not None:
@@ -169,15 +180,41 @@ def reviewed_summary(
         counts = f"{headline} {len(plan.comments)} comments, {len(plan.withheld)} withheld."
     if since is not None or open_comments:
         counts = f"{counts} {_open_count(open_comments)}"
-    if not plan.withheld:
-        return counts
-    listed = [
-        f"{_location(item.reviewed.finding.file, item.reviewed.finding.line)}: `{item.reason}`"
-        for item in plan.withheld[:_MAX_LISTED]
-    ]
-    return _NEW_PARAGRAPH.join(
-        (counts, "Withheld findings:", _listed(listed, total=len(plan.withheld)))
+    sections = [counts]
+    if plan.withheld:
+        listed = [
+            f"{_location(item.reviewed.finding.file, item.reviewed.finding.line)}: `{item.reason}`"
+            for item in plan.withheld[:_MAX_LISTED]
+        ]
+        sections += ["Withheld findings:", _listed(listed, total=len(plan.withheld))]
+    owners = _owners_section(plan, codeowners)
+    if owners is not None:
+        sections += ["Owners:", owners]
+    return _NEW_PARAGRAPH.join(sections)
+
+
+def _owners_section(plan: CommentPlan, codeowners: CodeOwners) -> str | None:
+    """How many planned and withheld findings each code owner has, or None if none has any.
+
+    Owners go most findings first, then by name, at most 10; then how many findings have no
+    owner, if any. Each owner is in a code span, so it notifies nobody (Phase 3 design, Q8).
+    """
+    findings = (
+        *(comment.reviewed.finding for comment in plan.comments),
+        *(item.reviewed.finding for item in plan.withheld),
     )
+    counts: Counter[str] = Counter()
+    unowned = 0
+    for finding in findings:
+        owners = owners_for(codeowners, finding.file)
+        counts.update(owners)
+        unowned += not owners
+    if not counts:
+        return None
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    listed = [f"`{owner}`: {count}" for owner, count in ranked[:_MAX_LISTED_OWNERS]]
+    section = _listed(listed, total=len(ranked))
+    return f"{section}\n- no owner: {unowned}" if unowned else section
 
 
 def _location(path: str, line: int) -> str:

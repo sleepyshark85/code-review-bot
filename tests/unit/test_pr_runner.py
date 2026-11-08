@@ -1,14 +1,17 @@
 import asyncio
 import dataclasses
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from audit_records import read_records
 from git_samples import commit, git, init_repo
 
 from review_bot.audit import AuditLog
+from review_bot.context.codeowners import MAX_CODEOWNERS_BYTES
 from review_bot.errors import ErrorCategory, GitError, GitHubError, ProviderError
 from review_bot.findings import Finding
 from review_bot.git import GitRepo
@@ -17,7 +20,7 @@ from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeGitHubClient
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
-from review_bot.pr.shadow import Mode, Origin, Scope, ShadowReport
+from review_bot.pr.shadow import Mode, Origin, Scope, ShadowReport, render_shadow_json
 from review_bot.providers.base import LLMProvider, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -1009,3 +1012,166 @@ def test_an_invalid_config_run_keeps_the_last_reviewed_commit_in_the_summary(
     assert github.summary is not None
     assert "(`invalid_config`)" in github.summary
     assert github.summary.endswith(f"<!-- review-bot:v1 summary reviewed={reviewed} -->")
+
+
+def codeowners_pr(
+    repo: Path, base_files: Mapping[str, str | bytes], head_files: Mapping[str, str] = CHANGED_APP
+) -> PullRequestRef:
+    """A pull request changing ``app.py``, whose base also holds ``base_files``."""
+    base = commit(repo, {"app.py": "def run():\n    return 1\n", **base_files})
+    head = commit(repo, head_files)
+    return dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head)
+
+
+def shadow_json(shadow: ShadowReport) -> dict[str, Any]:
+    document: dict[str, Any] = json.loads(render_shadow_json(shadow))
+    return document
+
+
+def test_run_pull_request_names_owners_from_the_base_codeowners_not_the_heads(
+    repo: Path, run: Runner
+) -> None:
+    pr = codeowners_pr(
+        repo,
+        {".github/CODEOWNERS": "* @org/core\n"},
+        {**CHANGED_APP, ".github/CODEOWNERS": "* @org/other\n"},
+    )
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert [entry["owners"] for entry in document["comments"]] == [["@org/core"]]
+    assert document["codeowners"] == {
+        "source": f".github/CODEOWNERS@{pr.base_sha}",
+        "status": "found",
+        "rules": 1,
+        "invalid_lines": 0,
+    }
+    assert "- `@org/core`: 1" in shadow.summary_body
+
+
+@pytest.mark.parametrize(
+    ("paths", "used"),
+    [
+        ((".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"), ".github/CODEOWNERS"),
+        (("CODEOWNERS", "docs/CODEOWNERS"), "CODEOWNERS"),
+        (("docs/CODEOWNERS",), "docs/CODEOWNERS"),
+    ],
+)
+def test_run_pull_request_reads_only_the_first_codeowners_that_exists(
+    repo: Path, run: Runner, paths: tuple[str, ...], used: str
+) -> None:
+    pr = codeowners_pr(repo, {path: f"* @owner{index}\n" for index, path in enumerate(paths)})
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert document["codeowners"]["source"] == f"{used}@{pr.base_sha}"
+    assert [entry["owners"] for entry in document["comments"]] == [["@owner0"]]
+
+
+def test_run_pull_request_without_codeowners_names_no_owner(repo: Path, run: Runner) -> None:
+    pr = codeowners_pr(repo, {})
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert document["codeowners"] == {
+        "source": None,
+        "status": "absent",
+        "rules": 0,
+        "invalid_lines": 0,
+    }
+    assert [entry["owners"] for entry in document["comments"]] == [[]]
+
+
+def test_run_pull_request_with_codeowners_too_large_goes_on_with_no_owner(
+    repo: Path, run: Runner
+) -> None:
+    pr = codeowners_pr(repo, {"CODEOWNERS": "* @org/core\n" + "#" * MAX_CODEOWNERS_BYTES})
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert (shadow.outcome, document["codeowners"]["status"]) == (Outcome.REVIEWED, "too_large")
+    assert [entry["owners"] for entry in document["comments"]] == [[]]
+
+
+def symlink_base(repo: Path, files: Mapping[str, str]) -> str:
+    """A base commit holding ``files`` and a symbolic link at ``.github/CODEOWNERS``.
+
+    The link's blob is staged directly, so the test needs no symlink support on disk; the next
+    commit unstages it, since no file on disk backs it, so only this commit holds it.
+    """
+    commit(repo, {"app.py": "def run():\n    return 1\n", **files})
+    target = repo.parent / "link-target"
+    target.write_text("../CODEOWNERS", encoding="utf-8")
+    link = git(repo, "hash-object", "-w", str(target))
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{link},.github/CODEOWNERS")
+    git(repo, "commit", "-q", "-m", "link")
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_run_pull_request_passes_over_a_codeowners_symlink_to_the_next_path(
+    repo: Path, run: Runner
+) -> None:
+    base = symlink_base(repo, {"CODEOWNERS": "* @org/core\n"})
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=commit(repo, CHANGED_APP))
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert document["codeowners"]["source"] == f"CODEOWNERS@{base}"
+    assert [entry["owners"] for entry in document["comments"]] == [["@org/core"]]
+
+
+def test_run_pull_request_with_only_non_files_for_codeowners_names_no_owner(
+    repo: Path, run: Runner
+) -> None:
+    base = symlink_base(repo, {"CODEOWNERS/inner": "x\n"})
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=commit(repo, CHANGED_APP))
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[finding_at(2, "high")])))
+
+    document = shadow_json(shadow)
+    assert (shadow.outcome, document["codeowners"]) == (
+        Outcome.REVIEWED,
+        {
+            "source": f".github/CODEOWNERS@{base}",
+            "status": "not_a_file",
+            "rules": 0,
+            "invalid_lines": 0,
+        },
+    )
+    assert [entry["owners"] for entry in document["comments"]] == [[]]
+
+
+def test_a_refused_run_reads_no_codeowners(repo: Path, run: Runner) -> None:
+    shadow = run(
+        unknown_commits(pr_for(repo, is_fork=True)), factory=CountingFactory(MockProvider())
+    )
+
+    assert shadow.codeowners is None
+
+
+def test_a_run_planning_no_comments_reads_no_codeowners(repo: Path, run: Runner) -> None:
+    pr = codeowners_pr(repo, {"CODEOWNERS": "* @org/core\n"})
+    provider = MockProvider(error=ProviderError(ErrorCategory.TRANSIENT, "Try again."))
+
+    shadow = run(pr, factory=CountingFactory(provider))
+
+    assert (shadow.outcome, shadow.codeowners) == (Outcome.FAILED, None)
+
+
+def test_run_pull_request_in_comment_mode_posts_owners_only_in_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    pr = codeowners_pr(repo, {".github/CODEOWNERS": "* @org/core\n"})
+
+    run(pr, factory=scripted(finding_at(2, "high")), github=github)
+
+    (posted,) = github.reviews[0].comments
+    assert "@" not in posted.body
+    assert github.summary is not None
+    assert "Owners:\n\n- `@org/core`: 1" in github.summary
