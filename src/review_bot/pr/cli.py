@@ -50,6 +50,7 @@ from review_bot.console import (
     write_output,
 )
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
+from review_bot.git import GIT_TIMEOUT_S, GitRepo
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.feedback import (
@@ -58,7 +59,6 @@ from review_bot.pr.feedback import (
     labels_from_signals,
     render_feedback_line,
 )
-from review_bot.pr.git import GitRepo
 from review_bot.pr.github import GitHubClient
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
 from review_bot.pr.metrics import (
@@ -99,7 +99,6 @@ _AUDIT_LOG_VARIABLE: Final = "REVIEW_BOT_AUDIT_LOG"
 _AUDIT_LOG_NAME: Final = "audit.jsonl"
 _JSON_NAME: Final = "shadow.json"
 _MARKDOWN_NAME: Final = "shadow.md"
-_GIT_TIMEOUT_S: Final = 60
 _NO_CREDENTIAL_HINT: Final = (
     "review-bot pr: ANTHROPIC_API_KEY is unset or empty in CI, so nothing was reviewed. Add it "
     "as a repository secret to review pull requests."
@@ -854,7 +853,7 @@ def _run(
     run = run_pull_request(
         pr,
         mode=command.mode,
-        git=GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S),
+        git=GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S),
         make_provider=lambda: build_provider(settings) if provider is None else provider,
         github=None if make_github is None else make_github(pr.repo),
         settings=settings,
@@ -888,7 +887,7 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
             f"backfill would make up to {len(pending)} calls, more than --max-calls "
             f"{command.max_calls}. Pass --max-calls {len(pending)} if that budget is approved."
         )
-    git = GitRepo(command.repo_dir, timeout_s=_GIT_TIMEOUT_S)
+    git = GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S)
     settings = command.settings
     # Filled as each pull request ends, so the counts cover those done before any stop.
     reports: list[ShadowReport] = []

@@ -43,6 +43,12 @@ class Settings(BaseModel):
     audit_log: Path = DEFAULT_AUDIT_LOG_PATH
     format: Literal["text", "json", "markdown"] = "text"
     triage: bool = False
+    # Context mode (Phase 3 design, Spend and caps): None means diff mode, with no tools.
+    context_repo: Path | None = None
+    context_rev: str = Field(default="HEAD", min_length=1)
+    max_tool_calls: int = Field(default=12, ge=1, le=30)
+    max_tool_result_bytes: int = Field(default=16_000, ge=1_000, le=64_000)
+    max_tool_total_bytes: int = Field(default=96_000, gt=0, le=400_000)
 
 
 def in_ci(environ: Mapping[str, str]) -> bool:

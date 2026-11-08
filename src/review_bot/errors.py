@@ -80,7 +80,15 @@ class EventError(InputError):
 
 
 class GitError(InputError):
-    """A git command in the pull request's clone failed, timed out or couldn't start."""
+    """A git command in a clone failed, timed out or couldn't start.
+
+    ``exit_code`` is git's when it ran and failed, and None otherwise.
+    """
+
+    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
+        """Record git's exit code, if any, alongside the message."""
+        super().__init__(message)
+        self.exit_code = exit_code
 
 
 class NotARegularFileError(InputError):

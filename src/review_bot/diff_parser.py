@@ -24,6 +24,7 @@ __all__ = [
     "LineKind",
     "ParsedDiff",
     "SkipReason",
+    "glob_matches",
     "parse_diff",
 ]
 
@@ -306,7 +307,7 @@ def _skip_reason(header: _FileHeader, exclude: Sequence[str]) -> SkipReason | No
     built_in = _skip_reason_for(path)
     if built_in is not None:
         return built_in
-    if any(_glob_matches(path, glob) for glob in exclude):
+    if any(glob_matches(path, glob) for glob in exclude):
         return SkipReason.EXCLUDED_BY_CONFIG
     return None
 
@@ -518,8 +519,8 @@ def _matches_any(name: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatchcase(name, pattern) for pattern in patterns)
 
 
-def _glob_matches(path: str, glob: str) -> bool:
-    """Whether ``path`` matches ``glob``, as ``parse_diff`` describes."""
+def glob_matches(path: str, glob: str) -> bool:
+    """Whether ``path`` matches ``glob``, with the rules ``parse_diff`` gives for ``exclude``."""
     segments = path.split("/")
     if "/" not in glob:
         return fnmatchcase(segments[-1], glob)

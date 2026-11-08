@@ -73,6 +73,9 @@ REPORT_KEYS = (
     "counts",
     "skipped_files",
     "usage",
+    # Appended by P3-S1 (AC10, AC11): `mode` is `diff` and `context` null without --context-repo.
+    "mode",
+    "context",
 )
 COUNT_KEYS = ("reported", "below_threshold", "dropped", "deduped", "rejected", "undecided")
 FINDING_KEYS = frozenset(
@@ -135,6 +138,8 @@ def report(run: Any) -> dict[str, Any]:
     )
     assert isinstance(document, dict), "the document isn't a JSON object"
     assert set(document) == set(REPORT_KEYS), sorted(document)
+    # Report keys are appended only (Phase 3 design, "Report keys, appended only").
+    assert tuple(document)[-2:] == ("mode", "context"), tuple(document)
     assert document["schema"] == SCHEMA
     assert isinstance(document["run_id"], str)
     assert document["run_id"]

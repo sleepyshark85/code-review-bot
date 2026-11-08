@@ -34,6 +34,7 @@ from review_bot.pr.shadow import (
     render_shadow_json,
     render_shadow_markdown,
 )
+from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
 from review_bot.render import report_document
 from review_bot.report import PipelineResult
@@ -68,6 +69,7 @@ def result(*findings: ReviewedFinding, model_called: bool = True) -> PipelineRes
         (),
         parsed=DIFF,
         model_called=model_called,
+        prompt_version=PROMPT_VERSION,
     )
 
 

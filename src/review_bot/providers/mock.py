@@ -1,6 +1,6 @@
 """A scripted provider that needs no model, account or network."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 from review_bot.errors import ProviderError
@@ -20,12 +20,12 @@ _CANNED_FINDING: Final = Finding(
 
 
 class MockProvider:
-    """Records each request and answers as scripted.
+    """Records each request, makes any scripted tool calls, and answers as scripted.
 
     With no arguments it returns the canned finding.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every parameter is keyword-only
         self,
         *,
         findings: Sequence[Finding] | None = None,
@@ -33,26 +33,34 @@ class MockProvider:
         error: ProviderError | None = None,
         warnings: Sequence[str] = (),
         usage: TokenUsage | None = None,
+        tool_calls: Sequence[tuple[str, Mapping[str, object]]] = (),
     ) -> None:
         """Script the answer.
 
         Args:
             findings: Findings to return instead of the canned one.
             raw_output: Model text to pass through ``parse_findings``; wins over ``findings``.
-            error: An error to raise; wins over both.
+            error: An error to raise, after any tool calls; wins over both.
             warnings: Warnings to return with the findings.
             usage: The token usage to report; None reports none.
+            tool_calls: Tool names and arguments to call, in order, through a request's
+                ``tools`` before answering. A request with no tools gets no calls.
         """
         self.requests: list[ReviewRequest] = []
+        self.tool_results: list[str] = []
         self._findings = (_CANNED_FINDING,) if findings is None else tuple(findings)
         self._raw_output = raw_output
         self._error = error
         self._warnings = tuple(warnings)
         self._usage = TokenUsage(0, 0) if usage is None else usage
+        self._tool_calls = tuple(tool_calls)
 
     async def review(self, request: ReviewRequest) -> ReviewResponse:
-        """Record the request and return or raise what was scripted."""
+        """Record the request, make the scripted tool calls, and return or raise as scripted."""
         self.requests.append(request)
+        if request.tools is not None:
+            for name, arguments in self._tool_calls:
+                self.tool_results.append(await request.tools.call(name, arguments))
         if self._error is not None:
             raise self._error
         findings = self._findings if self._raw_output is None else parse_findings(self._raw_output)

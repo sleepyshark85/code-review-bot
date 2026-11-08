@@ -1,3 +1,6 @@
+import dataclasses
+from collections.abc import Mapping
+
 import pytest
 
 from review_bot.errors import ErrorCategory, ProviderError
@@ -94,3 +97,47 @@ async def test_review_with_scripted_usage_reports_it() -> None:
     response = await MockProvider(usage=TokenUsage(10, 20_000)).review(REQUEST)
 
     assert response.usage == TokenUsage(10, 20_000)
+
+
+class RecordingTools:
+    """A tool executor that answers each call with its name."""
+
+    definitions = ()
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Mapping[str, object]]] = []
+
+    async def call(self, name: str, arguments: Mapping[str, object]) -> str:
+        self.calls.append((name, arguments))
+        return f"result of {name}"
+
+
+async def test_review_makes_scripted_tool_calls_in_order_and_keeps_results() -> None:
+    tools = RecordingTools()
+    script = [("read", {"path": "a.py"}), ("glob", {"pattern": "*"})]
+    provider = MockProvider(findings=[], tool_calls=script)
+
+    await provider.review(dataclasses.replace(REQUEST, tools=tools))
+
+    assert tools.calls == script
+    assert provider.tool_results == ["result of read", "result of glob"]
+
+
+async def test_review_with_no_tools_makes_no_scripted_calls() -> None:
+    provider = MockProvider(findings=[], tool_calls=[("read", {"path": "a.py"})])
+
+    await provider.review(REQUEST)
+
+    assert provider.tool_results == []
+
+
+async def test_review_makes_tool_calls_before_raising_a_scripted_error() -> None:
+    tools = RecordingTools()
+    provider = MockProvider(
+        error=ProviderError(ErrorCategory.AUTH, "x"), tool_calls=[("grep", {"literal": "x"})]
+    )
+
+    with pytest.raises(ProviderError):
+        await provider.review(dataclasses.replace(REQUEST, tools=tools))
+
+    assert [name for name, _ in tools.calls] == ["grep"]

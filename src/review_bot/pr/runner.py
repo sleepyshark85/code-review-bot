@@ -25,6 +25,7 @@ from review_bot.errors import (
     NotARegularFileError,
     RepoConfigError,
 )
+from review_bot.git import GitRepo
 from review_bot.pr.config import (
     CONFIG_PATH,
     DEFAULT_REPO_CONFIG,
@@ -35,7 +36,6 @@ from review_bot.pr.config import (
     with_repo_threshold,
 )
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.git import GitRepo
 from review_bot.pr.github import BotComment, GitHubClient, NewComment
 from review_bot.pr.incremental import changed_hunks
 from review_bot.pr.outcome import Outcome, Reason

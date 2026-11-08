@@ -40,5 +40,7 @@
     "rejected": 0,
     "undecided": 0
   },
-  "skipped_files": []
+  "skipped_files": [],
+  "mode": "diff",
+  "context": null
 }

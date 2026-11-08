@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import FileDiff, ParsedDiff
 from review_bot.findings import ReviewedFinding
 from review_bot.policy import Decision
@@ -49,6 +50,9 @@ class PipelineResult:
     ``parsed`` is the reviewed diff, which every finding is anchored in. ``model_called`` is
     False when every file was skipped; ``verification`` and ``decision`` are then empty, as are
     ``warnings``. ``warnings`` are the provider's, already written to stderr and the audit log.
+    ``prompt_version`` is the version of the prompt the review used. ``context_commit`` is the
+    commit the tools read in context mode, and None in diff mode; ``ledger`` holds each tool
+    call, in order.
     """
 
     verification: VerifyResult
@@ -57,7 +61,10 @@ class PipelineResult:
     skipped_files: tuple[FileDiff, ...]
     parsed: ParsedDiff
     model_called: bool
+    prompt_version: str
     warnings: tuple[str, ...] = ()
+    context_commit: str | None = None
+    ledger: tuple[ToolCall, ...] = ()
 
 
 class TriageDecision(StrEnum):
