@@ -23,21 +23,26 @@ The change applies from the next pull request event. The review jobs are never a
 1. In the Anthropic Console, create a new key in the bot's workspace.
 2. `gh secret set ANTHROPIC_API_KEY --repo sleepyshark85/code-review-bot`, then paste the new key when asked.
 3. Delete the old key in the Console.
-4. Push to any open pull request, or re-run its last `review` workflow run, and check the shadow job ends `outcome=reviewed`.
+4. Push to an open pull request that changes code, or re-run its last `review` workflow run, and check the review job ends `outcome=reviewed`. A docs-only PR is skipped without calling the model, so it proves nothing about the key.
 
-A removed or invalid key never fails a pull request: the run ends `skipped` with reason `no_credential`, or `failed` with reason `auth`.
+A removed or invalid key never blocks a merge. A missing key ends the run `skipped` with reason `no_credential`. An invalid key fails the job with `failed`/`auth` (exit `8`), which shows on the PR but isn't a required check.
 
 ## Check spend
 
-- The bot's workspace in the Anthropic Console shows usage and its spend limit. When the limit is hit, runs end `failed` with reason `rate_limit` or `permanent` until it resets.
+- The bot's workspace in the Anthropic Console shows usage and its spend limit. When the limit is hit, runs end `failed` with reason `rate_limit` (HTTP 429) or `permanent` (a billing error) until it resets.
 - Tokens per run are in each shadow report (`report.usage`). For totals and cost over a period, download the reports and run `python -m review_bot.pr metrics --reports DIR --labels FILE --price-input-usd-per-mtok X --price-output-usd-per-mtok Y`.
 
 ## Read a failed run
 
 1. Open the pull request's `review` workflow run and the failed job.
-2. The `Review the pull request` step prints one line: `outcome=… reason=… comments=… withheld=… run_id=…`.
-3. The job summary shows the shadow report. Download the artifact `shadow-pr<N>-<head sha>-<attempt>` for `shadow.json` (outcome, reason, timings and token usage) and `shadow.md`. Run the same review locally with `python -m review_bot.pr run --event EVENT.json --repo CLONE --out DIR` to get `DIR/audit.jsonl`, which holds every stage decision with scrubbed provider diagnostics and no diff text.
-4. The job's exit code matches the README's exit codes: `7` to `13` a provider failure, `18` a GitHub API failure, `19` a bad event file or missing commit, `2` invalid settings.
+2. When a report was written, the `Review the pull request` step's last line ends with `outcome=… reason=… comments=… withheld=… run_id=…`. A hint or error line may come before it. Exits `2` and `19` can stop before any report is written; the error line says why.
+3. The job summary shows the report. Download the artifact, `shadow-pr<N>-<head sha>-<attempt>` (shadow job) or `comment-pr<N>-<head sha>-<attempt>` (comment job). It holds `shadow.json` (outcome, reason, timings and token usage), `shadow.md`, and `audit.jsonl` (every stage decision, with scrubbed provider diagnostics and no diff text).
+4. The job's exit code matches the README's exit codes:
+   - `2`: invalid settings or an invalid `.review-bot.toml`;
+   - `7` to `13`: a provider failure;
+   - `17`: the audit log couldn't be written;
+   - `18`: a GitHub API call failed;
+   - `19`: a bad event file or a missing commit.
 
 ## Outcomes and reasons
 
@@ -48,7 +53,7 @@ A removed or invalid key never fails a pull request: the run ends `skipped` with
 | `blocked_secret` | none | A possible secret is in the diff; nothing was sent to the model | Check the diff, then rotate the secret if it's real |
 | `skipped` | `nothing_to_review` | Only docs, lock, generated or excluded files changed | None |
 | `skipped` | `empty` | The diff is empty | None |
-| `skipped` | `too_large` | The diff is over `--max-review-bytes` | Split the PR, or raise `REVIEW_BOT_MAX_REVIEW_BYTES` in the workflow |
+| `skipped` | `too_large` | The raw diff is over `REVIEW_BOT_MAX_DIFF_BYTES`, or the diff after skipped files is over `REVIEW_BOT_MAX_REVIEW_BYTES` (both set in the workflow) | Split the PR, or raise the cap in the workflow |
 | `skipped` | `fork` | The PR comes from a fork, which never gets the key | None |
 | `skipped` | `action` | An event type the bot doesn't review | None |
 | `skipped` | `draft` | Comment mode waits until the draft is ready for review | None |
@@ -59,8 +64,10 @@ A removed or invalid key never fails a pull request: the run ends `skipped` with
 | `failed` | `invalid_config` | The base commit's `.review-bot.toml` is invalid | Fix the file in a separate PR |
 | `failed` | `auth` | The key was rejected | Rotate the key |
 | `failed` | `rate_limit` | Rate limit or spend limit reached | Wait, or raise the workspace limit |
-| `failed` | `transient`, `unavailable` | The provider was briefly unavailable | Re-run the job |
-| `failed` | `refusal`, `invalid_output`, `permanent` | The model refused or answered in a form the bot rejects | Re-run once; if it repeats, open an issue labelled `review-bot` with the run link |
+| `failed` | `transient` | The provider was briefly unavailable | Re-run the job |
+| `failed` | `unavailable` | The Claude Code CLI wasn't found in the job | Check the install step; open an issue labelled `review-bot` |
+| `failed` | `permanent` | The call failed in a way retrying won't fix, including a billing error or spend limit | Check the workspace's spend and billing, then the job log |
+| `failed` | `refusal`, `invalid_output` | The model refused, or answered in a form the bot rejects | Re-run once; if it repeats, open an issue labelled `review-bot` with the run link |
 
 ## Branch protection
 
