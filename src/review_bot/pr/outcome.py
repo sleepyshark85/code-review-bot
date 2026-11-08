@@ -29,5 +29,7 @@ class Reason(StrEnum):
     ACTION = "action"
     FORK = "fork"
     NO_CREDENTIAL = "no_credential"
+    # Comment mode waits until a draft is ready for review.
+    DRAFT = "draft"
     # A backfilled pull request whose base or head commit isn't in the clone.
     MISSING_COMMIT = "missing_commit"

@@ -68,9 +68,13 @@ SHADOW_KEYS = (
     "caps",
     "over_budget",
 )
+# `applied` joined in P2-S5 (design.md, `shadow/v1`: later slices add keys, never remove them).
 COMMENT_KEYS = frozenset(
-    {"action", "fingerprint", "rule_part", "anchor", "source", "severity", "file", "line", "body"}
-)
+    {
+        "action", "fingerprint", "rule_part", "anchor", "source", "severity", "file", "line",
+        "body", "applied",
+    }
+)  # fmt: skip
 WITHHELD_KEYS = frozenset({"fingerprint", "file", "line", "reason"})
 TIMESTAMPS = ("event_at", "started_at", "finished_at")
 RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}

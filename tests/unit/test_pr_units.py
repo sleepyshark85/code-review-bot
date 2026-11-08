@@ -116,6 +116,15 @@ def test_would_be_comments_come_in_order_of_pr_file_and_line() -> None:
     assert units(comments) == [unit(K1, pr=3), unit(K2), unit(K1), unit(K3)]
 
 
+def test_shadow_file_reads_a_comment_mode_report_keeping_only_its_create_entries() -> None:
+    resolve = entry(K3, action="resolve") | {"source": None, "body": None, "line": None}
+    document = report(entry(K1), entry(K2, action="keep"), resolve, mode="comment")
+
+    shadow = parsed(document)
+
+    assert [item.action for item in shadow.comments] == ["create"]
+
+
 def test_shadow_file_needs_the_report_object_of_a_reviewed_report() -> None:
     with pytest.raises(ValueError, match="report/v1"):
         parsed(report(entry(K1), report=None))

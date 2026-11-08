@@ -2,20 +2,29 @@
 
 Model and diff text reaches these bodies only through ``render.escape_markdown`` and
 ``render.markdown_path``, so it can't mention, link, reference or hide anything (Phase 2 design,
-Safety on the PR path).
+Safety on the PR path). ``read_marker`` reads a posted body back.
 """
 
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Final
 
 from review_bot.errors import ErrorCategory
-from review_bot.findings import Severity
+from review_bot.findings import Category, RuleId, Severity
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import CommentPlan, PlannedComment
 from review_bot.render import escape_markdown, markdown_path
 from review_bot.secret_scan import SecretHit
 
-__all__ = ["blocked_summary", "comment_body", "not_reviewed_summary", "reviewed_summary"]
+__all__ = [
+    "Marker",
+    "blocked_summary",
+    "comment_body",
+    "not_reviewed_summary",
+    "read_marker",
+    "reviewed_summary",
+]
 
 _MAX_RATIONALE_CHARS: Final = 2_000
 # How many withheld findings or secrets a summary names.
@@ -28,6 +37,22 @@ _REACTION_REQUEST: Final = (
     "Is this right and worth acting on? React with a thumbs-up if so, or a thumbs-down if not."
 )
 _NEW_PARAGRAPH: Final = "\n\n"
+# What ``comment_body`` writes on its first and last lines, read back exactly.
+_SEVERITY_HEADING: Final = re.compile(rf"\*\*({'|'.join(Severity)})\*\* ")
+_MARKER: Final = re.compile(
+    r"<!-- review-bot:v1 fingerprint=([0-9a-f]{16}) rule=(\S+) anchor=([0-9a-f]{16}) -->"
+)
+_RULE_PARTS: Final = frozenset((*RuleId, *(f"ai:{category}" for category in Category)))
+
+
+@dataclass(frozen=True, slots=True)
+class Marker:
+    """What a posted comment's body says about its finding: its marker and its severity."""
+
+    fingerprint: str
+    rule_part: str
+    anchor: str
+    severity: Severity
 
 
 def comment_body(comment: PlannedComment) -> str:
@@ -50,6 +75,24 @@ def comment_body(comment: PlannedComment) -> str:
     )
     paragraphs = (heading, _shown_rationale(finding.rationale), _REACTION_REQUEST, marker)
     return _NEW_PARAGRAPH.join(paragraphs)
+
+
+def read_marker(body: str) -> Marker | None:
+    """Read back a body ``comment_body`` wrote, or return None if it isn't one.
+
+    The last line must be exactly a marker with a known rule part, and the first line must start
+    with the severity heading. Call it only on the bot's own comments, so nobody else's text is
+    parsed (ADR 0009).
+    """
+    lines = body.split("\n")
+    marker = _MARKER.fullmatch(lines[-1])
+    heading = _SEVERITY_HEADING.match(lines[0])
+    if marker is None or heading is None:
+        return None
+    fingerprint, rule_part, anchor = marker.groups()
+    if rule_part not in _RULE_PARTS:
+        return None
+    return Marker(fingerprint, rule_part, anchor, Severity(heading.group(1)))
 
 
 def _shown_rationale(rationale: str) -> str:
@@ -101,7 +144,7 @@ def blocked_summary(hits: Sequence[SecretHit]) -> str:
 def not_reviewed_summary(outcome: Outcome, reason: Reason | ErrorCategory) -> str:
     """Return the summary of a skipped or failed run, which has no findings."""
     if outcome is Outcome.FAILED:
-        detail = "The review didn't complete, so there are no findings."
+        detail = "The review is unavailable: it didn't complete, so there are no findings."
     else:
         detail = "Nothing was sent to the model."
     return f"{_HEADLINE} `{outcome}` (`{reason}`). {detail}"

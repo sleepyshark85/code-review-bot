@@ -159,15 +159,15 @@ Decision: [ADR 0009](../../adr/0009-comment-state-on-the-pr.md).
 - **Identity:** the bot's comments are those whose REST `user.login` is `github-actions[bot]` with `user.type` `Bot`. Threads are found by comment ID, never by GraphQL login (which reads `github-actions`).
 - **Markers:** an inline comment's last line is `<!-- review-bot:v1 fingerprint=<16 hex> rule=<rule part> anchor=<16 hex> -->`. `anchor` is the first 16 hex digits of the anchored line's hash, as [ADR 0003](../../adr/0003-finding-fingerprints.md) defines it. The summary comment's last line is `<!-- review-bot:v1 summary reviewed=<40 hex> -->`. Bodies are rendered inert ([safety](#safety-on-the-pr-path)), so model or diff text can't produce `<!--`.
 - **Pairing, not ordinals:** the fingerprint's ordinal depends on which findings a run sees, so it shifts under incremental review, or when an identical line is added above. A comment's **key** is its path, its rule part and its anchor. The path follows renames in the PR diff, and from S7 also in the diff since the last reviewed commit. **Candidates** are open threads and threads a person resolved. A thread the bot resolved is never a candidate, so a moved comment's old thread, or a resolved comment whose line comes back, can't capture a finding. Each current finding pairs with at most one candidate, in this order:
-  1. the same fingerprint;
+  1. the same fingerprint, when the comment's current line is the finding's line;
   2. otherwise the same key, choosing the nearest current line (outdated comments last), and between candidates at equal distance, the one with equal severity;
   3. any remaining tie goes to an open thread over a person-resolved one, then to the oldest comment ID.
 
-  A paired comment keeps its posted fingerprint, which stays its identity for labels.
+  Pairs are taken best first across all findings and comments sharing a key. A paired comment keeps its posted fingerprint, which stays its identity for labels. A newly created comment never takes a fingerprint an open or person-resolved comment holds; it takes the next free ordinal for its key, so two open comments never share one (changed in build, P2-S5).
 - **GitHub's outdated flag is only a hint.** No GitHub document says it means the anchored line itself changed, so no comment is re-posted or resolved on that flag alone.
 - **Plan rules for a paired comment:**
   - **keep:** open, not outdated; **update** instead if its severity changed.
-  - **move:** open but outdated. The old thread is resolved, and the same body and fingerprint are posted on the **pairing finding's line**, which settles it when the anchor text appears on several lines. The move goes ahead only if that line can be commented on in the PR diff; otherwise nothing is resolved or posted, and the finding is withheld `not_commentable`.
+  - **move:** open but outdated. The old thread is resolved, and a comment rendered from the pairing finding, keeping the posted fingerprint, is posted on the **pairing finding's line**, which settles it when the anchor text appears on several lines. The move goes ahead only if that line can be commented on in the PR diff; otherwise nothing is resolved or posted, and the finding is withheld `not_commentable`.
   - **nothing:** a thread **a person resolved** is never posted again. A finding that only a bot-resolved thread matches is unpaired, so it is created like any other.
 - **Plan rules for everything else:**
   - **create:** an unpaired finding, if its line can be commented on in the PR diff (otherwise withheld `not_commentable`).

@@ -15,6 +15,7 @@ from shadow_samples import K1, K2, entry, report, write_report
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding
 from review_bot.pr.cli import main
+from review_bot.pr.fake_github import FakeGitHubClient
 from review_bot.providers.mock import MockProvider
 
 # Assembled, so no key is written literally.
@@ -299,8 +300,8 @@ def test_run_in_shadow_mode_reviews_and_reports_mode_shadow(
     assert (document["mode"], document["outcome"]) == ("shadow", "reviewed")
 
 
-@pytest.mark.parametrize("mode", ["comment", "off", ""])
-def test_run_with_a_mode_other_than_shadow_exits_2_with_one_line_before_any_work(
+@pytest.mark.parametrize("mode", ["off", ""])
+def test_run_with_an_unknown_mode_exits_2_with_one_line_before_any_work(
     mode: str, clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repo, base, head = clone
@@ -316,6 +317,101 @@ def test_run_with_a_mode_other_than_shadow_exits_2_with_one_line_before_any_work
     assert err.count("\n") == 1
     assert f"argument --mode: invalid choice: {mode!r}" in err
     assert "Run with --help for usage." in err
+    assert not out.exists()
+    assert provider.requests == []
+
+
+def run_comment_mode(clone: tuple[Path, str, str], out: Path, github: FakeGitHubClient) -> int:
+    repo, base, head = clone
+    argv = ["run", "--event", str(pull_request_event(repo, base, head)), "--repo", str(repo)]
+    finding = Finding(
+        file="app.py", line=2, severity="high", category="logic", rationale="Why.", confidence=1.0
+    )
+    return main(
+        [*argv, "--out", str(out), "--mode", "comment", "--provider", "mock"],
+        provider=MockProvider(findings=[finding]),
+        github=github,
+    )
+
+
+def test_run_in_comment_mode_posts_through_the_github_client_and_reports_it(
+    clone: tuple[Path, str, str], tmp_path: Path
+) -> None:
+    github = FakeGitHubClient()
+    out = tmp_path / "out"
+
+    exit_code = run_comment_mode(clone, out, github)
+
+    document = shadow_json(out)
+    assert exit_code == 0
+    assert document["mode"] == "comment"
+    assert [(item["action"], item["applied"]) for item in document["comments"]] == [
+        ("create", "done")
+    ]
+    assert [call.name for call in github.calls] == [
+        "list_bot_comments",
+        "post_review",
+        "write_summary",
+    ]
+
+
+def test_run_in_comment_mode_with_a_failed_github_call_writes_the_report_and_exits_18(
+    clone: tuple[Path, str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REVIEW_BOT_AUDIT_LOG")
+    github = FakeGitHubClient()
+    github.fail_on("post_review")
+    out = tmp_path / "out"
+
+    exit_code = run_comment_mode(clone, out, github)
+
+    err = capsys.readouterr().err
+    assert exit_code == 18
+    assert "post_review" in err
+    assert [item["applied"] for item in shadow_json(out)["comments"]] == ["failed"]
+    assert read_records(out / "audit.jsonl")[-1]["data"] == {
+        "exit_code": 18,
+        "error": "GitHubError",
+    }
+
+
+def test_run_in_shadow_mode_never_calls_an_injected_github_client(
+    clone: tuple[Path, str, str], tmp_path: Path
+) -> None:
+    repo, base, head = clone
+    github = FakeGitHubClient()
+    argv = ["run", "--event", str(pull_request_event(repo, base, head)), "--repo", str(repo)]
+
+    exit_code = main(
+        [*argv, "--out", str(tmp_path / "out"), "--provider", "mock"],
+        provider=MockProvider(findings=[]),
+        github=github,
+    )
+
+    assert exit_code == 0
+    assert github.calls == []
+
+
+def test_run_in_comment_mode_without_a_github_client_exits_2_before_any_work(
+    clone: tuple[Path, str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, base, head = clone
+    out = tmp_path / "out"
+    provider = MockProvider()
+
+    exit_code = run_pr(
+        pull_request_event(repo, base, head), repo, out, "--mode", "comment", provider=provider
+    )
+
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert err == (
+        "review-bot: error: --mode comment needs the GitHub client, which this version doesn't "
+        "have yet, so nothing was reviewed. Run with --mode shadow.\n"
+    )
     assert not out.exists()
     assert provider.requests == []
 

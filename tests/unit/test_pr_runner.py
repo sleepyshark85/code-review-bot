@@ -9,13 +9,14 @@ from audit_records import read_records
 from git_samples import commit, init_repo
 
 from review_bot.audit import AuditLog
-from review_bot.errors import ErrorCategory, GitError, ProviderError
+from review_bot.errors import ErrorCategory, GitError, GitHubError, ProviderError
 from review_bot.findings import Finding
 from review_bot.pr.event import PullRequestRef
+from review_bot.pr.fake_github import FakeGitHubClient
 from review_bot.pr.git import GitRepo
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
-from review_bot.pr.shadow import Origin, ShadowReport
+from review_bot.pr.shadow import Mode, Origin, ShadowReport
 from review_bot.providers.base import LLMProvider, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -72,12 +73,15 @@ class Runner:
         factory: CountingFactory,
         settings: Settings = MOCK,
         environ: Mapping[str, str] | None = None,
+        github: FakeGitHubClient | None = None,
     ) -> ShadowReport:
         return asyncio.run(
             run_pull_request(
                 pr,
+                mode=Mode.SHADOW if github is None else Mode.COMMENT,
                 git=GitRepo(self.repo, timeout_s=60),
                 make_provider=factory,
+                github=github,
                 settings=settings,
                 audit=self.audit,
                 environ={} if environ is None else environ,
@@ -325,3 +329,228 @@ def test_backfill_pull_request_with_a_provider_failure_reports_it_as_failed(
     shadow = backfill(pr_for(repo), run, CountingFactory(MockProvider(error=error)))
 
     assert (shadow.outcome, shadow.reason) == (Outcome.FAILED, ErrorCategory.RATE_LIMIT)
+
+
+# Comment mode, against FakeGitHubClient.
+
+
+def finding_on(line: int, severity: str = "high") -> Finding:
+    return Finding(
+        file="app.py",
+        line=line,
+        severity=severity,
+        category="logic",
+        rationale="Why.",
+        confidence=1.0,
+    )
+
+
+def names(github: FakeGitHubClient) -> list[str]:
+    return [call.name for call in github.calls]
+
+
+def applied(shadow: ShadowReport) -> list[tuple[str, str]]:
+    entries = [(comment.planned.action, comment.applied) for comment in shadow.comments]
+    return entries + [("resolve", resolve.applied) for resolve in shadow.resolves]
+
+
+def scripted(*findings: Finding) -> CountingFactory:
+    return CountingFactory(MockProvider(findings=list(findings)))
+
+
+def test_run_pull_request_in_comment_mode_posts_one_review_on_the_head_then_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    pr = pr_for(repo)
+
+    shadow = run(pr, factory=scripted(finding_on(2)), github=github)
+
+    assert names(github) == ["list_bot_comments", "post_review", "write_summary"]
+    (review,) = github.reviews
+    (posted,) = review.comments
+    assert (review.commit_sha, posted.path, posted.line) == (pr.head_sha, "app.py", 2)
+    assert posted.body == shadow.comments[0].body
+    assert github.summary == shadow.summary_body
+    assert shadow.mode is Mode.COMMENT
+    assert applied(shadow) == [("create", "done")]
+    assert shadow.error is None
+
+
+def test_run_pull_request_in_comment_mode_finding_the_same_again_posts_nothing(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    pr = pr_for(repo)
+    run(pr, factory=scripted(finding_on(2)), github=github)
+    github.calls.clear()
+
+    shadow = run(pr, factory=scripted(finding_on(2)), github=github)
+
+    assert names(github) == ["list_bot_comments", "write_summary"]
+    assert applied(shadow) == [("keep", "done")]
+    assert len(github.comments) == 1
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [({"is_draft": True}, Reason.DRAFT), ({"is_fork": True}, Reason.FORK)],
+)
+def test_run_pull_request_in_comment_mode_refuses_without_any_call(
+    repo: Path, run: Runner, changes: dict[str, object], reason: Reason
+) -> None:
+    github = FakeGitHubClient()
+    factory = CountingFactory(MockProvider())
+
+    shadow = run(unknown_commits(pr_for(repo, **changes)), factory=factory, github=github)
+
+    assert_refused(shadow, run, factory, reason)
+    assert github.calls == []
+
+
+def test_run_pull_request_in_comment_mode_with_nothing_to_review_makes_no_call(
+    repo: Path, run: Runner
+) -> None:
+    base = commit(repo, {"README.md": "one\n"})
+    head = commit(repo, {"README.md": "two\n"})
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head)
+    github = FakeGitHubClient()
+
+    shadow = run(pr, factory=CountingFactory(MockProvider()), github=github)
+
+    assert shadow.reason is Reason.NOTHING_TO_REVIEW
+    assert github.calls == []
+
+
+def test_run_pull_request_in_comment_mode_with_a_failed_review_only_writes_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    error = ProviderError(ErrorCategory.TRANSIENT, "Try again.")
+
+    shadow = run(pr_for(repo), factory=CountingFactory(MockProvider(error=error)), github=github)
+
+    assert names(github) == ["write_summary"]
+    assert github.summary == shadow.summary_body
+    assert "unavailable" in shadow.summary_body
+    assert shadow.error is error
+
+
+def test_run_pull_request_in_comment_mode_with_a_secret_only_writes_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    aws_key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    base = commit(repo, {"keys.py": "x = 1\n"})
+    head = commit(repo, {"keys.py": f"x = {aws_key!r}\n"})
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head)
+    github = FakeGitHubClient()
+
+    shadow = run(pr, factory=CountingFactory(MockProvider()), github=github)
+
+    assert shadow.outcome is Outcome.BLOCKED_SECRET
+    assert names(github) == ["write_summary"]
+    assert aws_key not in str(github.summary)
+
+
+def failing_run_setup(repo: Path, run: Runner) -> tuple[PullRequestRef, FakeGitHubClient]:
+    """A pull request whose next run creates, updates and resolves one comment each."""
+    github = FakeGitHubClient()
+    pr = pr_for(repo)
+    run(pr, factory=scripted(finding_on(2)), github=github)
+    first = github.comments[0]
+    fingerprint = first.body.split("fingerprint=")[1][:16]
+    github.add_comment(path="app.py", line=9, body=first.body.replace(fingerprint, "e" * 16))
+    github.calls.clear()
+    return pr, github
+
+
+def test_run_pull_request_stops_at_a_failed_call_but_still_writes_the_summary(
+    repo: Path, run: Runner
+) -> None:
+    pr, github = failing_run_setup(repo, run)
+    github.fail_on("update_comment")
+
+    shadow = run(pr, factory=scripted(finding_on(1), finding_on(2, "low")), github=github)
+
+    assert names(github) == [
+        "list_bot_comments",
+        "post_review",
+        "update_comment",
+        "write_summary",
+    ]
+    assert sorted(applied(shadow)) == [
+        ("create", "done"),
+        ("resolve", "not_attempted"),
+        ("update", "failed"),
+    ]
+    assert isinstance(shadow.error, GitHubError)
+    assert "update_comment" in str(shadow.error)
+    assert github.summary == shadow.summary_body
+
+
+def test_run_pull_request_with_only_the_summary_failing_reports_its_error(
+    repo: Path, run: Runner
+) -> None:
+    pr, github = failing_run_setup(repo, run)
+    github.fail_on("write_summary")
+
+    shadow = run(pr, factory=scripted(finding_on(1), finding_on(2, "low")), github=github)
+
+    assert {status for _, status in applied(shadow)} == {"done"}
+    assert "write_summary" in str(shadow.error)
+
+
+def test_run_pull_request_posts_a_move_before_resolving_its_old_thread(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    pr = pr_for(repo)
+    run(pr, factory=scripted(finding_on(2)), github=github)
+    github.mark_outdated(1)
+    github.calls.clear()
+    github.fail_on("resolve_thread")
+
+    shadow = run(pr, factory=scripted(finding_on(2)), github=github)
+
+    assert names(github) == [
+        "list_bot_comments",
+        "post_review",
+        "resolve_thread",
+        "write_summary",
+    ]
+    assert applied(shadow) == [("move", "failed")]
+    assert len(github.comments) == 2
+
+
+def test_run_pull_request_raises_when_the_bots_comments_cant_be_listed(
+    repo: Path, run: Runner
+) -> None:
+    github = FakeGitHubClient()
+    github.fail_on("list_bot_comments")
+
+    with pytest.raises(GitHubError, match="list_bot_comments"):
+        run(pr_for(repo), factory=scripted(finding_on(2)), github=github)
+
+    assert names(github) == ["list_bot_comments"]
+
+
+@pytest.mark.parametrize("mode", [Mode.SHADOW, Mode.COMMENT])
+def test_run_pull_request_needs_a_github_client_exactly_in_comment_mode(
+    repo: Path, tmp_path: Path, mode: Mode
+) -> None:
+    github = FakeGitHubClient() if mode is Mode.SHADOW else None
+
+    with pytest.raises(ValueError, match="exactly in comment mode"):
+        asyncio.run(
+            run_pull_request(
+                pr_for(repo),
+                mode=mode,
+                git=GitRepo(repo, timeout_s=60),
+                make_provider=MockProvider,
+                github=github,
+                settings=MOCK,
+                audit=AuditLog(tmp_path / "audit.jsonl", clock=lambda: NOW),
+                environ={},
+                clock=lambda: NOW,
+            )
+        )

@@ -5,7 +5,7 @@ reason it was refused, to ``build_shadow_report``.
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -17,6 +17,7 @@ from review_bot.errors import (
     DiffNotUtf8Error,
     DiffTooLargeError,
     ErrorCategory,
+    GitHubError,
     ProviderError,
     SecretDetectedError,
 )
@@ -27,9 +28,11 @@ from review_bot.pr.comments import (
     reviewed_summary,
 )
 from review_bot.pr.event import PullRequestRef
+from review_bot.pr.github import BotComment
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import (
     DEFAULT_MAX_OPEN_COMMENTS,
+    Action,
     PlannedComment,
     WithheldFinding,
     plan_comments,
@@ -42,18 +45,19 @@ from review_bot.settings import Settings
 
 __all__ = [
     "REPORTED_ERRORS",
+    "Applied",
+    "Mode",
     "Origin",
     "ReportedError",
     "ShadowComment",
     "ShadowReport",
+    "ShadowResolve",
     "build_shadow_report",
     "render_shadow_json",
     "render_shadow_markdown",
 ]
 
 _SCHEMA: Final = "shadow/v1"
-# Nothing posts before comment mode (S5).
-_MODE: Final = "shadow"
 
 # The errors that still end in a report, as ``skipped``, ``blocked_secret`` or ``failed``. The
 # tuple is for ``except``, the alias for types; a unit test keeps them equal.
@@ -85,12 +89,36 @@ class Origin(StrEnum):
     BACKFILL = "backfill"
 
 
+class Mode(StrEnum):
+    """Whether a run only reports what it would post, or also posts it on the pull request."""
+
+    SHADOW = "shadow"
+    COMMENT = "comment"
+
+
+class Applied(StrEnum):
+    """Whether a planned change reached the pull request. Nothing is applied in shadow mode."""
+
+    DONE = "done"
+    FAILED = "failed"
+    NOT_ATTEMPTED = "not_attempted"
+
+
 @dataclass(frozen=True, slots=True)
 class ShadowComment:
-    """A planned comment and the body it would be posted with."""
+    """A planned comment, the body it would be posted with, and whether that was applied."""
 
     planned: PlannedComment
     body: str
+    applied: Applied = Applied.NOT_ATTEMPTED
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowResolve:
+    """One of the bot's comments to resolve, and whether that was applied."""
+
+    comment: BotComment
+    applied: Applied = Applied.NOT_ATTEMPTED
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,12 +127,13 @@ class ShadowReport:
 
     ``pr`` is None exactly when ``origin`` is ``local``. ``report`` is the ``report/v1`` object,
     with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
-    ``withheld`` are in comment order. ``caps`` are the run's effective limits, None where there
-    is no cap. ``error`` is the error that ended the run, if any, for the caller's message and
-    exit code; it is never written.
+    ``withheld`` are in comment order, and ``resolves`` oldest first. ``caps`` are the run's
+    effective limits, None where there is no cap. ``error`` is the error that ended the run, if
+    any, for the caller's message and exit code; it is never written.
     """
 
     run_id: str
+    mode: Mode
     origin: Origin
     pr: PullRequestRef | None
     outcome: Outcome
@@ -114,15 +143,18 @@ class ShadowReport:
     report: Mapping[str, object] | None
     summary_body: str
     comments: tuple[ShadowComment, ...]
+    resolves: tuple[ShadowResolve, ...]
     withheld: tuple[WithheldFinding, ...]
     caps: Mapping[str, int | float | None]
     over_budget: bool
-    error: ReportedError | None
+    error: ReportedError | GitHubError | None
 
 
 def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input of the report
     review: PipelineResult | ReportedError | Reason,
     *,
+    mode: Mode,
+    existing: Sequence[BotComment],
     settings: Settings,
     run_id: str,
     started_at: datetime,
@@ -133,18 +165,23 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     """Build the report of a review, of the error that stopped it, or of a refused run.
 
     A review that called the model is ``reviewed``, with its reported findings planned as
-    comments against the reviewed diff. A review that skipped every file is ``skipped``,
+    comments against the reviewed diff and the bot's ``existing`` comments, which a shadow mode
+    run never has. Nothing is applied yet. A review that skipped every file is ``skipped``,
     ``nothing_to_review``; a refused run is ``skipped`` with its reason; a secret is
     ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; and a
     provider error is ``failed`` with its category. A review is over budget when it reports
     more output tokens than ``max_output_tokens``.
 
     Raises:
-        ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it.
+        ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it,
+            or if ``existing`` comments are given in shadow mode.
     """
     if (pr is None) != (origin is Origin.LOCAL):
         raise ValueError("A shadow report has a pull request exactly when its origin isn't local.")
+    if mode is Mode.SHADOW and existing:
+        raise ValueError("A shadow mode run reads no comments from the pull request.")
     comments: tuple[ShadowComment, ...] = ()
+    resolves: tuple[ShadowResolve, ...] = ()
     withheld: tuple[WithheldFinding, ...] = ()
     report: dict[str, object] | None = None
     error: ReportedError | None = None
@@ -154,10 +191,12 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     elif isinstance(review, PipelineResult) and review.model_called:
         plan = plan_comments(
             review.decision.reported,
+            existing,
             pr_diff=review.parsed,
             max_open_comments=DEFAULT_MAX_OPEN_COMMENTS,
         )
         comments = tuple(ShadowComment(planned, comment_body(planned)) for planned in plan.comments)
+        resolves = tuple(ShadowResolve(comment) for comment in plan.resolved)
         withheld = plan.withheld
         # A rationale can quote a secret that withholds its comment; no file may hold it.
         document = report_document(review, settings, run_id)
@@ -171,6 +210,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         outcome, reason, summary = _not_reviewed(review)
     return ShadowReport(
         run_id=run_id,
+        mode=mode,
         origin=origin,
         pr=pr,
         outcome=outcome,
@@ -180,6 +220,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         report=report,
         summary_body=summary,
         comments=comments,
+        resolves=resolves,
         withheld=withheld,
         caps={
             "max_diff_bytes": settings.max_diff_bytes,
@@ -243,7 +284,7 @@ def render_shadow_json(shadow: ShadowReport) -> str:
     document = {
         "schema": _SCHEMA,
         "run_id": shadow.run_id,
-        "mode": _MODE,
+        "mode": shadow.mode,
         "origin": shadow.origin,
         "outcome": shadow.outcome,
         "reason": shadow.reason,
@@ -253,7 +294,10 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "finished_at": _utc(shadow.finished_at),
         "report": shadow.report,
         "summary_body": shadow.summary_body,
-        "comments": [_comment_json(comment) for comment in shadow.comments],
+        "comments": [
+            *(_comment_json(comment) for comment in shadow.comments),
+            *(_resolve_json(resolve) for resolve in shadow.resolves),
+        ],
         "withheld": [_withheld_json(item) for item in shadow.withheld],
         "caps": shadow.caps,
         "over_budget": shadow.over_budget,
@@ -288,6 +332,24 @@ def _comment_json(comment: ShadowComment) -> dict[str, object]:
         "file": reviewed.finding.file,
         "line": reviewed.finding.line,
         "body": comment.body,
+        "applied": comment.applied,
+    }
+
+
+def _resolve_json(resolve: ShadowResolve) -> dict[str, object]:
+    # The bot's comment, read back from the pull request, holds no source or body.
+    comment = resolve.comment
+    return {
+        "action": Action.RESOLVE,
+        "fingerprint": comment.fingerprint,
+        "rule_part": comment.rule_part,
+        "anchor": comment.anchor,
+        "source": None,
+        "severity": comment.severity,
+        "file": comment.path,
+        "line": comment.line,
+        "body": None,
+        "applied": resolve.applied,
     }
 
 

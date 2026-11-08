@@ -17,6 +17,7 @@ __all__ = [
     "ErrorCategory",
     "EventError",
     "GitError",
+    "GitHubError",
     "InputError",
     "ProviderError",
     "ReviewBotError",
@@ -78,6 +79,10 @@ class EventError(InputError):
 
 class GitError(InputError):
     """A git command in the pull request's clone failed, timed out or couldn't start."""
+
+
+class GitHubError(ReviewBotError):
+    """A GitHub API call failed; the message names the call."""
 
 
 class AuditError(ReviewBotError):

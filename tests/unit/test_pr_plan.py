@@ -46,7 +46,7 @@ def locations(items: Sequence[PlannedComment | WithheldFinding]) -> list[tuple[s
 
 
 def test_plan_comments_creates_one_comment_per_finding_with_its_line_anchor() -> None:
-    plan = plan_comments([reviewed("b.py", 2)], pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments([reviewed("b.py", 2)], (), pr_diff=DIFF, max_open_comments=10)
 
     (comment,) = plan.comments
     assert comment.action is Action.CREATE
@@ -63,7 +63,7 @@ def test_plan_comments_orders_by_severity_then_file_then_line() -> None:
         reviewed("a.py", 1, severity=Severity.CRITICAL),
     ]
 
-    plan = plan_comments(findings, pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments(findings, (), pr_diff=DIFF, max_open_comments=10)
 
     assert locations(plan.comments) == [
         ("a.py", 1),
@@ -77,7 +77,7 @@ def test_plan_comments_orders_by_severity_then_file_then_line() -> None:
 def test_plan_comments_withholds_findings_past_the_limit_in_comment_order() -> None:
     findings = [reviewed("a.py", line) for line in range(12, 0, -1)]
 
-    plan = plan_comments(findings, pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments(findings, (), pr_diff=DIFF, max_open_comments=10)
 
     assert locations(plan.comments) == [("a.py", line) for line in range(1, 11)]
     assert locations(plan.withheld) == [("a.py", 11), ("a.py", 12)]
@@ -87,7 +87,7 @@ def test_plan_comments_withholds_findings_past_the_limit_in_comment_order() -> N
 def test_plan_comments_withholds_a_rationale_holding_a_secret_without_counting_it() -> None:
     findings = [reviewed("a.py", 1, rationale=f"Leaks {GITHUB_TOKEN}."), reviewed("a.py", 2)]
 
-    plan = plan_comments(findings, pr_diff=DIFF, max_open_comments=1)
+    plan = plan_comments(findings, (), pr_diff=DIFF, max_open_comments=1)
 
     assert locations(plan.comments) == [("a.py", 2)]
     assert [(item.reason, item.reviewed.finding.line) for item in plan.withheld] == [
@@ -97,7 +97,7 @@ def test_plan_comments_withholds_a_rationale_holding_a_secret_without_counting_i
 
 def test_plan_comments_withholds_a_secret_split_by_markdown_escaping() -> None:
     # Escaped, the token's `_` becomes `\_`, so only the raw rationale shows the token.
-    plan = plan_comments([reviewed(rationale=GITHUB_TOKEN)], pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments([reviewed(rationale=GITHUB_TOKEN)], (), pr_diff=DIFF, max_open_comments=10)
 
     assert [item.reason for item in plan.withheld] == [WithholdReason.POSSIBLE_SECRET]
 
@@ -108,7 +108,7 @@ def test_plan_comments_withholds_a_path_that_is_not_utf8() -> None:
         reviewed(UNDECODABLE_PATH).finding, Source.RULE, RuleId.SWALLOWED_EXCEPTION, "f" * 16
     )
 
-    plan = plan_comments([finding], pr_diff=diff, max_open_comments=10)
+    plan = plan_comments([finding], (), pr_diff=diff, max_open_comments=10)
 
     assert plan.comments == ()
     assert [item.reason for item in plan.withheld] == [WithholdReason.NOT_COMMENTABLE]
@@ -117,14 +117,14 @@ def test_plan_comments_withholds_a_path_that_is_not_utf8() -> None:
 def test_plan_comments_withholds_a_line_that_is_not_in_the_pr_diff() -> None:
     findings = [reviewed("a.py", 21), reviewed("c.py", 1)]
 
-    plan = plan_comments(findings, pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments(findings, (), pr_diff=DIFF, max_open_comments=10)
 
     assert plan.comments == ()
     assert {item.reason for item in plan.withheld} == {WithholdReason.NOT_COMMENTABLE}
 
 
 def test_plan_comments_with_no_findings_is_empty() -> None:
-    plan = plan_comments([], pr_diff=DIFF, max_open_comments=10)
+    plan = plan_comments([], (), pr_diff=DIFF, max_open_comments=10)
 
     assert (plan.comments, plan.withheld) == ((), ())
 
@@ -135,6 +135,6 @@ def test_plan_comments_ignores_a_deleted_file_which_has_no_line_to_comment_on() 
         "+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
     )
 
-    plan = plan_comments([reviewed("gone.py", 1)], pr_diff=diff, max_open_comments=10)
+    plan = plan_comments([reviewed("gone.py", 1)], (), pr_diff=diff, max_open_comments=10)
 
     assert [item.reason for item in plan.withheld] == [WithholdReason.NOT_COMMENTABLE]
