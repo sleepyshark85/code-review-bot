@@ -16,7 +16,7 @@ A real context review runs with Claude using only the three repository tools, wi
 - **AC5:** Given a final result with subtype `error_max_turns`, then the provider raises a `permanent` error whose message names `--max-tool-calls`. Given `error_max_budget_usd`, a `permanent` error naming `--max-cost-usd`. Each error says which cap it hit (`turns` or `cost`), so reports and recordings can name cap-hit runs. Neither message holds CLI or model text.
 - **AC6:** Given a result with `total_cost_usd` 0.1234, then the response's `cost_usd` is `Decimal("0.1234")` and `report/v1`'s `usage.cost_usd` is the string `"0.1234"`. Given a negative, non-finite, boolean or non-numeric value, or none, then `cost_usd` is null and the review still succeeds.
 - **AC7:** Given the conformance suite's new tool-loop case, then `MockProvider` and Claude over the fake both make one scripted `read`, return its findings, and leave one ledger entry.
-- **AC8:** Given `--max-cost-usd` of `0`, `-1` or `abc`, then it exits 2 naming the flag.
+- **AC8:** Given `--max-cost-usd` of `0`, `0.009`, `-1` or `abc`, then it exits 2 naming the flag: it must be at least `0.01`, so rounding down to the cent never gives 0. `0.01` is accepted.
 - **AC9:** Moved to [P3-S16 AC8](p3-s16-live-steps-workflow.md#acceptance-criteria), the live smoke.
 - **AC10:** Given a fake whose init `SystemMessage` lists tools other than exactly the three (for example with `Bash`, or without `mcp__repo__grep`), then the provider raises a `permanent` error naming the unexpected or missing tools before any tool handler runs. Given exactly the three, the review proceeds, and the list is kept for the audit log (`agent` `tools` record).
 
@@ -24,7 +24,7 @@ A real context review runs with Claude using only the three repository tools, wi
 The CLI's result fields are untrusted and type-checked, as Phase 0's are. Tool arguments reach the executor unchanged, which validates them (P3-S1, P3-S2). The query is bounded by `max_turns`, `max_budget_usd`, the output token cap and the deadline.
 
 ## Interfaces
-`--max-cost-usd` / `REVIEW_BOT_MAX_COST_USD`: a Decimal above 0, unset by default. `PipelineResult.cost_usd` and `report/v1` `usage.cost_usd` ([design](../design.md#interfaces)). No new exit code or error category.
+`--max-cost-usd` / `REVIEW_BOT_MAX_COST_USD`: a Decimal of at least 0.01, unset by default. `PipelineResult.cost_usd` and `report/v1` `usage.cost_usd` ([design](../design.md#interfaces)). `ProviderError.cap: Literal["cost", "turns"] | None`, set only for the `error_max_budget_usd` (`cost`) and `error_max_turns` (`turns`) result subtypes, None for every other error. No new exit code or error category.
 
 ## Out of scope
 - Live commands' `--max-usd` (S6, S8); the live smoke (S16).

@@ -51,7 +51,7 @@ New or changed modules under `src/review_bot/`. `context.paths`, `context.ledger
 | `evals.formats`, `evals.replay`, `evals.live` (changed) | Repo and issue fixtures; context recordings; spend caps | | S5, S6, S9 |
 | `evals.compare` | Diff mode against context mode on the same cases | `compare_cases` | S7 |
 | `evals.cli`, `pr.cli`, `settings` (changed) | Accept CI only for a `workflow_dispatch` run with an explicit flag | `in_ci`, `--allow-dispatch` | S16 |
-| `.github/workflows/live.yml` (new, main session) | The approved live steps, by manual dispatch only | | S16 |
+| `.github/workflows/live.yml` (new, main session) | The approved live steps, by manual dispatch only | | S16 (`smoke`), S6 (evals), S8 (`backfill`) |
 
 ### Data flow (one context review of a PR)
 
@@ -209,12 +209,12 @@ Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). C
 | `max_tool_calls` | 12 (1 to 30) | 12 | |
 | `max_tool_result_bytes` | 16,000 (1,000 to 64,000) | 16,000 | |
 | `max_tool_total_bytes` | 96,000 (at most 400,000) | 96,000 | |
-| `max_cost_usd` | unset; required by every live command in context mode | 0.60, set only when `REVIEW_BOT_CONTEXT=repo`, so diff-mode runs are unchanged | Decimal, more than 0 |
+| `max_cost_usd` | unset; required by every live command in context mode | 0.60, set only when `REVIEW_BOT_CONTEXT=repo`, so diff-mode runs are unchanged | Decimal, at least 0.01 |
 | `deadline_s` | 300 | 300 in context mode, 240 otherwise | Job timeout stays 10 min |
 
 **Live commands** (`evals live`, `pr backfill`) take `--max-usd`. Before any call they refuse unless planned calls × `max_cost_usd` ≤ `--max-usd`, and during the run they start no call once the reported spend plus `max_cost_usd` would exceed it. Retries stay 0. A failure to report cost counts as `max_cost_usd`.
 
-**Where live steps run.** The key exists only as the `ANTHROPIC_API_KEY` repository secret, and both live commands refuse in CI. Every approved step therefore runs from the manual workflow `live.yml` (S16): `workflow_dispatch` only, on `main` only, with one choice of step and every amount a literal from the table below. The CLIs accept CI only for a `workflow_dispatch` event with an explicit flag; any other CI context still refuses ([ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md)).
+**Where live steps run.** The key exists only as the `ANTHROPIC_API_KEY` repository secret, and both live commands refuse in CI. Every approved step therefore runs from the manual workflow `live.yml`: `workflow_dispatch` only, on `main` only, with one choice of step and every amount a literal from the table below. S16 creates it with the `smoke` choice and the CI guard; S6 adds `evals-diff` and `evals-context`, and S8 adds `backfill`, each with a test that the real CLI parser accepts the step's arguments. The CLIs accept CI only for a `workflow_dispatch` event with an explicit flag; any other CI context still refuses ([ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md)).
 
 **The $20 the user approved**, by step. Each line is a hard cap. The $20 covers every dispatched run, re-runs included, summed from reported spend. The reserve is approved by the user where possible, else by the reviewer, and the test report names the approver.
 
@@ -272,9 +272,9 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 13. [P3-S13: Compare Phase 3 against Phase 2 on the labelled pull requests](slices/p3-s13-compare-labelled-prs.md)
 14. [P3-S14: Turn on context reviews in CI with one repository variable](slices/p3-s14-context-in-ci.md)
 15. [P3-S15: Close Phase 3: measure the gate, release 0.4.0](slices/p3-s15-close-phase-3.md)
-16. [P3-S16: Run approved live steps from a manual workflow](slices/p3-s16-live-steps-workflow.md)
+16. [P3-S16: Run the live smoke from a manual workflow, and accept CI only for such a dispatch](slices/p3-s16-live-steps-workflow.md)
 
-**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 → S3 ∥ S5 ∥ S12 → S16 ∥ S6 ∥ S7 ∥ S8 ∥ S10 → S9 ∥ S13 → S14 → S15 (after S16 and P2-S12 AC1 to AC6, #67).
+**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 → S3 ∥ S5 ∥ S12 → S16 ∥ S7 ∥ S10 → S6 ∥ S8 → S9 ∥ S13 → S14 → S15 (after S16 and P2-S12 AC1 to AC6, #67).
 
 **Smoke stop rule.** S16's `smoke` runs as soon as S16 merges. If it shows any built-in tool available, or the three MCP tools missing, S6 and S8 pause and S3 goes back to design.
 

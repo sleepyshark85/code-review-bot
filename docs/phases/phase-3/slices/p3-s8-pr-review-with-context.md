@@ -1,8 +1,8 @@
 # P3-S8: Review pull requests with repository context
 
 - **Status:** Draft
-- **Depends on:** P3-S2, P3-S3
-- **Touches:** `pr` (`runner`, `cli`, `shadow`), `settings`
+- **Depends on:** P3-S2, P3-S3, P3-S16
+- **Touches:** `pr` (`runner`, `cli`, `shadow`), `settings`, `.github/workflows/live.yml` (main session, from this spec: the `backfill` choice), `tests/` (the tester parses the workflow)
 
 ## Value
 A pull request is reviewed with the model able to read the PR's head commit, in CI and in a bounded backfill, while the default stays Phase 2's review.
@@ -19,6 +19,8 @@ A pull request is reviewed with the model able to read the PR's head commit, in 
 - **AC8:** Given reported costs that leave less than `--max-cost-usd` of `--max-usd`, then no further PR is reviewed and no report is written for those PRs, so a later run picks them up. stdout's counts add `stopped=budget` and the spend.
 - **AC9:** Given `backfill` without `--context`, then it behaves exactly as P2-S13.
 - **AC10:** Given a context run, then `DIR/audit.jsonl` holds its `context` `tool_call` records.
+- **AC11:** Given `live.yml`, then its `step` choice adds `backfill`. That job checks out `main` with `fetch-depth: 0`, fetches `refs/pull/*/head`, and runs `pr backfill --pulls tests/evals/labelled/phase-3-pulls.json --github-repo sleepyshark85/code-review-bot --repo . --context repo --max-calls 12 --max-usd 7.20 --max-cost-usd 0.60 --allow-dispatch` with retries 0. Its permissions are exactly `contents: read` and `issues: read` (for S9's issue reads), and `GITHUB_TOKEN` reaches only that step. P3-S16 AC3 to AC6 otherwise hold, and the artifact holds `--out`.
+- **AC12:** Given that step's argument list, read from `live.yml`, then the real `pr` CLI argument parser accepts it, with no call made and no file read.
 
 ## Limits
 As P2-S2 and P3-S2. The head commit is read only through git objects, never checked out, so no filter, hook or attribute driver from the PR runs.
@@ -26,8 +28,10 @@ As P2-S2 and P3-S2. The head commit is read only through git objects, never chec
 ## Interfaces
 `--context off|repo` / `REVIEW_BOT_CONTEXT` on `run` and `backfill`, default `off`. `backfill` adds `--max-usd`, and reads `--max-cost-usd` as every command does. Caps and values: [Spend and caps](../design.md#spend-and-caps).
 
+`tests/evals/labelled/phase-3-pulls.json` is committed by the main session in its own PR, after #67 closes and before the `backfill` dispatch: a JSON list of at most 12 entries chosen under [Q10](../design.md#6-open-questions), each with `number`, `baseRefOid`, `headRefOid`, `mergedAt`, `isCrossRepository` and `body`, as `gh pr list --json` writes them.
+
 ## Out of scope
-- Linked issues (S9); the workflow change (S14).
+- Linked issues (S9); the Review workflow change (S14); dispatching `backfill` (S15).
 
 ## Notes
 - **README (main session):** describe `--context repo` on `run` and `backfill`, and backfill's dollar cap.
