@@ -1,6 +1,6 @@
 # P2-S3: See a shadow report on every same-repo PR, from an Action that posts nothing
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P2-S2
 - **Touches:** `.github/workflows/review.yml` (new, written by the main session); otherwise tests only
 
@@ -13,7 +13,7 @@ AC1 to AC11 parse `.github/workflows/review.yml` with PyYAML. Rules: [safety](..
 - **AC2:** Workflow-level permissions are `contents: read` only, and the shadow job sets exactly the same.
 - **AC3:** The shadow job runs only when the PR's head repository equals `github.repository` and `vars.REVIEW_BOT_MODE` is unset or `shadow`. No job is named `gate`, and this slice leaves `ci.yml` unchanged.
 - **AC4:** The repository is checked out at the base SHA with `fetch-depth: 0` and `persist-credentials: false`. The head SHA is only fetched. Dependencies install with `uv sync --locked --no-dev`. No step checks out or runs anything at the head ref or SHA.
-- **AC5:** In the shadow job, `secrets.ANTHROPIC_API_KEY` appears only in the `env` of the step that runs `python -m review_bot.pr run`, which passes `--mode shadow` and `--out` (the directory holding the report and the audit log). No other secret, and no `GITHUB_TOKEN`, reaches any step of this job.
+- **AC5:** In the shadow job, `secrets.ANTHROPIC_API_KEY` appears only in the `env` of the step that runs `python -m review_bot.pr run`, which passes `--mode shadow` and `--out` (the directory holding the report and the audit log). No other secret reaches any step of this job, and no `run:` step receives `GITHUB_TOKEN`: `actions/checkout` uses its default token only to clone, and `persist-credentials: false` keeps it out of the clone (reworded in review, main session).
 - **AC6:** In every job, no `run:` block contains `${{`. Step `env` values read only `github.event.pull_request.number`, `.base.sha` and `.head.sha`. `if:` expressions may also read `github.event.action` and `github.event.pull_request.head.repo.full_name`. No other `github.event` field appears anywhere in the file.
 - **AC7:** The run step's environment sets the caps in the design's table. The job has `timeout-minutes: 10`. Concurrency is grouped by PR number with `cancel-in-progress: true`.
 - **AC8:** One step writes `shadow.md` to `$GITHUB_STEP_SUMMARY`. `actions/upload-artifact` uploads `shadow.json`, `shadow.md` and `audit.jsonl` from the `--out` directory, under a name holding the PR number, the head SHA and `github.run_attempt`, with `retention-days: 90`. Both steps run `if: always()`.
@@ -40,3 +40,4 @@ Artifact contents: [ADR 0010](../../../adr/0010-shadow-report-artifact.md). `REV
 ## Notes
 - **Main session:** write the workflow from this spec; the developer has no path to it. Pin each action by SHA with its tag in a comment, so Dependabot can update it.
 - **README (main session):** say that PRs get a shadow review and where to find it.
+- **Changed in build, main session:** `run --mode` added here (only `shadow` accepted until S5 and S6).

@@ -131,3 +131,75 @@ None now. One error in the tests, found on the first run against the code, is ke
 ### Coverage
 
 Not measured by the tester, who ran only this file. For coverage of `review_bot.pr`, `settings`, `review` and `providers/claude_agent`, see the main session's `pytest --cov`. Every criterion has at least one passing test.
+
+## P2-S3: See a shadow report on every same-repo PR, from an Action that posts nothing
+
+Spec: [p2-s3-shadow-workflow.md](slices/p2-s3-shadow-workflow.md). Tests: [`tests/integration/test_p2_s3_shadow_workflow.py`](../../../tests/integration/test_p2_s3_shadow_workflow.py), 60 cases. They were written from the spec, design.md (Safety on the PR path, CI settings and caps) and ADRs 0008, 0010 and 0012, against the main session's uncommitted `.github/workflows/review.yml` (base `475ce55`).
+
+**Status: AC1 to AC11 pass. All 60 cases pass, from this file alone, on Windows with Git Bash. AC12 is manual and stays pending until the first same-repo PR after merge.**
+
+### How the workflow is read
+
+- **PyYAML** (`safe_load`). YAML 1.1 reads `on:` as the key `True`, so the trigger is looked up under either key, and exactly one must exist.
+- **Jobs are found by what they do, not by their ids.** The shadow job is the one whose step runs `review_bot.pr run`. The check job is the one whose step reads `vars.REVIEW_BOT_MODE` into its `env`.
+- **Job `if:` expressions are evaluated**, not string-matched. A small evaluator covers the subset of GitHub's language they use: context names, string literals, `==`, `!=`, `&&`, `||`, `!` and parentheses. Like GitHub, it compares strings case-insensitively and reads an unset variable as `''`. An unknown context or a function call fails the test rather than passing silently.
+- **Three things are executed.**
+  - The check step's script (AC11) and the summary step's script (AC8) run under `bash -e`, as on an Ubuntu runner. Both are skipped with a reason if no POSIX bash is on `PATH`. WSL's `System32\bash.exe` launcher doesn't count.
+  - The run step's argv and caps go to `review_bot.pr.cli.main`, with the step's literal `env`, `$GITHUB_EVENT_PATH` pointing at a file that isn't JSON, and `MockProvider`. Exit 19 (the event error) proves that `--mode shadow`, `--out` and every cap got through parsing. A bad flag or cap would exit 2.
+- **The required check** is checked as a lasting property rather than "`ci.yml` unchanged", which holds only once and would break on any later legitimate edit: `ci.yml` still has a job named `gate`, and `review.yml` has none.
+- **Mutation check (not kept in the suite).** 15 one-line breakages of the workflow were each killed by at least one test:
+  - `closed` added with no `if` filter;
+  - `persist-credentials: true`;
+  - `${{ github.event.pull_request.title }}` in a `run:`;
+  - `continue-on-error`;
+  - `@v4` instead of a SHA;
+  - a check that allows any mode;
+  - `needs` removed;
+  - `always() &&` on the shadow `if`;
+  - 30-day retention;
+  - the same-repo test replaced;
+  - `--mode comment`;
+  - `MAX_RETRIES` 3;
+  - a head-SHA checkout;
+  - `contents: write`;
+  - the key in the job's `env`.
+
+### Criteria
+
+Test names drop the `test_p2_s3_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_only_event_is_pull_request`. `ac1_forbidden_event_names_appear_nowhere` ×2 (`pull_request_target`, `workflow_run`). `ac1_shadow_job_runs_only_for_the_four_actions`: the four types are listed, any extra type must be `closed`, and an extra type requires the shadow `if` to read `github.event.action` | pass (4) |
+| AC2 | `ac2_workflow_permissions_are_contents_read_only`. `ac2_shadow_job_sets_exactly_contents_read` | pass (2) |
+| AC3 | `ac3_same_repo_pr_runs_when_mode_is_unset_or_shadow` ×2. `ac3_other_mode_runs_no_shadow_job` ×3 (`off`, `comment`, `bogus`). `ac3_fork_pr_runs_no_shadow_job` ×6: another owner, a name that only starts with the repo's, and a deleted fork (null head repo), each with mode unset and `shadow`. `ac3_no_job_is_named_gate` (ids and `name:`). `ac3_ci_yml_still_has_the_gate_job` | pass (13) |
+| AC4 | `ac4_base_sha_is_checked_out_with_full_history_and_no_credentials`. `ac4_head_sha_is_only_fetched`: one step reads the head SHA, and its script is only `git fetch … "$VAR"`. `ac4_head_sha_reaches_no_action_input_but_the_artifact_name`. `ac4_no_step_moves_the_work_tree_off_the_base`: no `git checkout`, `switch`, `reset`, `worktree`, `merge`, `pull`, `rebase` or `cherry-pick`. `ac4_dependencies_install_locked_without_dev_after_checkout`: exactly `uv sync --locked --no-dev`, between the checkout and the review | pass (5) |
+| AC5 | `ac5_api_key_is_only_in_the_run_steps_env`: the only `secrets.` in the file. `ac5_no_github_token_is_passed_anywhere` ×2 (`GITHUB_TOKEN`, `github.token`). `ac5_no_job_or_workflow_env_carries_values_to_every_step`. `ac5_run_passes_mode_shadow_and_out`. `ac5_ac7_run_command_and_caps_are_accepted_by_the_cli` | pass (6) |
+| AC6 | `ac6_no_run_block_interpolates_an_expression` (all jobs). `ac6_env_values_read_only_the_number_and_shas`. `ac6_action_and_head_repo_are_read_only_in_if`. `ac6_no_other_event_field_appears_anywhere`, which also catches a bare `github.event` and bracket access. `ac6_branch_name_context_is_never_read` (`github.head_ref`) | pass (5) |
+| AC7 | `ac7_run_step_env_sets_the_design_caps`: the five values in design.md's table. `ac7_shadow_job_times_out_after_10_minutes`. `ac7_concurrency_is_one_group_per_pr_cancelling_in_progress`. The CLI also parses the caps (AC5's last test) | pass (3) |
+| AC8 | `ac8_summary_step_runs_always`. `ac8_summary_step_writes_shadow_md_from_out`, run under bash. `ac8_artifact_uploads_the_three_files_from_out`, from the same directory as `--out`. `ac8_artifact_name_holds_pr_number_head_sha_and_attempt`. `ac8_artifact_is_kept_90_days_and_uploads_always` | pass (5) |
+| AC9 | `ac9_every_uses_is_pinned_to_a_commit_sha` (all jobs) | pass |
+| AC10 | `ac10_nothing_continues_on_error`: no such key at any level, and not in the text | pass |
+| AC11 | `ac11_known_mode_passes_the_check_quietly` ×4 (unset as `''`, `off`, `shadow`, `comment`). `ac11_mode_absent_from_env_passes_the_check`. `ac11_unknown_mode_fails_with_one_line_naming_variable_and_values` ×9: `bogus`, `Shadow`, `SHADOW`, a leading and a trailing space, `on`, `*`, `shadow\|comment` (glob and alternation), and `$(touch pwned)`, which must not run. `ac11_every_other_job_needs_the_check_and_respects_its_failure`: every other job needs it, directly or through another job, and no `if` uses `always()`, `failure()`, `cancelled()` or `success()` to run after it fails | pass (15) |
+| AC12 | Manual: the run, summary and artifact; tokens under the output cap; latency, and the time for checkout, `uv sync` and the review step; branch protection requiring only `gate`; a Dependabot or no-secret run showing `skipped`, `no_credential` and a green job | **pending** (after merge) |
+
+### Failures
+
+None.
+
+### Readings for the designer
+
+1. **"No `GITHUB_TOKEN` reaches any step" (AC5)** is tested as "the file passes none": neither `GITHUB_TOKEN` nor `github.token` appears in it.
+   - `actions/checkout` still uses `github.token` as its default `token` input to clone, then removes it (`persist-credentials: false`).
+   - Every Actions job also holds its runtime token.
+
+   Neither reaches a `run:` step's environment, and neither can be avoided while keeping AC4's checkout. **Resolved in review round 1:** the main session is rewording AC5 to say this. Checkout uses `github.token` only to clone and doesn't persist it, and no `run:` step receives it.
+2. **Fetching the head on a private repository.** With `persist-credentials: false`, the step `git fetch --no-tags origin "$HEAD_SHA"` has no credentials, so it would fail on a private repository. **Resolved in review round 1:** the main session verified with an anonymous `git ls-remote` that the repository is public.
+3. **GitHub compares the mode case-insensitively.** In the shadow job's `if`, `SHADOW` equals `'shadow'`. The check's `case` is case-sensitive, so it fails on `SHADOW`. The shadow job `needs` the check, so it's skipped. The outcome matches AC11, but it depends on `needs`, which `ac11_every_other_job_needs_the_check_and_respects_its_failure` protects.
+4. **The check job also runs for fork PRs**, with no secret and `contents: read`. That fits AC11 ("a check job fails"), and a fork can't change a repository variable.
+5. **The action SHAs** are checked for form (40 hex digits) by the test, since checking them against their tags needs the network. **Resolved in review round 1:** the main session verified each against its tag: `actions/checkout` v4.4.0, `actions/upload-artifact` v4.6.2 and `astral-sh/setup-uv` v6.8.0.
+6. **The summary step's fallback**, when there's no `shadow.md`, isn't in the spec, so it isn't tested.
+
+### Coverage
+
+The slice changes no module in `src/` except the `run --mode` flag, which the developer's unit tests cover. This file makes one in-process CLI call. The tester ran only this file, so coverage wasn't measured.
