@@ -37,7 +37,7 @@ designer ──► USER approves design.md + slice specs + ADRs   (docs PR: docs
 ```
 
 - **The spec comes first and leads the code.** No slice is implemented until its spec is `Approved`. To change behaviour, change the spec first (designer), then the tests and code. Code that disagrees with its spec is a bug in one of them, and never gets resolved silently.
-- **One slice, one PR.** A slice's PR contains only that slice and sets its spec to `Status: Done`. The next slice branches from `main` after the previous one merges.
+- **One slice, one PR.** A slice's PR contains only that slice and sets its spec to `Status: Done`. A slice branches from `main` once every slice it declares in `Depends on` has merged, so independent slices run in parallel, each in its own branch and worktree. Parallel slices merge one at a time: after each merge, the others merge `main` in and pass the gate again before they merge.
 - **Slice specs stay concise:** aim for about 30 lines and stay under 60. They state observable behaviour, not implementation, and link to `design.md` and ADRs instead of restating them.
 - Handoffs go through files, never only through chat. Each agent ends by listing the files it changed.
 - Subagents don't commit or push. The main session does, and opens the PR once the work meets its definition of done. The user reviews and merges.
