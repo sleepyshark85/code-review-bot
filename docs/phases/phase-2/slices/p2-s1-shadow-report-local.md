@@ -1,6 +1,6 @@
 # P2-S1: Get a shadow report of what the bot would post, for a local diff
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** none (Phase 1 done)
 - **Touches:** `pr` (new: `cli`, `shadow`, `comments`, `plan`), `render`
 
@@ -35,3 +35,13 @@ Commands and exit codes: [design](../design.md#commands-and-exit-codes). `shadow
 
 ## Notes
 - **README (main session):** describe `python -m review_bot.pr shadow` in Usage.
+- **Changed in build, main session (2026-11-08):** AC9 wins over AC1. A detected secret appears in no file under `--out`, so every string in the embedded `report` passes `redact`; AC1's equality with `review-bot --format json` holds for runs without secrets.
+- **Changed in build, main session (2026-11-08, review round 1):** a diff the system can't read (a directory, permission denied, any OS error but not-found) exits 4 with Phase 0's message and no report, as `review-bot` does: it's a usage error, not a skip. A diff that isn't UTF-8 stays `skipped`, `unreadable` (AC5). Every skip and block also writes its error's advice to stderr.
+- **Build choices (developer):**
+  - The audit log goes to `DIR/audit.jsonl` unless `REVIEW_BOT_AUDIT_LOG` is set, as S2 specifies for `run`.
+  - A diff whose every file is skipped is `skipped`, `nothing_to_review` (S2's reason), with `report` null.
+  - `Outcome` and `Reason` live in `pr/outcome.py`, so `shadow` and `comments` share them without an import cycle.
+  - Outside `pr` and `render`: `PipelineResult.parsed` (the plan needs anchored lines), `SecretDetectedError.hits` (the summary names kinds and lines), `ReviewedFinding.rule_part`, `fingerprint.anchor_for`, and `review_bot.cli`'s run and failure helpers made public for reuse.
+  - The plan secret-scans the raw rationale, not the rendered body: escaping turns `ghp_` into `ghp\_`, which the scan would miss.
+  - A word holding `<!--` goes in a code span too, so a forged marker reads as code (AC11).
+  - `read_marker` waits for S5, which first reads comments back.

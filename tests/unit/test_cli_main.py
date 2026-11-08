@@ -852,3 +852,13 @@ def test_main_with_triage_and_a_failing_stdout_still_logs_the_labels(
         r["data"]["label"] for r in read_records(audit_log_in_tmp_path) if r["stage"] == "triage"
     ]
     assert labels == ["accept", "reject"]
+
+
+def test_main_with_a_diff_that_is_not_utf8_returns_4(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "latin1.diff"
+    path.write_bytes(MINIMAL_DIFF.encode("latin-1") + "+café\n".encode("latin-1"))
+
+    assert main([str(path)], provider=MockProvider(findings=[])) == 4
+    assert "is not valid UTF-8" in capsys.readouterr().err

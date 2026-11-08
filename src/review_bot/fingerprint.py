@@ -11,7 +11,7 @@ from collections import Counter
 from collections.abc import Iterable
 from typing import Final
 
-__all__ = ["Fingerprinter", "fingerprint_for"]
+__all__ = ["Fingerprinter", "anchor_for", "fingerprint_for"]
 
 _VERSION: Final = "v1"
 _HEX_DIGITS: Final = 16
@@ -32,6 +32,14 @@ def fingerprint_for(*, file: str, rule: str, anchor_text: str, ordinal: int) -> 
     if ordinal < 0:
         raise ValueError(f"A fingerprint's ordinal can't be negative, but it is {ordinal}.")
     return _fingerprint(file, rule, _anchor_sha256(anchor_text), ordinal)
+
+
+def anchor_for(anchor_text: str) -> str:
+    """Return the first 16 hex digits of the anchored line's hash, as a fingerprint hashes it.
+
+    It names the line's content in a comment's marker (ADR 0009), whatever its number.
+    """
+    return _anchor_sha256(anchor_text)[:_HEX_DIGITS]
 
 
 class Fingerprinter:

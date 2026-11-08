@@ -18,15 +18,28 @@ from review_bot.report import (
 )
 from review_bot.settings import Settings
 
-__all__ = ["escape_unprintable", "render_findings", "render_json", "render_markdown"]
+__all__ = [
+    "escape_markdown",
+    "escape_unprintable",
+    "markdown_path",
+    "render_findings",
+    "render_json",
+    "render_markdown",
+    "report_document",
+]
 
 _REPORT_SCHEMA: Final = "report/v1"
 _MARKDOWN_HEADING: Final = "## Review"
 # CommonMark's ASCII punctuation, each of which a backslash makes literal.
 _MARKDOWN_PUNCTUATION: Final = frozenset(string.punctuation)
 _BACKTICK_RUN: Final = re.compile("`+")
-# A word GitHub could turn into a mention or a link, e-mail addresses included (P1-S11 spec).
-_LINKABLE_WORD: Final = re.compile(r"@|://|www\.", re.IGNORECASE)
+# A word that goes in a code span: one GitHub could turn into a mention or a link, e-mail
+# addresses included (P1-S11 spec), or into an issue, PR or commit reference (`#12`, `GH-3`,
+# `owner/repo#4` or a word of 7 to 40 hex digits), or one that opens an HTML comment (P2-S1 spec,
+# fixes #37). Each alternative matches in time linear in the word.
+_CODE_SPAN_WORD: Final = re.compile(
+    r"@|://|www\.|#[0-9]|\bGH-[0-9]|\b[0-9a-f]{7,40}\b|<!--", re.IGNORECASE
+)
 
 
 def render_findings(findings: Sequence[Finding], threshold: Severity) -> str:
@@ -51,11 +64,29 @@ def render_json(
     *,
     triaged: Sequence[TriagedFinding] | None = None,
 ) -> str:
-    """Render the review as one line of pure ASCII JSON, schema ``report/v1``.
+    """Render the review as one line of pure ASCII JSON: ``report_document``'s object.
 
-    Keys come in a fixed order, and every non-ASCII or control character is a JSON escape. Paths
-    are written as they are, unredacted, so they match the text output; one that isn't valid
-    UTF-8 is C-quoted, with ``path_quoted: true`` on its object (``report.path_fields``).
+    Every non-ASCII or control character is a JSON escape.
+
+    Raises:
+        ValueError: If ``triaged`` doesn't hold the reported findings, in order.
+    """
+    document = report_document(result, settings, run_id, triaged=triaged)
+    return json.dumps(document, ensure_ascii=True, allow_nan=False)
+
+
+def report_document(
+    result: PipelineResult,
+    settings: Settings,
+    run_id: str,
+    *,
+    triaged: Sequence[TriagedFinding] | None = None,
+) -> dict[str, object]:
+    """Return the review as a ``report/v1`` object, ready for ``json.dumps``.
+
+    Keys come in a fixed order. Paths are written as they are, unredacted, so they match the
+    text output; one that isn't valid UTF-8 is C-quoted, with ``path_quoted: true`` on its object
+    (``report.path_fields``).
 
     Args:
         result: The review.
@@ -70,7 +101,7 @@ def render_json(
     """
     findings = _findings_json(result, triaged)
     decisions = [item.decision for item in triaged or ()]
-    report: dict[str, object] = {
+    return {
         "schema": _REPORT_SCHEMA,
         "run_id": run_id,
         "provider": settings.provider,
@@ -95,7 +126,6 @@ def render_json(
             "output_tokens": result.usage.output_tokens,
         },
     }
-    return json.dumps(report, ensure_ascii=True, allow_nan=False)
 
 
 def _findings_json(
@@ -164,7 +194,10 @@ def render_markdown(
     character stays visible. A rationale has its unprintable characters escaped as in the text
     output, so it stays on its own line. Then each space-separated word holding any ``@``,
     ``://`` or ``www.``, in any case, goes in a code span, since GitHub could turn it into a
-    mention or a link. Every ASCII punctuation character in the other words is
+    mention or a link. So does each word holding ``#`` then a digit, ``GH-`` then a digit, or a
+    run of 7 to 40 hex digits standing alone, which GitHub could turn into an issue, pull
+    request or commit reference, and each word holding ``<!--``, so that a forged comment marker
+    stays visibly code. Every ASCII punctuation character in the other words is
     backslash-escaped: no heading, HTML, link, image, mention, emphasis, table or code span can
     start inside it. A path is shown as ``report.path_fields`` writes it, then
     unprintable-escaped, in a code span. A code span's backtick fence is longer than any backtick
@@ -186,7 +219,7 @@ def render_markdown(
         blocks.append("### Skipped files")
         blocks.append(
             "\n".join(
-                f"- {_markdown_path(section_path(file))}: {file.skip_reason}"
+                f"- {markdown_path(section_path(file))}: {file.skip_reason}"
                 for file in result.skipped_files
             )
         )
@@ -208,28 +241,34 @@ def _markdown_counts(result: PipelineResult, reported_count: int) -> str:
 
 def _markdown_finding(reviewed: ReviewedFinding) -> str:
     finding = reviewed.finding
-    location = _markdown_path(finding.file, suffix=f":{finding.line}")
+    location = markdown_path(finding.file, suffix=f":{finding.line}")
     return (
         f"- **{finding.severity}** {finding.category} at {location}: "
-        f"{_escape_markdown(finding.rationale)} "
+        f"{escape_markdown(finding.rationale)} "
         f"(confidence {finding.confidence:.2f}, source: {reviewed.source})"
     )
 
 
-def _escape_markdown(text: str) -> str:
+def escape_markdown(text: str) -> str:
+    """Make untrusted text inert in GitHub-flavoured Markdown, keeping every character visible.
+
+    The rules are ``render_markdown``'s: unprintable characters are escaped, each word GitHub
+    could link or that opens an HTML comment goes in a code span, and the other words have their
+    punctuation backslash-escaped. Linear in the text's length.
+    """
     # Unprintable characters are escaped first, so a plain space is the only whitespace left.
     return " ".join(_markdown_word(word) for word in escape_unprintable(text).split(" "))
 
 
 def _markdown_word(word: str) -> str:
-    # GitHub links mentions and URLs in text after CommonMark has dropped the backslashes, but
-    # never inside a code span.
-    if _LINKABLE_WORD.search(word):
+    # GitHub links mentions, URLs and references in text after CommonMark has dropped the
+    # backslashes, but never inside a code span.
+    if _CODE_SPAN_WORD.search(word):
         return _code_span(word)
     return "".join(rf"\{char}" if char in _MARKDOWN_PUNCTUATION else char for char in word)
 
 
-def _markdown_path(path: str, *, suffix: str = "") -> str:
+def markdown_path(path: str, *, suffix: str = "") -> str:
     """A path, plus ``suffix``, as a code span that shows exactly its characters."""
     # ``str()`` narrows the field's ``str | bool`` type for mypy: ``file`` is always a string.
     return _code_span(escape_unprintable(str(path_fields(path)["file"])) + suffix)

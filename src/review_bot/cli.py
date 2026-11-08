@@ -23,6 +23,7 @@ from review_bot.errors import (
     DiffEmptyError,
     DiffNotFoundError,
     DiffNotParsableError,
+    DiffNotUtf8Error,
     DiffTooLargeError,
     DiffUnreadableError,
     ErrorCategory,
@@ -42,12 +43,22 @@ from review_bot.secret_scan import redact
 from review_bot.settings import Settings, load_settings
 from review_bot.triage import TriageResult, run_triage
 
-__all__ = ["build_provider", "main", "parse_args"]
+__all__ = [
+    "RaisingArgumentParser",
+    "add_setting_arguments",
+    "build_provider",
+    "main",
+    "parse_args",
+    "record_failed_end",
+    "report_failure",
+    "run_review",
+]
 
 _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     ConfigError: 2,
     DiffNotFoundError: 3,
     DiffUnreadableError: 4,
+    DiffNotUtf8Error: 4,
     DiffEmptyError: 5,
     DiffTooLargeError: 6,
     DiffNotParsableError: 15,
@@ -95,7 +106,7 @@ class _ReviewAbortedError(ReviewBotError):
         self.cause_name = type(cause).__name__
 
 
-class _ArgumentParser(argparse.ArgumentParser):
+class RaisingArgumentParser(argparse.ArgumentParser):
     """Raises instead of exiting, so usage errors reach ``main`` like any other input error."""
 
     @override
@@ -111,13 +122,24 @@ class _ArgumentParser(argparse.ArgumentParser):
         write_output(self.format_help().removesuffix("\n"))
 
 
+def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the review's setting flags, each named after its ``Settings`` field."""
+    parser.add_argument("--provider", help="the provider to use: claude (default), mock")
+    parser.add_argument("--model", help="the model to request")
+    parser.add_argument("--threshold", help=f"the lowest severity to report: {', '.join(Severity)}")
+    parser.add_argument("--max-diff-bytes", help="the largest diff file to review, in bytes")
+    parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
+    parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
+    parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
+
+
 def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
     """Parse the command line into the diff path and the settings.
 
     Raises:
         ConfigError: If an argument, or a setting from the environment, is invalid.
     """
-    parser = _ArgumentParser(
+    parser = RaisingArgumentParser(
         prog="review-bot",
         description="Review a diff file.",
         epilog=(
@@ -127,13 +149,7 @@ def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
         allow_abbrev=False,
     )
     parser.add_argument("diff_path", help="the diff file to review")
-    parser.add_argument("--provider", help="the provider to use: claude (default), mock")
-    parser.add_argument("--model", help="the model to request")
-    parser.add_argument("--threshold", help=f"the lowest severity to report: {', '.join(Severity)}")
-    parser.add_argument("--max-diff-bytes", help="reject a larger diff file")
-    parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
-    parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
-    parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
+    add_setting_arguments(parser)
     parser.add_argument(
         "--audit-log",
         help="the JSONL file each run appends its records to (default: .review-bot/audit.jsonl)",
@@ -180,13 +196,13 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         _require_terminal_for_triage(settings)
         # Opened before the diff is read, so an untraceable run never reaches a provider.
         audit = AuditLog(settings.audit_log, clock=utc_now)
-    except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
-        return _report_failure(exc)
+    except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
+        return report_failure(exc)
     try:
         return _review(diff_path, settings, provider, audit)
-    except Exception as exc:  # noqa: BLE001 - `_report_failure` maps any failure to its code
-        exit_code = _report_failure(exc)
-        _record_failed_end(audit, exit_code, exc)
+    except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
+        exit_code = report_failure(exc)
+        record_failed_end(audit, exit_code, exc)
         return exit_code
 
 
@@ -196,8 +212,11 @@ def _require_terminal_for_triage(settings: Settings) -> None:
         raise ConfigError(_NO_TERMINAL_FOR_TRIAGE)
 
 
-def _report_failure(exc: Exception) -> int:
-    """Write the one error line for ``exc`` and return its exit code."""
+def report_failure(exc: Exception) -> int:
+    """Write the one error line for ``exc`` and return its exit code.
+
+    The codes are the Phase 0 and Phase 1 tables', which ``python -m review_bot.pr`` shares.
+    """
     if isinstance(exc, InputError):
         _write_error(str(exc))
         return _INPUT_ERROR_EXIT_CODES.get(type(exc), _INTERNAL_ERROR_EXIT_CODE)
@@ -213,7 +232,7 @@ def _report_failure(exc: Exception) -> int:
     return _INTERNAL_ERROR_EXIT_CODE
 
 
-def _record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
+def record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
     """Record the failed run's end. If that fails too, the run's own exit code stands."""
     # A category or class name only: an exception's text can hold diff or CLI output.
     if isinstance(exc, ProviderError):
@@ -233,7 +252,7 @@ def _record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
 def _review(
     diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
 ) -> int:
-    result = _run_review(diff_path, settings, provider, audit)
+    result = run_review(diff_path, settings, provider, audit)
     # Before any output, so stdout holds only the report, written after the last decision.
     triage = None
     if settings.triage:
@@ -263,9 +282,15 @@ def _review(
     return exit_code
 
 
-def _run_review(
+def run_review(
     diff_path: Path, settings: Settings, provider: LLMProvider | None, audit: AuditLog
 ) -> PipelineResult:
+    """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
+
+    Raises:
+        ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
+            becomes one too, so it can't set the exit code itself.
+    """
     selected_provider = build_provider(settings) if provider is None else provider
     is_own_claude = provider is None and settings.provider == "claude"
     pipeline = _run_pipeline_then_discard_unraisable if is_own_claude else run_pipeline
