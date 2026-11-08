@@ -10,19 +10,29 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
 from review_bot.audit import AuditLog, Stage
-from review_bot.errors import GitHubError
+from review_bot.diff_parser import ParsedDiff, parse_diff
+from review_bot.errors import (
+    DiffEmptyError,
+    DiffNotParsableError,
+    DiffNotUtf8Error,
+    DiffTooLargeError,
+    GitHubError,
+)
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.git import GitRepo
 from review_bot.pr.github import BotComment, GitHubClient, NewComment
+from review_bot.pr.incremental import changed_hunks
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import Action
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
     Applied,
+    Incremental,
     Mode,
     Origin,
     ReportedError,
@@ -64,10 +74,11 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     GitHub runs, and the report is ``skipped`` with that reason. Otherwise the provider is made,
     and called at most once.
 
-    In comment mode, a ``reviewed`` run plans against the bot's comments on ``pr`` and applies
-    the plan (``_apply``); a ``blocked_secret`` or ``failed`` one only writes its summary; a
-    ``skipped`` one calls GitHub not at all. A call that fails stops the rest, and the report
-    holds its error.
+    In comment mode, the run reviews only what changed since the last commit the bot reviewed,
+    when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
+    applies the plan (``_apply``); a ``blocked_secret`` or ``failed`` one only writes its
+    summary; a ``skipped`` one writes nothing, and reads at most the summary. A call that fails
+    stops the rest, and the report holds its error.
 
     Args:
         pr: The pull request, from its event.
@@ -83,7 +94,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     Raises:
         ValueError: If ``github`` is given in shadow mode, or missing in comment mode.
         GitError: If a commit is missing from the clone, or git fails.
-        GitHubError: If the bot's comments can't be listed; nothing is posted.
+        GitHubError: If the bot's summary or comments can't be read; nothing is posted.
         AuditError: If a record can't be written.
     """
     if (github is None) != (mode is Mode.SHADOW):
@@ -167,18 +178,16 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         "pull_request",
         {"repo": pr.repo, "number": pr.number, "base_sha": pr.base_sha, "head_sha": pr.head_sha},
     )
-    review: PipelineResult | ReportedError | Reason
     if refusal is None:
-        review = await _review(pr, git, make_provider, settings, audit)
+        review = await _review(pr, git, github, make_provider, settings, audit)
     else:
         audit.record(Stage.RUN, "refused", {"reason": refusal})
-        review = refusal
+        review = _Review(refusal)
     existing: tuple[BotComment, ...] = ()
-    # Only a review that reached the model has findings to pair with the bot's comments.
-    if github is not None and isinstance(review, PipelineResult) and review.model_called:
+    if github is not None and review.plans_comments:
         existing = await asyncio.to_thread(github.list_bot_comments, pr)
     shadow = build_shadow_report(
-        review,
+        review.result,
         mode=mode,
         existing=existing,
         settings=settings,
@@ -187,12 +196,43 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         finished_at=clock(),
         origin=origin,
         pr=pr,
+        since=review.since,
+        incremental=review.incremental,
     )
     # A skip posts and edits nothing (Phase 2 design, Comment state).
     if github is None or shadow.outcome is Outcome.SKIPPED:
         return shadow
-    applied = await asyncio.to_thread(_apply, shadow, pr, github)
+    applied = await asyncio.to_thread(_apply, shadow, pr, github, review.recorded)
     return dataclasses.replace(applied, finished_at=clock())
+
+
+@dataclass(frozen=True, slots=True)
+class _Review:
+    """A run's review, and in comment mode the commits it started from.
+
+    ``result`` is the review, the error that ended it, or the reason it didn't run or called no
+    model. ``recorded`` is the last reviewed commit the bot's summary held, if read, and
+    ``incremental`` the diffs of a review of only what changed since it.
+    """
+
+    result: PipelineResult | ReportedError | Reason
+    recorded: str | None = None
+    incremental: Incremental | None = None
+
+    @property
+    def since(self) -> str | None:
+        """The recorded commit if the run started from it: the head, or an ancestor of it."""
+        if self.incremental is not None or self.result is Reason.ALREADY_REVIEWED:
+            return self.recorded
+        return None
+
+    @property
+    def plans_comments(self) -> bool:
+        """Whether the review reached the model, or found nothing new to send it."""
+        result = self.result
+        if isinstance(result, PipelineResult):
+            return result.model_called
+        return result is Reason.NO_NEW_CHANGES
 
 
 def _refusal(
@@ -219,22 +259,98 @@ def _missing_commit(pr: PullRequestRef, git: GitRepo) -> Reason | None:
     return Reason.MISSING_COMMIT
 
 
-async def _review(
+async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     pr: PullRequestRef,
     git: GitRepo,
+    github: GitHubClient | None,
+    make_provider: Callable[[], LLMProvider],
+    settings: Settings,
+    audit: AuditLog,
+) -> _Review:
+    """Diff the pull request and review it: all of it, or only what changed since last time.
+
+    The PR diff comes first, so a diff that can't be reviewed, or whose files are all skipped,
+    is reported with no GitHub call. Otherwise, in comment mode, the bot's summary says the
+    last commit it reviewed: if that is the head, the run is refused ``already_reviewed``; if
+    it is an ancestor of the head, only the PR diff's hunks changed since then are reviewed.
+    Otherwise, after a force-push, in a clone without that commit, or when the diff since then
+    can't be used, the whole pull request is reviewed.
+    """
+    name = f"{pr.base_sha}...{pr.head_sha}"
+    max_bytes = settings.max_diff_bytes
+    try:
+        diff = await asyncio.to_thread(git.diff, pr.base_sha, pr.head_sha, max_bytes=max_bytes)
+    except REPORTED_ERRORS as exc:
+        return _Review(exc)
+    parsed = _reviewable(diff)
+    if github is None or parsed is None:
+        return _Review(await _review_diff(diff, name, make_provider, settings, audit))
+    recorded = await asyncio.to_thread(_recorded_sha, github, pr)
+    if recorded == pr.head_sha:
+        audit.record(Stage.RUN, "refused", {"reason": Reason.ALREADY_REVIEWED})
+        return _Review(Reason.ALREADY_REVIEWED, recorded)
+    changed = None
+    if recorded is not None and await asyncio.to_thread(git.is_ancestor, recorded, pr.head_sha):
+        changed = await asyncio.to_thread(_diff_since, git, recorded, pr.head_sha, max_bytes)
+    if changed is None:
+        return _Review(await _review_diff(diff, name, make_provider, settings, audit), recorded)
+    incremental = Incremental(pr_diff=parsed, changed=changed)
+    hunks = changed_hunks(diff, parsed, changed)
+    if not hunks:
+        return _Review(Reason.NO_NEW_CHANGES, recorded, incremental)
+    name = f"{name}, its hunks changed since {recorded}"
+    result = await _review_diff(hunks, name, make_provider, settings, audit)
+    return _Review(result, recorded, incremental)
+
+
+async def _review_diff(
+    diff: str,
+    name: str,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
     audit: AuditLog,
 ) -> PipelineResult | ReportedError:
-    """Diff the pull request and review it; an error that still ends in a report is returned."""
+    """Review ``diff``; an error that still ends in a report is returned."""
     try:
-        diff = await asyncio.to_thread(
-            git.diff, pr.base_sha, pr.head_sha, max_bytes=settings.max_diff_bytes
-        )
-        name = f"{pr.base_sha}...{pr.head_sha}"
         return await review_diff(diff, settings, make_provider(), audit, name=name)
     except REPORTED_ERRORS as exc:
         return exc
+
+
+def _reviewable(diff: str) -> ParsedDiff | None:
+    """``diff`` parsed, if it parses and holds a file the review doesn't skip; else None.
+
+    With None, any part of it has nothing to review too, so the summary needn't be read.
+    """
+    try:
+        parsed = parse_diff(diff)
+    except DiffNotParsableError:
+        return None
+    if all(file.skip_reason is not None for file in parsed.files):
+        return None
+    return parsed
+
+
+def _recorded_sha(github: GitHubClient, pr: PullRequestRef) -> str | None:
+    """The last commit the bot's summary on ``pr`` says it reviewed, or None."""
+    summary = github.read_summary(pr)
+    return None if summary is None else summary.reviewed_sha
+
+
+def _diff_since(git: GitRepo, since: str, head: str, max_bytes: int) -> ParsedDiff | None:
+    """The diff from ``since``, an ancestor of ``head``, to ``head``; no files if it is empty.
+
+    None if it is over ``max_bytes``, isn't UTF-8 or doesn't parse, as after merging a large
+    base: the whole pull request is reviewed instead, never skipped for this diff alone. With
+    ``since`` an ancestor, its merge base with ``head`` is ``since`` itself, so git's three-dot
+    diff is the plain one between them.
+    """
+    try:
+        return parse_diff(git.diff(since, head, max_bytes=max_bytes))
+    except DiffEmptyError:
+        return ParsedDiff(files=(), reviewable_text="", decoded_paths=())
+    except (DiffTooLargeError, DiffNotUtf8Error, DiffNotParsableError):
+        return None
 
 
 class _Calls:
@@ -255,14 +371,18 @@ class _Calls:
         return Applied.DONE
 
 
-def _apply(shadow: ShadowReport, pr: PullRequestRef, github: GitHubClient) -> ShadowReport:
+def _apply(
+    shadow: ShadowReport, pr: PullRequestRef, github: GitHubClient, recorded: str | None
+) -> ShadowReport:
     """Apply the report's plan to the pull request, then write its summary.
 
     The calls go in this order, and the first that fails stops the rest of them: one review
     posting every create and move; then, in comment order, each moved comment's old thread
     resolved and each update; then each resolve. A new comment is posted before its old thread
     is resolved, so a failure can't lose it. The summary is written last even after a failure,
-    so the run's result stays visible on the pull request.
+    so the run's result stays visible on the pull request. Its marker records the head as
+    reviewed only if the run is ``reviewed`` and every call before it was done; otherwise it
+    keeps ``recorded``, the commit the summary held, so the next run reviews from there again.
 
     Returns:
         The report with each entry's ``applied``, and the first failed call's error, if any, in
@@ -289,8 +409,11 @@ def _apply(shadow: ShadowReport, pr: PullRequestRef, github: GitHubClient) -> Sh
         for resolve in shadow.resolves
     )
     error = calls.error
+    is_reviewed = shadow.outcome is Outcome.REVIEWED and error is None
     try:
-        github.write_summary(pr, shadow.summary_body)
+        github.write_summary(
+            pr, shadow.summary_body, reviewed_sha=pr.head_sha if is_reviewed else recorded
+        )
     except GitHubError as exc:
         error = error or exc
     return dataclasses.replace(

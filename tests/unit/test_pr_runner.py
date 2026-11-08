@@ -6,17 +6,18 @@ from pathlib import Path
 
 import pytest
 from audit_records import read_records
-from git_samples import commit, init_repo
+from git_samples import commit, git, init_repo
 
 from review_bot.audit import AuditLog
 from review_bot.errors import ErrorCategory, GitError, GitHubError, ProviderError
 from review_bot.findings import Finding
+from review_bot.pr.comments import with_summary_marker
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeGitHubClient
 from review_bot.pr.git import GitRepo
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.runner import backfill_pull_request, run_pull_request
-from review_bot.pr.shadow import Mode, Origin, ShadowReport
+from review_bot.pr.shadow import Mode, Origin, Scope, ShadowReport
 from review_bot.providers.base import LLMProvider, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -349,6 +350,16 @@ def names(github: FakeGitHubClient) -> list[str]:
     return [call.name for call in github.calls]
 
 
+def posted_summary(shadow: ShadowReport, reviewed_sha: str | None) -> str:
+    return with_summary_marker(shadow.summary_body, reviewed_sha=reviewed_sha)
+
+
+def review_again(github: FakeGitHubClient) -> None:
+    """Make the next run on the same head review it whole, as with no summary yet."""
+    github.summary = None
+    github.calls.clear()
+
+
 def applied(shadow: ShadowReport) -> list[tuple[str, str]]:
     entries = [(comment.planned.action, comment.applied) for comment in shadow.comments]
     return entries + [("resolve", resolve.applied) for resolve in shadow.resolves]
@@ -366,12 +377,12 @@ def test_run_pull_request_in_comment_mode_posts_one_review_on_the_head_then_the_
 
     shadow = run(pr, factory=scripted(finding_on(2)), github=github)
 
-    assert names(github) == ["list_bot_comments", "post_review", "write_summary"]
+    assert names(github) == ["read_summary", "list_bot_comments", "post_review", "write_summary"]
     (review,) = github.reviews
     (posted,) = review.comments
     assert (review.commit_sha, posted.path, posted.line) == (pr.head_sha, "app.py", 2)
     assert posted.body == shadow.comments[0].body
-    assert github.summary == shadow.summary_body
+    assert github.summary == posted_summary(shadow, pr.head_sha)
     assert shadow.mode is Mode.COMMENT
     assert applied(shadow) == [("create", "done")]
     assert shadow.error is None
@@ -383,11 +394,11 @@ def test_run_pull_request_in_comment_mode_finding_the_same_again_posts_nothing(
     github = FakeGitHubClient()
     pr = pr_for(repo)
     run(pr, factory=scripted(finding_on(2)), github=github)
-    github.calls.clear()
+    review_again(github)
 
     shadow = run(pr, factory=scripted(finding_on(2)), github=github)
 
-    assert names(github) == ["list_bot_comments", "write_summary"]
+    assert names(github) == ["read_summary", "list_bot_comments", "write_summary"]
     assert applied(shadow) == [("keep", "done")]
     assert len(github.comments) == 1
 
@@ -430,8 +441,8 @@ def test_run_pull_request_in_comment_mode_with_a_failed_review_only_writes_the_s
 
     shadow = run(pr_for(repo), factory=CountingFactory(MockProvider(error=error)), github=github)
 
-    assert names(github) == ["write_summary"]
-    assert github.summary == shadow.summary_body
+    assert names(github) == ["read_summary", "write_summary"]
+    assert github.summary == posted_summary(shadow, None)
     assert "unavailable" in shadow.summary_body
     assert shadow.error is error
 
@@ -448,7 +459,7 @@ def test_run_pull_request_in_comment_mode_with_a_secret_only_writes_the_summary(
     shadow = run(pr, factory=CountingFactory(MockProvider()), github=github)
 
     assert shadow.outcome is Outcome.BLOCKED_SECRET
-    assert names(github) == ["write_summary"]
+    assert names(github) == ["read_summary", "write_summary"]
     assert aws_key not in str(github.summary)
 
 
@@ -460,7 +471,7 @@ def failing_run_setup(repo: Path, run: Runner) -> tuple[PullRequestRef, FakeGitH
     first = github.comments[0]
     fingerprint = first.body.split("fingerprint=")[1][:16]
     github.add_comment(path="app.py", line=9, body=first.body.replace(fingerprint, "e" * 16))
-    github.calls.clear()
+    review_again(github)
     return pr, github
 
 
@@ -473,6 +484,7 @@ def test_run_pull_request_stops_at_a_failed_call_but_still_writes_the_summary(
     shadow = run(pr, factory=scripted(finding_on(1), finding_on(2, "low")), github=github)
 
     assert names(github) == [
+        "read_summary",
         "list_bot_comments",
         "post_review",
         "update_comment",
@@ -485,7 +497,7 @@ def test_run_pull_request_stops_at_a_failed_call_but_still_writes_the_summary(
     ]
     assert isinstance(shadow.error, GitHubError)
     assert "update_comment" in str(shadow.error)
-    assert github.summary == shadow.summary_body
+    assert github.summary == posted_summary(shadow, None)
 
 
 def test_run_pull_request_with_only_the_summary_failing_reports_its_error(
@@ -507,12 +519,13 @@ def test_run_pull_request_posts_a_move_before_resolving_its_old_thread(
     pr = pr_for(repo)
     run(pr, factory=scripted(finding_on(2)), github=github)
     github.mark_outdated(1)
-    github.calls.clear()
+    review_again(github)
     github.fail_on("resolve_thread")
 
     shadow = run(pr, factory=scripted(finding_on(2)), github=github)
 
     assert names(github) == [
+        "read_summary",
         "list_bot_comments",
         "post_review",
         "resolve_thread",
@@ -531,7 +544,7 @@ def test_run_pull_request_raises_when_the_bots_comments_cant_be_listed(
     with pytest.raises(GitHubError, match="list_bot_comments"):
         run(pr_for(repo), factory=scripted(finding_on(2)), github=github)
 
-    assert names(github) == ["list_bot_comments"]
+    assert names(github) == ["read_summary", "list_bot_comments"]
 
 
 @pytest.mark.parametrize("mode", [Mode.SHADOW, Mode.COMMENT])
@@ -554,3 +567,272 @@ def test_run_pull_request_needs_a_github_client_exactly_in_comment_mode(
                 clock=lambda: NOW,
             )
         )
+
+
+# Incremental review (P2-S7).
+
+
+def numbered(changes: Mapping[int, str]) -> str:
+    """Thirty lines, ``a<n> = <n>``, with ``changes`` replacing some right-hand sides."""
+    return "".join(f"a{n} = {changes.get(n, str(n))}\n" for n in range(1, 31))
+
+
+def summary_for(sha: str) -> str:
+    return with_summary_marker("**Review bot:** `reviewed`.", reviewed_sha=sha)
+
+
+class History:
+    """A pull request reviewed at ``reviewed``, then pushed to ``head``, changing x.py again."""
+
+    def __init__(self, repo: Path) -> None:
+        self.base = commit(repo, {"x.py": numbered({}), "y.py": numbered({})})
+        self.reviewed = commit(
+            repo, {"x.py": numbered({3: "'reviewed'"}), "y.py": numbered({3: "'reviewed'"})}
+        )
+        self.head = commit(repo, {"x.py": numbered({3: "'reviewed'", 25: "'head'"})})
+        self.pr = PullRequestRef(
+            repo="owner/repo",
+            number=7,
+            base_sha=self.base,
+            head_sha=self.head,
+            is_fork=False,
+            is_draft=False,
+            event_at=NOW,
+            action="synchronize",
+        )
+
+
+@pytest.fixture
+def history(repo: Path) -> History:
+    return History(repo)
+
+
+def x_finding(line: int) -> Finding:
+    return finding_on(line).model_copy(update={"file": "x.py"})
+
+
+def test_run_pull_request_reviews_only_the_hunks_changed_since_the_reviewed_commit(
+    run: Runner, history: History
+) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.reviewed)
+    provider = MockProvider(findings=[x_finding(25)])
+
+    shadow = run(history.pr, factory=CountingFactory(provider), github=github)
+
+    (request,) = provider.requests
+    assert "+a25 = 'head'" in request.user_prompt
+    assert "a3 = 'reviewed'" not in request.user_prompt
+    assert "y.py" not in request.user_prompt
+    assert (shadow.outcome, shadow.scope, shadow.since) == (
+        Outcome.REVIEWED,
+        Scope.INCREMENTAL,
+        history.reviewed,
+    )
+    assert applied(shadow) == [("create", "done")]
+    assert github.summary == posted_summary(shadow, history.head)
+
+
+def test_run_pull_request_on_the_reviewed_head_is_skipped_without_a_change(
+    run: Runner, history: History
+) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.head)
+    factory = CountingFactory(MockProvider())
+
+    shadow = run(history.pr, factory=factory, github=github)
+
+    assert (shadow.outcome, shadow.reason) == (Outcome.SKIPPED, Reason.ALREADY_REVIEWED)
+    assert factory.calls == 0
+    assert names(github) == ["read_summary"]
+    assert github.summary == summary_for(history.head)
+
+
+def test_run_pull_request_after_merging_the_base_has_no_new_changes(
+    repo: Path, run: Runner
+) -> None:
+    commit(repo, {"x.py": numbered({})})
+    git(repo, "checkout", "-q", "-b", "feature")
+    reviewed = commit(repo, {"x.py": numbered({3: "'feature'"})})
+    git(repo, "checkout", "-q", "main")
+    base = commit(repo, {"other.py": "main = 1\n"})
+    git(repo, "checkout", "-q", "feature")
+    git(repo, "merge", "-q", "--no-edit", "main")
+    head = git(repo, "rev-parse", "HEAD")
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head)
+    github = FakeGitHubClient()
+    github.summary = summary_for(reviewed)
+    factory = CountingFactory(MockProvider())
+
+    shadow = run(pr, factory=factory, github=github)
+
+    assert (shadow.outcome, shadow.reason) == (Outcome.REVIEWED, Reason.NO_NEW_CHANGES)
+    assert (shadow.scope, shadow.since, shadow.report) == (Scope.INCREMENTAL, reviewed, None)
+    assert factory.calls == 0
+    assert names(github) == ["read_summary", "list_bot_comments", "write_summary"]
+    assert github.summary == posted_summary(shadow, head)
+
+
+def test_run_pull_request_after_an_empty_commit_has_no_new_changes(
+    repo: Path, run: Runner, history: History
+) -> None:
+    git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+    head = git(repo, "rev-parse", "HEAD")
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.head)
+    factory = CountingFactory(MockProvider())
+
+    shadow = run(dataclasses.replace(history.pr, head_sha=head), factory=factory, github=github)
+
+    assert shadow.reason is Reason.NO_NEW_CHANGES
+    assert factory.calls == 0
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        None,
+        "**Review bot:** `reviewed`.",
+        f"**Review bot:** `reviewed`.\n\n<!-- review-bot:v1 summary reviewed={'a' * 39} -->",
+        summary_for("c" * 40),
+    ],
+    ids=["no-summary", "no-marker", "39-hex", "not-in-the-clone"],
+)
+def test_run_pull_request_without_a_usable_reviewed_commit_reviews_the_whole_pull_request(
+    run: Runner, history: History, summary: str | None
+) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary
+    provider = MockProvider()
+
+    shadow = run(history.pr, factory=CountingFactory(provider), github=github)
+
+    assert "y.py" in provider.requests[0].user_prompt
+    assert (shadow.scope, shadow.since) == (Scope.FULL, None)
+    assert github.summary == posted_summary(shadow, history.head)
+
+
+def test_run_pull_request_after_a_force_push_reviews_the_whole_pull_request(
+    repo: Path, run: Runner, history: History
+) -> None:
+    git(repo, "checkout", "-q", "--detach", history.base)
+    rewritten = commit(repo, {"x.py": numbered({25: "'rewritten'"}), "y.py": numbered({1: "0"})})
+    pr = dataclasses.replace(history.pr, head_sha=rewritten)
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.reviewed)
+    provider = MockProvider()
+
+    shadow = run(pr, factory=CountingFactory(provider), github=github)
+
+    assert "y.py" in provider.requests[0].user_prompt
+    assert (shadow.scope, shadow.since) == (Scope.FULL, None)
+
+
+def test_run_pull_request_with_a_provider_failure_keeps_the_reviewed_commit(
+    run: Runner, history: History
+) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.reviewed)
+    error = ProviderError(ErrorCategory.TRANSIENT, "Try again.")
+
+    shadow = run(history.pr, factory=CountingFactory(MockProvider(error=error)), github=github)
+
+    assert (shadow.outcome, shadow.scope) == (Outcome.FAILED, Scope.INCREMENTAL)
+    assert github.summary == posted_summary(shadow, history.reviewed)
+
+
+def test_run_pull_request_with_a_failed_github_call_keeps_the_reviewed_commit(
+    run: Runner, history: History
+) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary_for(history.reviewed)
+    github.fail_on("post_review")
+
+    shadow = run(history.pr, factory=scripted(x_finding(25)), github=github)
+
+    assert applied(shadow) == [("create", "failed")]
+    assert github.summary == posted_summary(shadow, history.reviewed)
+
+
+def test_run_pull_request_raises_when_the_summary_cant_be_read(
+    run: Runner, history: History
+) -> None:
+    github = FakeGitHubClient()
+    github.fail_on("read_summary")
+    factory = CountingFactory(MockProvider())
+
+    with pytest.raises(GitHubError, match="read_summary"):
+        run(history.pr, factory=factory, github=github)
+
+    assert factory.calls == 0
+
+
+def test_run_pull_request_in_shadow_mode_always_reviews_the_whole_pull_request(
+    run: Runner, history: History
+) -> None:
+    shadow = run(history.pr, factory=CountingFactory(MockProvider()))
+
+    assert (shadow.scope, shadow.since) == (Scope.FULL, None)
+
+
+def merge_main_into_a_reviewed_branch(
+    repo: Path, main_files: Mapping[str, str | bytes]
+) -> tuple[PullRequestRef, str]:
+    """A branch reviewed at its own commit, then merged with main, which added ``main_files``."""
+    commit(repo, {"x.py": numbered({})})
+    git(repo, "checkout", "-q", "-b", "feature")
+    reviewed = commit(repo, {"x.py": numbered({3: "'feature'"})})
+    git(repo, "checkout", "-q", "main")
+    base = commit(repo, main_files)
+    git(repo, "checkout", "-q", "feature")
+    git(repo, "merge", "-q", "--no-edit", "main")
+    head = git(repo, "rev-parse", "HEAD")
+    return dataclasses.replace(pr_for(repo), base_sha=base, head_sha=head), reviewed
+
+
+@pytest.mark.parametrize(
+    "main_files",
+    [{"big.py": "big = 1\n" * 1000}, {"latin.py": b"name = '\xe9'\n"}],
+    ids=["over-the-byte-cap", "not-utf-8"],
+)
+def test_run_pull_request_reviews_the_whole_pull_request_when_the_diff_since_cant_be_used(
+    repo: Path, run: Runner, main_files: Mapping[str, str | bytes]
+) -> None:
+    pr, reviewed = merge_main_into_a_reviewed_branch(repo, main_files)
+    github = FakeGitHubClient()
+    github.summary = summary_for(reviewed)
+    provider = MockProvider()
+    settings = Settings(provider="mock", max_diff_bytes=4000)
+
+    shadow = run(pr, factory=CountingFactory(provider), settings=settings, github=github)
+
+    assert "+a3 = 'feature'" in provider.requests[0].user_prompt
+    assert (shadow.outcome, shadow.scope, shadow.since) == (Outcome.REVIEWED, Scope.FULL, None)
+    assert github.summary == posted_summary(shadow, pr.head_sha)
+
+
+def test_run_pull_request_blocked_by_a_secret_keeps_the_reviewed_commit_and_sends_its_hunk_again(
+    repo: Path, run: Runner
+) -> None:
+    aws_key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    base = commit(repo, {"x.py": numbered({})})
+    reviewed = commit(repo, {"x.py": numbered({3: "'reviewed'"})})
+    blocked = commit(repo, {"x.py": numbered({3: "'reviewed'", 10: "'b'", 25: repr(aws_key)})})
+    fixed = commit(repo, {"x.py": numbered({3: "'reviewed'", 10: "'b'"})})
+    pr = dataclasses.replace(pr_for(repo), base_sha=base, head_sha=blocked)
+    github = FakeGitHubClient()
+    github.summary = summary_for(reviewed)
+
+    shadow = run(pr, factory=CountingFactory(MockProvider()), github=github)
+
+    assert (shadow.outcome, shadow.scope) == (Outcome.BLOCKED_SECRET, Scope.INCREMENTAL)
+    assert github.summary == posted_summary(shadow, reviewed)
+
+    provider = MockProvider()
+    again = run(
+        dataclasses.replace(pr, head_sha=fixed), factory=CountingFactory(provider), github=github
+    )
+
+    assert (again.scope, again.since) == (Scope.INCREMENTAL, reviewed)
+    assert "+a10 = 'b'" in provider.requests[0].user_prompt
+    assert aws_key not in provider.requests[0].user_prompt

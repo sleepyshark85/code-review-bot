@@ -1,18 +1,30 @@
 """An in-memory GitHub for tests, in ``src/`` as ``MockProvider`` is (Phase 2 design, Module map).
 
 It holds one pull request's inline comments, each its own thread with who resolved it, and the
-bot's summary. It records every call, and can be told to fail one operation by name. It doesn't
-work out where GitHub would show a comment after a push: a test moves its line, or marks it
-outdated.
+bot's summary comment. It records every call, and can be told to fail one operation by name.
+It doesn't work out where GitHub would show a comment after a push: a test moves its line, or
+marks it outdated.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from review_bot.errors import GitHubError
-from review_bot.pr.comments import read_marker
+from review_bot.pr.comments import (
+    is_summary,
+    read_marker,
+    read_reviewed_sha,
+    with_summary_marker,
+)
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BOT_LOGIN, BOT_USER_TYPE, BotComment, NewComment, Resolver
+from review_bot.pr.github import (
+    BOT_LOGIN,
+    BOT_USER_TYPE,
+    BotComment,
+    NewComment,
+    Resolver,
+    Summary,
+)
 
 __all__ = ["FakeCall", "FakeComment", "FakeGitHubClient", "FakeReview"]
 
@@ -56,7 +68,8 @@ class FakeGitHubClient:
     """A ``GitHubClient`` over one pull request held in memory.
 
     ``comments`` are oldest first, and IDs grow with each one added or posted. ``summary`` is
-    the bot's summary body, or None before one is written. ``reviews`` are the reviews the bot
+    the body of the bot's summary comment as posted, its marker last, or None before one is
+    written; a test may set it to any body. ``reviews`` are the reviews the bot
     posted, and ``calls`` every call made through ``GitHubClient``, in order.
     """
 
@@ -120,6 +133,13 @@ class FakeGitHubClient:
             and (marker := read_marker(comment.body)) is not None
         )
 
+    def read_summary(self, pr: PullRequestRef) -> Summary | None:
+        """Return the summary, or None if there is none or its last line isn't a summary marker."""
+        self._record("read_summary", pr)
+        if self.summary is None or not is_summary(self.summary):
+            return None
+        return Summary(read_reviewed_sha(self.summary))
+
     def post_review(self, pr: PullRequestRef, comments: Sequence[NewComment]) -> None:
         """Post ``comments`` by the bot, as one review on ``pr``'s head commit."""
         self._record("post_review", pr, tuple(comments))
@@ -144,10 +164,10 @@ class FakeGitHubClient:
         for comment in thread:
             comment.resolved_by = Resolver.BOT
 
-    def write_summary(self, pr: PullRequestRef, body: str) -> None:
-        """Write the bot's summary, replacing any earlier one."""
+    def write_summary(self, pr: PullRequestRef, body: str, *, reviewed_sha: str | None) -> None:
+        """Write the bot's summary with its marker recording ``reviewed_sha``, replacing any."""
         self._record("write_summary", pr, body)
-        self.summary = body
+        self.summary = with_summary_marker(body, reviewed_sha=reviewed_sha)
 
     def _record(self, name: str, *args: object) -> None:
         self.calls.append(FakeCall(name, args))

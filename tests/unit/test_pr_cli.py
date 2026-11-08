@@ -352,6 +352,7 @@ def test_run_in_comment_mode_posts_through_the_github_client_and_reports_it(
         ("create", "done")
     ]
     assert [call.name for call in github.calls] == [
+        "read_summary",
         "list_bot_comments",
         "post_review",
         "write_summary",

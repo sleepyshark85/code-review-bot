@@ -18,6 +18,7 @@ __all__ = [
     "GitHubClient",
     "NewComment",
     "Resolver",
+    "Summary",
 ]
 
 # The bot's comments are those by this REST user (ADR 0008, ADR 0009).
@@ -61,11 +62,26 @@ class NewComment:
     body: str
 
 
+@dataclass(frozen=True, slots=True)
+class Summary:
+    """The bot's summary comment, read back from its marker.
+
+    ``reviewed_sha`` is the last commit the bot reviewed, or None if the marker records no
+    40-hex SHA, as before P2-S7 or when edited by hand.
+    """
+
+    reviewed_sha: str | None
+
+
 class GitHubClient(Protocol):
     """The calls a comment-mode run makes. Each raises ``GitHubError`` naming itself on failure."""
 
     def list_bot_comments(self, pr: PullRequestRef) -> tuple[BotComment, ...]:
         """Return the bot's own inline comments on ``pr``, oldest first."""
+        ...
+
+    def read_summary(self, pr: PullRequestRef) -> Summary | None:
+        """Return the bot's summary comment on ``pr``, or None if it has none."""
         ...
 
     def post_review(self, pr: PullRequestRef, comments: Sequence[NewComment]) -> None:
@@ -80,6 +96,9 @@ class GitHubClient(Protocol):
         """Resolve a comment's thread."""
         ...
 
-    def write_summary(self, pr: PullRequestRef, body: str) -> None:
-        """Create the bot's summary comment on ``pr``, or edit it in place if it exists."""
+    def write_summary(self, pr: PullRequestRef, body: str, *, reviewed_sha: str | None) -> None:
+        """Create the bot's summary comment on ``pr``, or edit it in place if it exists.
+
+        Its marker records ``reviewed_sha``, the last commit reviewed, or ``none`` if None.
+        """
         ...

@@ -23,9 +23,22 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from pydantic.alias_generators import to_camel
 
 from review_bot.errors import ConfigError, GitHubError
-from review_bot.pr.comments import Marker, is_summary, read_marker, with_summary_marker
+from review_bot.pr.comments import (
+    Marker,
+    is_summary,
+    read_marker,
+    read_reviewed_sha,
+    with_summary_marker,
+)
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BOT_LOGIN, BOT_USER_TYPE, BotComment, NewComment, Resolver
+from review_bot.pr.github import (
+    BOT_LOGIN,
+    BOT_USER_TYPE,
+    BotComment,
+    NewComment,
+    Resolver,
+    Summary,
+)
 from review_bot.secret_scan import redact
 from review_bot.settings import GITHUB_TOKEN_VARIABLE
 
@@ -287,6 +300,14 @@ class RestGitHubClient:
             if _is_bot(comment.user) and (marker := read_marker(comment.body)) is not None
         )
 
+    def read_summary(self, pr: PullRequestRef) -> Summary | None:
+        """Return the bot's summary comment on ``pr``, or None if it has none.
+
+        The summary is the bot's oldest issue comment whose last line is a summary marker.
+        """
+        summary = self._summary_comment("read_summary", pr)
+        return None if summary is None else Summary(read_reviewed_sha(summary.body))
+
     def post_review(self, pr: PullRequestRef, comments: Sequence[NewComment]) -> None:
         """Post ``comments`` on ``pr``'s head commit as one ``COMMENT`` review, on the new side."""
         payload = {
@@ -308,29 +329,35 @@ class RestGitHubClient:
         """Resolve a review thread, by its GraphQL node ID."""
         self._graphql("resolve_thread", _RESOLVE_MUTATION, {"threadId": thread_id}, _RESOLVE_DATA)
 
-    def write_summary(self, pr: PullRequestRef, body: str) -> None:
+    def write_summary(self, pr: PullRequestRef, body: str, *, reviewed_sha: str | None) -> None:
         """Edit the bot's summary comment on ``pr`` in place, or create it if there is none.
 
-        The posted body ends with the summary marker, which is how the next run finds it: the
-        bot's oldest issue comment whose last line is that marker.
+        The posted body ends with the summary marker recording ``reviewed_sha``, which is how
+        the next run finds it (``read_summary``).
         """
         operation = "write_summary"
-        issue_url = f"{self._repo_url}/issues/{self._number(pr)}"
-        comments = self._list(operation, f"{issue_url}/comments", _ISSUE_COMMENTS)
-        summary = min(
+        summary = self._summary_comment(operation, pr)
+        payload = {"body": with_summary_marker(body, reviewed_sha=reviewed_sha)}
+        if summary is None:
+            url = f"{self._issue_url(pr)}/comments"
+            self._send(operation, "POST", url, payload, _WITH_ID)
+        else:
+            url = f"{self._repo_url}/issues/comments/{summary.id}"
+            self._send(operation, "PATCH", url, payload, _WITH_ID)
+
+    def _summary_comment(self, operation: str, pr: PullRequestRef) -> _IssueComment | None:
+        """The bot's oldest issue comment on ``pr`` whose last line is a summary marker."""
+        comments = self._list(operation, f"{self._issue_url(pr)}/comments", _ISSUE_COMMENTS)
+        return min(
             (
-                comment.id
+                comment
                 for comment in comments
+                # The author first, so nobody else's text is parsed.
                 if _is_bot(comment.user) and is_summary(comment.body)
             ),
+            key=lambda comment: comment.id,
             default=None,
         )
-        payload = {"body": with_summary_marker(body)}
-        if summary is None:
-            self._send(operation, "POST", f"{issue_url}/comments", payload, _WITH_ID)
-        else:
-            url = f"{self._repo_url}/issues/comments/{summary}"
-            self._send(operation, "PATCH", url, payload, _WITH_ID)
 
     def _number(self, pr: PullRequestRef) -> int:
         """``pr``'s number, once it is known to be of this client's repository."""
@@ -340,6 +367,9 @@ class RestGitHubClient:
 
     def _pull_url(self, pr: PullRequestRef) -> str:
         return f"{self._repo_url}/pulls/{self._number(pr)}"
+
+    def _issue_url(self, pr: PullRequestRef) -> str:
+        return f"{self._repo_url}/issues/{self._number(pr)}"
 
     def _threads_by_comment(self, operation: str, pr: PullRequestRef) -> dict[int, _Thread]:
         """``pr``'s review threads, by the ID of the comment each starts with."""

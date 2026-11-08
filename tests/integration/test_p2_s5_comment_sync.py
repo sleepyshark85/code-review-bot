@@ -373,6 +373,15 @@ class Session:
     def open_comments(self) -> list[SeenComment]:
         return [c for c in self.github.comments() if c.resolved_by is None]
 
+    def forget_reviewed(self) -> None:
+        """Drop the summary, so the next run reviews the whole PR (P2-S7 AC5).
+
+        From P2-S7, a re-run of a reviewed head is skipped and a push is reviewed only for what
+        it changed. These tests are about planning against the whole PR diff, so a run meant to
+        see every finding again starts with no summary.
+        """
+        self.github.client.summary = None
+
 
 @pytest.fixture
 def session(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Session:
@@ -517,6 +526,7 @@ def test_p2_s5_ac2_same_findings_again_post_nothing_and_edit_the_summary_in_plac
     findings = [ai(EVAL_LINE), ai(WRITE_LINE)]
     posted_app(session, findings, APP_V1)
     session.push({OTHER_FILE: "unrelated = 1\n"})
+    session.forget_reviewed()
 
     run = session.run(findings)
 
@@ -533,6 +543,7 @@ def test_p2_s5_ac2_same_findings_again_post_nothing_and_edit_the_summary_in_plac
 def test_p2_s5_ac2_severity_change_edits_only_that_comment_and_keeps_its_fingerprint(session):
     posted_app(session, [ai(EVAL_LINE), ai(WRITE_LINE)], APP_V1)
     eval_comment = session.comment_at(APP, EVAL_LINE)
+    session.forget_reviewed()
 
     run = session.run([ai(EVAL_LINE, "medium"), ai(WRITE_LINE)])
 
@@ -551,8 +562,10 @@ def test_p2_s5_ac2_severity_change_edits_only_that_comment_and_keeps_its_fingerp
 
 def test_p2_s5_ac2_after_the_update_the_same_severity_again_posts_nothing(session):
     posted_app(session, [ai(EVAL_LINE)], APP_V1)
+    session.forget_reviewed()
     first = session.run([ai(EVAL_LINE, "medium")])
     assert first.writes.count("update_comment") == 1
+    session.forget_reviewed()
 
     run = session.run([ai(EVAL_LINE, "medium")])
 
@@ -593,6 +606,7 @@ def test_p2_s5_ac3_identical_lines_settle_and_a_third_run_posts_nothing(session)
     session.push({APP: text(inserted(APP_V1, 2, EVAL))})
     session.github.show_at(original.comment_id, 4)
     assert session.run([ai(2), ai(4)]).exit_code == 0
+    session.forget_reviewed()
 
     run = session.run([ai(2), ai(4)])
 
@@ -851,6 +865,7 @@ def test_p2_s5_ac5_the_old_bot_resolved_thread_cant_pair_again(session):
     session.github.outdate(old.comment_id)
     assert session.run([ai(EVAL_LINE)]).exit_code == 0
     assert session.comment(old.comment_id).resolved_by == "bot"
+    session.forget_reviewed()
 
     run = session.run([ai(EVAL_LINE)])
 
@@ -955,6 +970,7 @@ def push_rename(session: Session) -> None:
     assert f"rename to {NEW_PATH}" in session.repo.pr_diff(session.head)
     for comment in session.open_comments():
         session.github.outdate(comment.comment_id)
+    session.forget_reviewed()  # a rename-only push is otherwise `no_new_changes` (P2-S7 AC8)
 
 
 def test_p2_s5_ac6_comments_found_again_under_the_new_path_move_there_with_their_fingerprints(
@@ -985,6 +1001,7 @@ def test_p2_s5_ac6_after_the_move_nothing_is_created_twice(renamed):
     push_rename(renamed)
     findings = [ai(2, file=NEW_PATH), ai(5, file=NEW_PATH)]
     assert renamed.run(findings).exit_code == 0
+    renamed.forget_reviewed()
 
     run = renamed.run(findings)
 
@@ -1141,6 +1158,7 @@ NEW_FIVE = {11: "critical", 12: "high", 13: "low", 14: "low", 15: "low"}
 
 def test_p2_s5_ac10_eight_open_and_five_new_creates_two_and_withholds_three(session):
     posted_app(session, [ai(line) for line in EIGHT], MANY)
+    session.forget_reviewed()
 
     run = session.run([ai(line, severity) for line, severity in NEW_FIVE.items()])
 
@@ -1154,6 +1172,7 @@ def test_p2_s5_ac10_eight_open_and_five_new_creates_two_and_withholds_three(sess
 
 def test_p2_s5_ac10_resolved_threads_dont_count_towards_the_limit(session):
     posted_app(session, [ai(line) for line in EIGHT], MANY)
+    session.forget_reviewed()
     for line, resolver in ((16, "person"), (17, "person"), (18, "bot")):
         session.github.seed(
             path=APP,
@@ -1446,8 +1465,10 @@ def test_p2_s5_ac16_two_runs_after_a_move_post_move_and_resolve_nothing(session)
     move = session.run([ai(EVAL_LINE)])
     assert move.entry("move")["applied"] == "done"
 
+    session.forget_reviewed()
     again = session.run([ai(EVAL_LINE)])
     session.push({OTHER_FILE: "unrelated = 1\n"})
+    session.forget_reviewed()
     after_push = session.run([ai(EVAL_LINE)])
 
     for run in (again, after_push):
@@ -1472,8 +1493,10 @@ def test_p2_s5_ac16_restored_line_creates_one_comment_then_nothing(session, gith
         session.github.show_at(original.comment_id, EVAL_LINE)
 
     restored = session.run([ai(EVAL_LINE)])
+    session.forget_reviewed()
     again = session.run([ai(EVAL_LINE)])
     session.push({OTHER_FILE: "unrelated = 1\n"})
+    session.forget_reviewed()
     after_push = session.run([ai(EVAL_LINE)])
 
     assert restored.exit_code == 0, restored.stderr

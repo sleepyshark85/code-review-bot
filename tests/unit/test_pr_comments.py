@@ -10,8 +10,10 @@ from review_bot.pr.comments import (
     blocked_summary,
     comment_body,
     is_summary,
+    no_new_changes_summary,
     not_reviewed_summary,
     read_marker,
+    read_reviewed_sha,
     reviewed_summary,
     with_summary_marker,
 )
@@ -263,11 +265,116 @@ def test_read_marker_refuses_a_body_that_isnt_exactly_the_bots(
     assert read_marker(change(body_of(reviewed()))) is None
 
 
-def test_a_summary_with_its_marker_is_recognised_as_the_summary() -> None:
-    body = with_summary_marker("**Review bot:** `reviewed`.")
+def test_a_summary_with_no_reviewed_commit_says_none_and_is_recognised() -> None:
+    body = with_summary_marker("**Review bot:** `reviewed`.", reviewed_sha=None)
 
     assert body.endswith("\n\n<!-- review-bot:v1 summary reviewed=none -->")
     assert is_summary(body)
+    assert read_reviewed_sha(body) is None
+
+
+def test_a_summary_records_its_reviewed_commit_and_reads_it_back() -> None:
+    sha = "0123456789abcdef" * 2 + "01234567"
+
+    body = with_summary_marker("**Review bot:** `reviewed`.", reviewed_sha=sha)
+
+    assert body.endswith(f"\n\n<!-- review-bot:v1 summary reviewed={sha} -->")
+    assert is_summary(body)
+    assert read_reviewed_sha(body) == sha
+
+
+@pytest.mark.parametrize("sha", ["a" * 39, "A" * 40, "g" * 40, "none", ""])
+def test_a_summary_refuses_to_record_anything_but_a_40_hex_sha(sha: str) -> None:
+    with pytest.raises(ValueError, match="40 lowercase hex"):
+        with_summary_marker("Body.", reviewed_sha=sha)
+
+
+@pytest.mark.parametrize(
+    "last_line",
+    [
+        f"<!-- review-bot:v1 summary reviewed={'a' * 39} -->",
+        f"<!-- review-bot:v1 summary reviewed={'a' * 41} -->",
+        f"<!-- review-bot:v1 summary reviewed={'A' * 40} -->",
+        "<!-- review-bot:v1 summary reviewed=none -->",
+        f"<!-- review-bot:v1 summary reviewed={'a' * 40} --> ",
+        "**Review bot:** `reviewed`.",
+    ],
+    ids=["39-hex", "41-hex", "upper-case", "none", "trailing-space", "no-marker"],
+)
+def test_a_summary_without_a_40_hex_sha_on_its_marker_records_no_commit(last_line: str) -> None:
+    assert read_reviewed_sha(f"Body.\n\n{last_line}") is None
+
+
+def test_a_reviewed_commit_counts_only_on_the_last_line() -> None:
+    marker = f"<!-- review-bot:v1 summary reviewed={'a' * 40} -->"
+
+    assert read_reviewed_sha(f"{marker}\n\ntext after it") is None
+
+
+SINCE = "0123456789abcdef" * 2 + "01234567"
+
+
+def test_no_new_changes_summary_names_the_commit_and_the_open_comments() -> None:
+    summary = no_new_changes_summary(since=SINCE, open_comments=2)
+
+    assert summary == (
+        "**Review bot:** `reviewed` (`no_new_changes`). No changes to review since `0123456`, "
+        "so nothing was sent to the model. Open bot comments on this pull request: 2."
+    )
+
+
+def test_an_incremental_summary_with_nothing_new_says_so_and_counts_the_open_comments() -> None:
+    summary = reviewed_summary(
+        CommentPlan(), threshold=Severity.MEDIUM, since=SINCE, open_comments=3
+    )
+
+    assert summary == (
+        "**Review bot:** `reviewed`. Changes since `0123456` reviewed. No new findings at or "
+        "above medium. Open bot comments on this pull request: 3."
+    )
+
+
+def test_an_incremental_summary_counts_open_comments_even_when_there_are_none() -> None:
+    plan = CommentPlan(comments=(PlannedComment(Action.CREATE, reviewed(), ANCHOR),))
+
+    summary = reviewed_summary(plan, threshold=Severity.LOW, since=SINCE, open_comments=0)
+
+    assert summary == (
+        "**Review bot:** `reviewed`. Changes since `0123456` reviewed. 1 comments, 0 withheld. "
+        "Open bot comments on this pull request: 0."
+    )
+
+
+def test_a_full_summary_counts_open_comments_only_when_there_are_some() -> None:
+    clean = reviewed_summary(CommentPlan(), threshold=Severity.MEDIUM, open_comments=2)
+
+    assert clean == (
+        "**Review bot:** `reviewed`. No findings at or above medium. "
+        "Open bot comments on this pull request: 2."
+    )
+    assert reviewed_summary(CommentPlan(), threshold=Severity.MEDIUM, open_comments=0) == (
+        "**Review bot:** `reviewed`. No findings at or above medium."
+    )
+
+
+def test_an_incremental_summary_keeps_the_count_on_its_first_paragraph_before_withheld() -> None:
+    summary = reviewed_summary(withheld_plan(1), threshold=Severity.LOW, since=SINCE)
+
+    assert summary.split("\n\n")[0] == (
+        "**Review bot:** `reviewed`. Changes since `0123456` reviewed. 0 comments, 1 withheld. "
+        "Open bot comments on this pull request: 0."
+    )
+
+
+def test_an_incremental_summary_renders_its_commit_as_inert_code() -> None:
+    summary = reviewed_summary(CommentPlan(), threshold=Severity.LOW, since=SINCE)
+
+    tokens = MarkdownIt("commonmark").parseInline(summary)[0].children or []
+    assert [token.content for token in tokens if token.type == "code_inline"] == [
+        "reviewed",
+        "0123456",
+    ]
+    assert not any(token.type == "link_open" for token in tokens)
 
 
 @pytest.mark.parametrize(

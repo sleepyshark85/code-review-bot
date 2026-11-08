@@ -455,3 +455,141 @@ def test_a_paired_comments_planned_fingerprint_is_the_only_field_changed() -> No
     (kept,) = plan([original], [comment(1, line=3)]).comments
 
     assert kept.reviewed == dataclasses.replace(original, fingerprint="c0c0c0c0c0c0c0c0")
+
+
+# Incremental runs (P2-S7): ``changed`` is the diff since the last reviewed commit.
+
+RENAME = "diff --git a/a.py b/t.py\nsimilarity index 100%\nrename from a.py\nrename to t.py\n"
+UNRELATED = section("elsewhere.py", "+moved_on()\n")
+# The diff since the last reviewed commit of a t.py new since then.
+ADDED_SINCE = (
+    "diff --git a/t.py b/t.py\nnew file mode 100644\n--- /dev/null\n+++ b/t.py\n"
+    "@@ -0,0 +1,3 @@\n+dup()\n+other()\n+dup()\n"
+)
+
+
+def changed_removing(text: str, *, path: str = "t.py") -> str:
+    """A diff since the last reviewed commit that edits ``text``, on line 1 of ``path``."""
+    return (
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,1 @@\n-{text}\n+x\n"
+    )
+
+
+def plan_since(
+    findings: list[ReviewedFinding], existing: list[BotComment], changed: str | None
+) -> CommentPlan:
+    """Plan against ``TWIN`` in an incremental run, or a full one if ``changed`` is None."""
+    return plan_comments(
+        findings,
+        existing,
+        pr_diff=TWIN,
+        changed=None if changed is None else parse_diff(changed),
+        max_open_comments=10,
+    )
+
+
+@pytest.mark.parametrize("line", [5, None], ids=["at-its-line", "outdated"])
+def test_a_gone_comment_whose_line_didnt_change_since_then_is_kept(line: int | None) -> None:
+    gone = comment(1, line=line, text="gone()")
+
+    assert resolved_ids(plan_since([], [gone], None)) == [1]
+    assert resolved_ids(plan_since([], [gone], UNRELATED)) == []
+
+
+@pytest.mark.parametrize("line", [5, None], ids=["at-its-line", "outdated"])
+def test_a_gone_comment_whose_line_changed_since_then_is_resolved(line: int | None) -> None:
+    gone = comment(1, line=line, text="gone()")
+
+    assert resolved_ids(plan_since([], [gone], changed_removing("gone()"))) == [1]
+
+
+def test_a_comment_whose_line_changed_but_is_still_there_is_kept() -> None:
+    # Its anchor's text was edited elsewhere in the file, but stays on the comment's line.
+    kept = comment(1, line=2, text="other()")
+
+    assert resolved_ids(plan_since([], [kept], changed_removing("other()"))) == []
+
+
+def test_a_line_removed_in_another_file_doesnt_count_as_the_comments() -> None:
+    gone = comment(1, line=5, text="gone()")
+
+    assert resolved_ids(plan_since([], [gone], changed_removing("gone()", path="u.py"))) == []
+
+
+def test_a_comments_path_follows_a_rename_since_then() -> None:
+    renamed = comment(1, line=2, text="other()", path="a.py")
+
+    assert resolved_ids(plan_since([], [renamed], None)) == [1]
+    assert resolved_ids(plan_since([], [renamed], RENAME)) == []
+
+
+def test_an_outdated_comment_renamed_since_then_moves_to_its_finding() -> None:
+    renamed = comment(1, line=None, text="other()", path="a.py", fingerprint="1111111111111111")
+
+    result = plan_since([finding(2)], [renamed], RENAME)
+
+    assert actions(result) == [(Action.MOVE, 2, 1)]
+    assert result.comments[0].reviewed.fingerprint == "1111111111111111"
+
+
+def test_a_finding_at_a_new_ordinal_pairs_with_its_comment_by_key_and_creates_nothing() -> None:
+    # Posted at ordinal 1, below its twin; found at ordinal 0 when only its line was reviewed.
+    posted = comment(1, line=3, fingerprint="1111111111111111")
+    twin = comment(2, line=1, fingerprint="0000000000000000")
+
+    result = plan_since([finding(3, fingerprint="0000000000000000")], [posted, twin], UNRELATED)
+
+    assert actions(result) == [(Action.KEEP, 3, 1)]
+    assert result.resolved == ()
+
+
+def test_a_finding_on_a_line_outside_the_pr_diff_is_withheld_in_an_incremental_run() -> None:
+    result = plan_since([finding(9)], [], changed_removing("dup()"))
+
+    assert [(item.reviewed.finding.line, item.reason) for item in result.withheld] == [
+        (9, WithholdReason.NOT_COMMENTABLE)
+    ]
+
+
+def test_a_comment_left_on_a_path_renamed_before_then_is_resolved_once_its_line_is_gone() -> None:
+    # Posted on a.py, renamed to t.py by an earlier push; now its line is edited in t.py.
+    stale = comment(1, line=None, text="bad()", path="a.py")
+
+    assert resolved_ids(plan_since([], [stale], None)) == [1]
+    assert resolved_ids(plan_since([], [stale], changed_removing("bad()"))) == [1]
+
+
+@pytest.mark.parametrize("line", [2, None], ids=["at-its-line", "outdated"])
+def test_a_comment_in_a_file_added_since_then_is_resolved_once_its_line_is_gone(
+    line: int | None,
+) -> None:
+    # t.py is new since the last reviewed commit, and the commented line is no longer in it.
+    edited = comment(1, line=line, text="bad()")
+
+    assert resolved_ids(plan_since([], [edited], ADDED_SINCE)) == [1]
+
+
+def test_a_comment_in_a_file_added_since_then_whose_line_is_there_is_kept() -> None:
+    kept = comment(1, line=2, text="other()")
+
+    assert resolved_ids(plan_since([], [kept], ADDED_SINCE)) == []
+
+
+def test_open_after_counts_open_comments_less_resolves_plus_creates() -> None:
+    existing = [
+        comment(1, line=2, text="other()", fingerprint="1111111111111111"),
+        comment(2, line=None, text="gone()", fingerprint="2222222222222222"),
+        comment(3, line=None, text="elsewhere()", resolved_by=Resolver.PERSON),
+    ]
+
+    result = plan([finding(3, fingerprint="3333333333333333")], existing)
+
+    assert (resolved_ids(result), result.open_after) == ([2], 2)
+
+
+def test_open_after_is_unchanged_by_a_move() -> None:
+    outdated = comment(1, line=None)
+
+    result = plan([finding(3)], [outdated])
+
+    assert (actions(result), result.open_after) == ([(Action.MOVE, 3, 1)], 1)

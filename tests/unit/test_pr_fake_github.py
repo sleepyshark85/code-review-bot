@@ -7,7 +7,7 @@ from review_bot.findings import Category, Finding, ReviewedFinding, Severity, So
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeCall, FakeGitHubClient, FakeReview
-from review_bot.pr.github import BotComment, NewComment, Resolver
+from review_bot.pr.github import BotComment, NewComment, Resolver, Summary
 from review_bot.pr.plan import Action, PlannedComment
 
 PR = PullRequestRef(
@@ -108,11 +108,12 @@ def test_update_resolve_and_summary_change_the_held_state() -> None:
 
     github.update_comment(comment_id, BODY)
     github.resolve_thread("thread-1")
-    github.write_summary(PR, "first")
-    github.write_summary(PR, "second")
+    github.write_summary(PR, "first", reviewed_sha=None)
+    github.write_summary(PR, "second", reviewed_sha=None)
 
     (comment,) = github.comments
-    assert (comment.body, comment.resolved_by, github.summary) == (BODY, Resolver.BOT, "second")
+    assert (comment.body, comment.resolved_by) == (BODY, Resolver.BOT)
+    assert github.summary == "second\n\n<!-- review-bot:v1 summary reviewed=none -->"
     assert [call.name for call in github.calls] == [
         "update_comment",
         "resolve_thread",
@@ -126,7 +127,7 @@ def test_fail_on_makes_that_operation_raise_after_recording_it() -> None:
     github.fail_on("write_summary")
 
     with pytest.raises(GitHubError, match="write_summary"):
-        github.write_summary(PR, "body")
+        github.write_summary(PR, "body", reviewed_sha=None)
 
     assert github.summary is None
     assert [call.name for call in github.calls] == ["write_summary"]
@@ -147,3 +148,33 @@ def test_an_unknown_comment_or_thread_is_a_github_error(call, operation: str) ->
 def test_a_test_helper_given_an_unknown_comment_raises_value_error() -> None:
     with pytest.raises(ValueError, match="no comment 9"):
         FakeGitHubClient().mark_outdated(9)
+
+
+def test_read_summary_is_none_before_any_summary_is_written() -> None:
+    github = FakeGitHubClient()
+
+    assert github.read_summary(PR) is None
+    assert [call.name for call in github.calls] == ["read_summary"]
+
+
+def test_read_summary_reads_back_the_reviewed_commit_write_summary_recorded() -> None:
+    github = FakeGitHubClient()
+    github.write_summary(PR, "Body.", reviewed_sha="a" * 40)
+
+    assert github.read_summary(PR) == Summary("a" * 40)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        ("Body with no marker.", None),
+        ("Body.\n\n<!-- review-bot:v1 summary reviewed=none -->", Summary(None)),
+        (f"Body.\n\n<!-- review-bot:v1 summary reviewed={'b' * 39} -->", Summary(None)),
+    ],
+    ids=["no-marker", "none", "39-hex"],
+)
+def test_read_summary_reads_a_summary_a_test_set(summary: str, expected: Summary | None) -> None:
+    github = FakeGitHubClient()
+    github.summary = summary
+
+    assert github.read_summary(PR) == expected

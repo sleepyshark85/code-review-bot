@@ -1,4 +1,4 @@
-"""Diffs between two commits of a local clone, and which commits it holds, by running ``git``.
+"""Diffs between two commits of a local clone, which commits it holds and how they relate, by git.
 
 git runs from an argument list with a timeout, and never with an external diff or a textconv
 filter, so the clone's attributes and config can't make it run another program (Phase 2
@@ -28,7 +28,8 @@ _DIFF_OPTIONS: Final = (
     "-U3",
 )
 # ``git rev-parse --verify --quiet`` exits 1, and only 1, when the name doesn't resolve, and
-# ``git merge-base`` when the commits share no history.
+# ``git merge-base`` when the commits share no history or, with ``--is-ancestor``, when the first
+# isn't an ancestor of the second.
 _NOT_FOUND_EXIT_CODE: Final = 1
 
 
@@ -92,6 +93,19 @@ class GitRepo:
             GitError: If git fails, times out or can't start.
         """
         return self._exit_code(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"]) == 0
+
+    def is_ancestor(self, older: str, newer: str) -> bool:
+        """Whether ``older`` is ``newer`` or one of its ancestors, both commits in the clone.
+
+        False if either isn't a commit in the clone, or a shallow clone lacks the history
+        joining them.
+
+        Raises:
+            GitError: If git fails, times out or can't start.
+        """
+        if not (self.has_commit(older) and self.has_commit(newer)):
+            return False
+        return self._exit_code(["merge-base", "--is-ancestor", older, newer]) == 0
 
     def _require_commit(self, sha: str) -> None:
         """Raise ``GitError`` naming ``sha`` unless it is a commit in the clone."""

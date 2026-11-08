@@ -14,7 +14,7 @@ from review_bot.errors import ConfigError, GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BotComment, NewComment, Resolver
+from review_bot.pr.github import BotComment, NewComment, Resolver, Summary
 from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess, RestGitHubClient, github_access
 
@@ -46,6 +46,11 @@ BOT_BODY = comment_body(PlannedComment(Action.CREATE, FINDING, "fedcba9876543210
 BOT = {"login": "github-actions[bot]", "type": "Bot"}
 PERSON = {"login": "alice", "type": "User"}
 SUMMARY_MARKER = "<!-- review-bot:v1 summary reviewed=none -->"
+SHA = "0123456789abcdef" * 2 + "01234567"
+
+
+def marker_for(reviewed: str) -> str:
+    return f"<!-- review-bot:v1 summary reviewed={reviewed} -->"
 
 
 @dataclass(frozen=True)
@@ -364,7 +369,7 @@ def test_write_summary_creates_the_summary_with_its_marker_when_the_bot_has_none
         else reply({"id": 9}, status=201)
     )
 
-    client(stub).write_summary(PR, "Summary.")
+    client(stub).write_summary(PR, "Summary.", reviewed_sha=None)
 
     listing, created = stub.received
     assert (listing.method, listing.path) == ("GET", "/repos/owner/repo/issues/7/comments")
@@ -379,12 +384,59 @@ def test_write_summary_edits_the_bots_oldest_summary_in_place(stub: Stub) -> Non
     ]
     stub.respond = lambda request: reply(summaries if request.method == "GET" else {"id": 6})
 
-    client(stub).write_summary(PR, "Summary.")
+    client(stub).write_summary(PR, "Summary.", reviewed_sha=None)
 
     edited = stub.received[-1]
     assert len(stub.received) == 2
     assert (edited.method, edited.path) == ("PATCH", "/repos/owner/repo/issues/comments/6")
     assert edited.body == {"body": f"Summary.\n\n{SUMMARY_MARKER}"}
+
+
+def test_write_summary_records_the_reviewed_commit_in_its_marker(stub: Stub) -> None:
+    stub.respond = lambda request: (
+        reply([]) if request.method == "GET" else reply({"id": 9}, status=201)
+    )
+
+    client(stub).write_summary(PR, "Summary.", reviewed_sha=SHA)
+
+    created = stub.received[-1]
+    assert created.body == {"body": f"Summary.\n\n{marker_for(SHA)}"}
+
+
+def test_read_summary_reads_the_reviewed_commit_from_the_bots_oldest_summary(
+    stub: Stub,
+) -> None:
+    comments = [
+        {"id": 3, "user": PERSON, "body": f"copied\n\n{marker_for('d' * 40)}"},
+        {"id": 8, "user": BOT, "body": f"newer\n\n{marker_for('e' * 40)}"},
+        {"id": 6, "user": BOT, "body": f"older\n\n{marker_for(SHA)}"},
+    ]
+    stub.respond = lambda _request: reply(comments)
+
+    summary = client(stub).read_summary(PR)
+
+    (listing,) = stub.received
+    assert (listing.method, listing.path) == ("GET", "/repos/owner/repo/issues/7/comments")
+    assert summary == Summary(SHA)
+
+
+def test_read_summary_ignores_a_persons_comment_with_a_valid_marker(stub: Stub) -> None:
+    copied = {"id": 3, "user": PERSON, "body": f"copied\n\n{marker_for(SHA)}"}
+    other_workflow = {"id": 4, "user": BOT, "body": "Coverage is 91%."}
+    stub.respond = lambda _request: reply([copied, other_workflow])
+
+    assert client(stub).read_summary(PR) is None
+
+
+@pytest.mark.parametrize("reviewed", ["none", "a" * 39], ids=["none", "39-hex"])
+def test_read_summary_of_a_marker_without_a_40_hex_sha_records_no_commit(
+    stub: Stub, reviewed: str
+) -> None:
+    stub.respond = lambda _request: reply(
+        [{"id": 6, "user": BOT, "body": f"Summary.\n\n{marker_for(reviewed)}"}]
+    )
+
+    assert client(stub).read_summary(PR) == Summary(None)
 
 
 def test_a_pull_request_of_another_repository_is_refused_before_any_request(

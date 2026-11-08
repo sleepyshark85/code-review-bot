@@ -18,7 +18,10 @@ class Outcome(StrEnum):
 
 
 class Reason(StrEnum):
-    """Why a run was skipped. A failed run's reason is the provider's ``ErrorCategory``."""
+    """Why a run was skipped, or reviewed without the model.
+
+    A failed run's reason is the provider's ``ErrorCategory``.
+    """
 
     TOO_LARGE = "too_large"
     EMPTY = "empty"
@@ -33,3 +36,8 @@ class Reason(StrEnum):
     DRAFT = "draft"
     # A backfilled pull request whose base or head commit isn't in the clone.
     MISSING_COMMIT = "missing_commit"
+    # Comment mode: the head is the commit the bot last reviewed.
+    ALREADY_REVIEWED = "already_reviewed"
+    # Not a skip: outcome ``reviewed``, with no hunk changed since the last reviewed commit, so no
+    # model call.
+    NO_NEW_CHANGES = "no_new_changes"

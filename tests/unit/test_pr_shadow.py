@@ -24,6 +24,7 @@ from review_bot.pr.github import BotComment
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
+    Incremental,
     Mode,
     Origin,
     ReportedError,
@@ -106,6 +107,8 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "withheld",
         "caps",
         "over_budget",
+        "scope",
+        "since",
     ]
     assert document["schema"] == "shadow/v1"
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
@@ -119,6 +122,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "deadline_s": 300,
     }
     assert document["over_budget"] is False
+    assert (document["scope"], document["since"]) == ("full", None)
 
 
 def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() -> None:
@@ -433,3 +437,122 @@ def test_build_shadow_report_in_shadow_mode_refuses_existing_comments() -> None:
             origin=Origin.EVENT,
             pr=PR,
         )
+
+
+# Incremental runs (P2-S7).
+
+SINCE = "c" * 40
+# The whole PR diff; the reviewed diff, ``DIFF``, holds only its first two lines.
+WHOLE_PR_DIFF = parse_diff(section("a.py", "+first\n+second\n+third\n"))
+
+
+def changed_removing(text: str) -> Incremental:
+    changed = parse_diff(
+        f"diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -5 +5 @@\n-{text}\n+x\n"
+    )
+    return Incremental(pr_diff=WHOLE_PR_DIFF, changed=changed)
+
+
+def build_incremental(
+    review: PipelineResult | Reason,
+    *existing: BotComment,
+    since: str | None = SINCE,
+    incremental: Incremental | None = None,
+    mode: Mode = Mode.COMMENT,
+) -> dict[str, Any]:
+    shadow = build_shadow_report(
+        review,
+        mode=mode,
+        existing=existing,
+        settings=SETTINGS,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=Origin.EVENT,
+        pr=PR,
+        since=since,
+        incremental=incremental,
+    )
+    document: dict[str, Any] = json.loads(render_shadow_json(shadow))
+    return document
+
+
+def test_an_incremental_review_plans_against_the_whole_pr_diff_and_records_its_start() -> None:
+    document = build_incremental(result(reviewed(3)), incremental=changed_removing("gone"))
+
+    (created,) = document["comments"]
+    assert (created["action"], created["line"]) == ("create", 3)
+    assert (document["scope"], document["since"]) == ("incremental", SINCE)
+
+
+def test_no_new_changes_is_reviewed_and_only_resolves_comments_whose_lines_changed() -> None:
+    changed = bot_comment(4, 9, "gone")
+    unchanged = dataclasses.replace(bot_comment(5, 8, "untouched"), fingerprint="d" * 16)
+
+    document = build_incremental(
+        Reason.NO_NEW_CHANGES, changed, unchanged, incremental=changed_removing("gone")
+    )
+
+    assert (document["outcome"], document["reason"], document["report"]) == (
+        "reviewed",
+        "no_new_changes",
+        None,
+    )
+    assert [(entry["action"], entry["line"]) for entry in document["comments"]] == [("resolve", 9)]
+    assert document["summary_body"].endswith(
+        "since `ccccccc`, so nothing was sent to the model. "
+        "Open bot comments on this pull request: 1."
+    )
+
+
+def test_an_incremental_summary_names_its_start_and_counts_the_comments_left_open() -> None:
+    kept = dataclasses.replace(bot_comment(5, 8, "untouched"), fingerprint="d" * 16)
+
+    document = build_incremental(result(reviewed(3)), kept, incremental=changed_removing("gone"))
+
+    assert document["summary_body"] == (
+        "**Review bot:** `reviewed`. Changes since `ccccccc` reviewed. 1 comments, 0 withheld. "
+        "Open bot comments on this pull request: 2."
+    )
+
+
+def test_a_full_comment_mode_summary_counts_comments_left_open_after_resolves() -> None:
+    document = build_in_comment_mode(bot_comment(4, 1, "first"), bot_comment(5, None, "gone"))
+
+    assert document["summary_body"] == (
+        "**Review bot:** `reviewed`. 1 comments, 0 withheld. "
+        "Open bot comments on this pull request: 1."
+    )
+
+
+def test_a_shadow_mode_summary_counts_no_open_comments() -> None:
+    assert build(result(reviewed(2)))["summary_body"] == (
+        "**Review bot:** `reviewed`. 1 comments, 0 withheld."
+    )
+
+
+def test_already_reviewed_is_a_skip_that_records_its_start() -> None:
+    document = build_incremental(Reason.ALREADY_REVIEWED)
+
+    assert (document["outcome"], document["reason"]) == ("skipped", "already_reviewed")
+    assert (document["scope"], document["since"]) == ("incremental", SINCE)
+
+
+@pytest.mark.parametrize(
+    ("review", "since", "incremental", "mode", "message"),
+    [
+        (Reason.NO_NEW_CHANGES, SINCE, None, Mode.COMMENT, "Only an incremental run"),
+        (result(), None, changed_removing("x"), Mode.COMMENT, "come with the commit"),
+        (result(), SINCE, None, Mode.SHADOW, "reads no comments or summary"),
+    ],
+    ids=["no-new-changes-without-diffs", "diffs-without-since", "since-in-shadow-mode"],
+)
+def test_build_shadow_report_refuses_inconsistent_incremental_inputs(
+    review: PipelineResult | Reason,
+    since: str | None,
+    incremental: Incremental | None,
+    mode: Mode,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_incremental(review, since=since, incremental=incremental, mode=mode)

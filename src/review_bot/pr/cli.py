@@ -434,7 +434,7 @@ def _run(
     Raises:
         EventError: If the event file is unusable; nothing else runs.
         GitError: If a commit is missing or git fails; no provider is called.
-        GitHubError: If the bot's comments can't be listed; nothing is posted.
+        GitHubError: If the bot's summary or comments can't be read; nothing is posted.
     """
     pr = read_event(command.event_path)
     settings = command.settings

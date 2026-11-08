@@ -494,3 +494,70 @@ The main session decided the fix: in comment mode, `pr/cli.py` reads `GITHUB_TOK
 ### Coverage
 
 From this file alone, with `--cov=review_bot.pr`: `pr/rest_github.py` is at 95%, and `pr/cli.py` at 61%. The uncovered branches are a malformed token, a URL that doesn't parse, a PR from another repository, GraphQL `data` that fails its schema, and a comment that has no thread. `pr/cli.py` is low because it also holds `shadow`, `backfill` and `label`.
+
+## P2-S7: Re-review only what changed since the last reviewed commit
+
+Spec: [p2-s7-review-new-commits.md](slices/p2-s7-review-new-commits.md). Tests: [`tests/integration/test_p2_s7_review_new_commits.py`](../../../tests/integration/test_p2_s7_review_new_commits.py), 26 tests, 32 cases. They were written from the spec, design.md (Comment state, Interfaces, `shadow/v1`) and ADR 0009 while the developer built the slice, before any of its code was read. They reuse P2-S5's `Session` (a real git PR in `tmp_path`, one `FakeGitHubClient` per PR, in-process `run --mode comment` with `MockProvider`).
+
+**Status after review round 1: all 32 cases pass, with the developer's round-1 fix (the full-review fallback for an unusable diff since A, and the AC6 guard applied only to files that existed at A and still do). Together with the P2-S5 and P2-S6 files, 220 of 220 cases pass.** Before the fix, the 4 cases added for round 1 failed on the behaviour (see Failures). Before round 1, the first 28 cases passed against the developer's uncommitted build on `feat/p2-s7-review-new-commits` (base `9c6e720`).
+
+### Seam and set-up
+
+- **Runs:** `review_bot.pr.cli.main(["run", ..., "--mode", "comment"], provider=MockProvider, github=FakeGitHubClient)`, as in P2-S5. What the model was asked is the `user_prompt` of each `MockProvider.requests` entry.
+- **Summary:** read back from the fake's `summary`, and its marker from the last line by `<!-- review-bot:v1 summary reviewed=<40 hex> -->`. Tests that need a summary the bot didn't write set `FakeGitHubClient.summary`, which the fake's `read_summary` parses (confirmed). The summary's final wording, as the coordinator passed it on, is checked by phrase: `Changes since \`<sha7>\` reviewed.`, the `no_new_changes` sentence, `No new findings at or above <threshold>.` (the run's `report.threshold`, `low` by default, not the `medium` of the example), and `Open bot comments on this pull request: N.`. The plural in "1 comments" isn't asserted, since review may fix it.
+- **`shadow.json`:** `scope` (`full` or `incremental`) and `since` (a SHA or null) are the last two keys, after `over_budget` (confirmed). P2-S1's `SHADOW_KEYS` now ends with them, so every suite that loads `shadow.json` checks them.
+- **`fail_on`** fails every later call to the operation, as in S5. AC10's GitHub case recovers with a new `FakeGitHubClient` holding the old one's `comments` and `summary`.
+- **Pushes:** besides P2-S5's commits and renames, the base branch can move on and be merged into the PR (`git merge --no-ff main`), with the event's `base.sha` at main's tip, as GitHub sends it; and a force-push resets the branch to the base before committing.
+
+### Criteria
+
+| AC | Tests (`test_p2_s7_` prefix) | Result |
+|---|---|---|
+| AC1 | `ac1_only_the_hunk_changed_since_a_is_sent_and_scope_is_incremental`: an existing file with two PR hunks 17 lines apart, plus a new file; the push edits the lower hunk only. The prompt holds the edit, not the upper hunk or the other file; `scope` `incremental`, `since` A; summary `reviewed=B`. `ac1_base_branch_changes_merged_in_arent_sent`. `ac1_reviewed_marker_advances_with_each_push`: A, B, C in turn | pass |
+| AC2 | `ac2_merge_from_main_alone_calls_no_model_and_changes_no_comment`: no request, `reviewed`/`no_new_changes`, only the summary written, `reviewed=` the merge commit, and the summary's `no_new_changes` sentence with `Open bot comments on this pull request: 1.` | pass |
+| AC3 | `ac3_rerun_on_the_reviewed_head_is_skipped_already_reviewed`: no request, no write, summary unchanged | pass |
+| AC4 | `ac4_force_push_reviews_the_whole_pr`, `ac4_reviewed_sha_not_in_the_clone_reviews_the_whole_pr`: `full`, null `since`, an untouched file in the prompt | pass |
+| AC5 | `ac5_summary_without_a_valid_marker_reviews_the_whole_pr` ×6 (no summary, no marker, S5's `reviewed=none`, 39 hex, 41 hex, a non-hex digit). `ac5_first_run_with_no_summary_is_full`. `ac5_valid_sha_with_text_after_the_marker_isnt_read` | pass |
+| AC6 | `ac6_comment_whose_own_line_changed_since_a_is_resolved`, whose summary says `Changes since` A and a count of 0 after the resolve. `ac6_unchanged_line_inside_a_hunk_changed_since_a_is_kept` ×2 (GitHub follows it, or marks it outdated), whose summary is the whole incremental no-findings sentence with a count of 1. `ac6_unchanged_line_in_a_file_added_since_a_is_kept`: an S5 regression check only, because the line is still there | pass |
+| AC6 (round 1) | `ac6_edited_line_in_a_file_added_since_a_is_resolved`: a comment on a file added since A, posted by a run whose `write_summary` then failed (`reviewed` stays A); its line is edited, so it's resolved. `ac6_after_a_rename_an_edit_to_the_commented_line_resolves_it`: AC12's comment stays on `a.py` with no pairing; the next push edits its line in `b.py`, so it's resolved | pass (2) |
+| Notes: unusable diff since A | `unusable_diff_since_a_over_the_byte_cap_falls_back_to_full`: a 300 KB file merged from main, with `REVIEW_BOT_MAX_DIFF_BYTES=5000` over a PR diff under 5,000 bytes. `unusable_diff_since_a_not_utf8_falls_back_to_full`: a Latin-1 file merged from main. Each must be `reviewed`, `full`, null `since`, with the whole PR in the prompt | pass (2) |
+| AC7 | `ac7_twin_found_at_ordinal_0_pairs_with_its_ordinal_1_comment`: identical lines 2 and 20, both commented (ordinals 0 and 1); a push next to line 20 sends only its hunk; the finding there pairs with the ordinal-1 comment: `keep`, nothing posted | pass |
+| AC8 | `ac8_rename_only_push_calls_no_model_and_keeps_every_comment` | pass |
+| AC9 | `ac9_finding_on_a_line_only_the_changed_diff_has_is_withheld_not_commentable`, through `plan_comments(..., pr_diff=, changed=)`: `changed` holds a base-branch line merged in, which the PR diff lacks; the finding there is withheld `not_commentable`. Not end to end: see reading 3 | pass |
+| AC10 | `ac10_provider_failure_keeps_reviewed_at_a` (the next push is reviewed from A, the failed push's edit in the prompt). `ac10_github_failure_keeps_reviewed_at_a` (`post_review` fails; the re-run reviews from A and posts; its summary says `Changes since` A, `0 withheld.` and a count of 2: 1 open plus 1 created) | pass |
+| AC11 | `ac11_shadow_mode_is_full_every_time_and_uses_no_client`: two shadow runs after a reviewed comment run, with a client given; the summary body has no open-comment count | pass |
+| AC12 | `ac12_only_the_edit_is_reviewed_and_the_comment_isnt_resolved`, `ac12_pairing_finding_moves_it_to_b_with_its_fingerprint` (old thread resolved, posted on `b.py` with the old body, no `create`) | pass |
+| Limits | `limits_huge_summary_of_marker_text_is_read_quickly_and_ignored`: about 3 MB of marker-like text, a 1,000,000-digit SHA on the last line; full review within 60 s | pass |
+
+### Failures
+
+Both found in review round 1 and fixed in build; the tests stay as regression checks.
+
+**Fixed: AC6. A gone line on a path the diff since A doesn't name wasn't resolved.** Both cases end with `resolved_threads == []`.
+1. **Rename:** set up `renamed_after_a` (an `a.py` comment, with `a.py` renamed to `b.py` after A). Run once with no findings, which keeps the comment. Then push `b.py` with line 3 (`EVAL`) replaced, and run with no findings.
+2. **Added file:** after A, push `src/added.py`. Run with a finding on line 2 while `fail_on("write_summary")` is set, which exits 18 with `reviewed` still at A. Then push line 2 edited, mark the comment outdated, and run with no findings.
+
+**Fixed: an unusable diff since A ended `skipped`, not `full`.** A merge from main with a 300 KB file under a 5,000-byte cap, or with a Latin-1 file, gives outcome `skipped`. The spec's Notes now say such a run reviews the whole PR (the main session's decision in review round 1).
+
+### Readings for the designer
+
+1. **AC1 and AC12, "hunk" of a new file.** AC1 sends the PR diff's hunks that hold a changed line. For a file new in the PR (AC12's `b.py`), that hunk is the whole file, so "only that edit's hunk" can't exclude the rest of `b.py`. The tests check only that the edit is sent and that another file isn't, and put AC12's edit within 3 lines of the anchor, so the pairing finding is in the reviewed diff under either reading.
+2. **AC6, "in a file added since A".** Every line of a file added since A is changed since A, so the literal rule ("resolved only if its own line changed") would allow resolving. The test reads the clause as "kept while its anchored line is still there" (S5's rule) and seeds an own comment on such a file, as a run whose summary write failed would leave it.
+3. **AC9 can't be reached end to end.** The reviewed diff is a subset of the PR diff, and verify drops any finding outside it, so a finding on a line only the incremental diff has never reaches the plan. The end-to-end version (a base-branch change merged in, a finding on it) got an empty `withheld`. The test now checks the plan alone; AC9 could be reworded as a plan rule, or dropped as unreachable.
+4. **AC10 for GitHub failures** doesn't say whether the summary is still written after a failed `post_review`. The test only requires that, if it is, its marker stays A. The build records the head only after a reviewed outcome where every earlier GitHub call succeeded.
+
+### Gaps
+
+- **The summary's owner check** ("read only from the bot's own summary comment") belongs to `RestGitHubClient`; the fake holds one summary, so it isn't tested here.
+- **The git timeout and the byte caps on the second diff** aren't attacked: a slow `git diff` can't be produced in a temp repo without patching `src`.
+- **A reviewed SHA missing from a shallow clone in CI** is simulated by a SHA absent from the repository.
+
+### Earlier suites changed
+
+- **P2-S1** (`test_p2_s1_shadow_report_local.py`): `SHADOW_KEYS` gains `scope` and `since`.
+- **P2-S6** (`test_p2_s6_comments_on.py`): `GitHubClient.write_summary` now takes a required keyword, `reviewed_sha`, so the two AC4 tests and AC5's `write_summary` cases pass `reviewed_sha=None`.
+- **P2-S5** (`test_p2_s5_comment_sync.py`): 12 cases re-ran a reviewed head (now `already_reviewed`), or pushed an unrelated or rename-only commit and expected findings outside it (now incremental, or `no_new_changes`). `Session.forget_reviewed()` drops the summary, so such a run reviews the whole PR again (S7 AC5), and each test keeps its intent: planning against the whole PR diff. Changed: AC2 ×3, AC3 settle, AC5 bot-resolved thread, AC6 ×2 (in `push_rename`, and before the second run), AC10 ×2, AC16 ×3. AC7 and AC11 needed no change.
+
+### Coverage
+
+From this file alone, with `--cov=review_bot.pr`: `plan.py` 93%, `fake_github.py` 87%, `runner.py` 82%, `comments.py` 81%, `git.py` 69%. `git.py`'s uncovered lines are mostly its error paths (timeout, a missing binary, a failed `git diff`), which S2's suite covers.
