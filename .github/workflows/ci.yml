@@ -21,6 +21,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the P3-S16 tests diff live.yml's two fixed smoke commits.
+          fetch-depth: 0
 
       # The pre-commit gitleaks hook only scans staged changes, so it finds nothing
       # under --all-files. This runs before `uv sync` so .venv isn't scanned.

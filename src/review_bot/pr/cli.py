@@ -90,7 +90,12 @@ from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, in_ci, load_settings, take_github_token
+from review_bot.settings import (
+    Settings,
+    live_run_refused,
+    load_settings,
+    take_github_token,
+)
 
 __all__ = ["main"]
 
@@ -102,10 +107,11 @@ _NO_CREDENTIAL_HINT: Final = (
     "review-bot pr: ANTHROPIC_API_KEY is unset or empty in CI, so nothing was reviewed. Add it "
     "as a repository secret to review pull requests."
 )
-# In CI, backfill must not spend (S13, Out of scope).
+# In CI, backfill spends only from a manual dispatch (S13, Out of scope; ADR 0015).
 _BACKFILL_IN_CI: Final = (
-    "backfill doesn't run in CI (CI is set): it spends the budget you approved, with your own "
-    "login or key. Run it from your own shell."
+    "backfill runs in CI only from a workflow_dispatch run given --allow-dispatch, and this CI "
+    "run (CI is set) isn't one: it spends the budget you approved. Run it from your own shell, "
+    "or dispatch live.yml."
 )
 _FEEDBACK_NAME: Final = "feedback.jsonl"
 _COLLECT_WITHOUT_CREDENTIAL: Final = (
@@ -147,6 +153,7 @@ class _BackfillCommand:
     repo_dir: Path
     out_dir: Path
     max_calls: int
+    allow_dispatch: bool
     settings: Settings
 
 
@@ -205,17 +212,17 @@ def main(
         bot's comments failed, and 19 for an unusable event, pulls file or git command. A
         ``run --mode comment`` with no ``github`` exits 2 if ``GITHUB_TOKEN`` is missing or
         ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
-        or invalid config's code, an error's code if one stops it, and 2 in CI or over
-        ``--max-calls``. ``label`` returns 0 when done or interrupted, and 2 with no terminal or
-        an invalid labels file. ``collect`` returns 0 once ``feedback.jsonl`` is written; 2
-        with no ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an
-        unwritable ``--out``; 18 for a failed GitHub call, and 19 for an unusable event. A
-        failed GitHub call or an unusable event writes nothing. ``baseline`` returns 0 once
-        ``--out FILE`` is written; 2 for an invalid flag, an unwritable ``FILE``, or with no
-        ``github`` and an unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``; and 18 for a failed
-        GitHub call, which writes nothing. ``metrics`` returns 0 once the numbers are shown,
-        and 2 for an invalid flag, a --reports that isn't a directory, an --until before
-        --since, or only one price.
+        or invalid config's code, an error's code if one stops it, and 2 over ``--max-calls``
+        or in CI, unless a ``workflow_dispatch`` run gave ``--allow-dispatch``. ``label``
+        returns 0 when done or interrupted, and 2 with no terminal or an invalid labels file.
+        ``collect`` returns 0 once ``feedback.jsonl`` is written; 2 with no ``github`` and an
+        unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an unwritable ``--out``; 18 for
+        a failed GitHub call, and 19 for an unusable event. A failed GitHub call or an unusable
+        event writes nothing. ``baseline`` returns 0 once ``--out FILE`` is written; 2 for an
+        invalid flag, an unwritable ``FILE``, or with no ``github`` and an unusable
+        ``GITHUB_TOKEN`` or ``GITHUB_API_URL``; and 18 for a failed GitHub call, which writes
+        nothing. ``metrics`` returns 0 once the numbers are shown, and 2 for an invalid flag, a
+        --reports that isn't a directory, an --until before --since, or only one price.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
@@ -229,9 +236,9 @@ def main(
             command, _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand
         ):
             return _run_without_review(command, github, github_token)
-        # Before --out is created: in CI, backfill touches nothing.
+        # Before --out is created: a CI run refused here touches nothing.
         if isinstance(command, _BackfillCommand):
-            _refuse_backfill_in_ci()
+            _refuse_backfill_in_ci(allow_dispatch=command.allow_dispatch)
         make_github: Callable[[str], GitHubClient] | None = None
         if isinstance(command, _RunCommand):
             make_github = _github_for(command.mode, github, github_token)
@@ -354,6 +361,11 @@ def _parse_args(
         required=True,
         help="the most model calls allowed: one per pull request without a report in --out",
     )
+    backfill.add_argument(
+        "--allow-dispatch",
+        action="store_true",
+        help="in CI, run only if started by workflow_dispatch; any other CI run still refuses",
+    )
     label = commands.add_parser(
         "label",
         help="accept or reject, on the terminal, each comment the shadow reports would post",
@@ -398,10 +410,13 @@ def _parse_args(
     if name == "backfill":
         pulls_path, github_repo = flags.pop("pulls"), flags.pop("github_repo")
         repo_dir, max_calls = flags.pop("repo"), flags.pop("max_calls")
+        allow_dispatch = flags.pop("allow_dispatch")
         # Checked first, so an invalid value is still refused. Then one attempt per call, as
         # ``evals live`` makes, so --max-calls bounds the attempts.
         settings = load_settings(flags).model_copy(update={"max_retries": 0})
-        return _BackfillCommand(pulls_path, github_repo, repo_dir, out_dir, max_calls, settings)
+        return _BackfillCommand(
+            pulls_path, github_repo, repo_dir, out_dir, max_calls, allow_dispatch, settings
+        )
     event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
     return _RunCommand(event_path, repo_dir, out_dir, mode, load_settings(flags))
 
@@ -712,9 +727,9 @@ def _write_baseline(document: str, out_path: Path) -> None:
         ) from exc
 
 
-def _refuse_backfill_in_ci() -> None:
-    """Raise ``ConfigError`` if this process runs in CI, where backfill must not run."""
-    if in_ci(os.environ):
+def _refuse_backfill_in_ci(*, allow_dispatch: bool) -> None:
+    """Raise ``ConfigError`` in CI, unless a ``workflow_dispatch`` run gave ``--allow-dispatch``."""
+    if live_run_refused(os.environ, allow_dispatch=allow_dispatch):
         raise ConfigError(_BACKFILL_IN_CI)
 
 

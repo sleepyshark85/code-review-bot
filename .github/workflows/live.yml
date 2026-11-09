@@ -1,0 +1,89 @@
+name: Live
+
+# Live steps that spend real tokens (P3-S16, ADR 0015). A person dispatches one step by hand;
+# every amount is a literal here, and nothing else can start this workflow.
+# Never a required check: branch protection requires only CI's "gate".
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: The live step to run
+        type: choice
+        required: true
+        options:
+          - smoke
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: live smoke
+    if: github.ref == 'refs/heads/main' && inputs.step == 'smoke'
+    concurrency:
+      group: live
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # P1-S11's change to src/: a small diff whose code calls into other modules.
+      SMOKE_BASE: d82b241e154fa457f7fdeef6de6ba663bf0be5b9
+      SMOKE_HEAD: b754b099a0cd37dd06b0476b0f0dc18b8ee59d37
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: Install the bot
+        run: uv sync --locked --no-dev
+
+      - name: Write the smoke diff
+        run: |
+          mkdir -p "$RUNNER_TEMP/live"
+          git diff --output="$RUNNER_TEMP/live/smoke.diff" "$SMOKE_BASE" "$SMOKE_HEAD" -- src
+          size=$(wc -c < "$RUNNER_TEMP/live/smoke.diff")
+          if [ "$size" -ge 20000 ]; then
+            echo "::error::The smoke diff is $size bytes; it must be under 20 KB."
+            exit 1
+          fi
+
+      - name: Review the diff twice with repository context (at most $0.60)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_BOT_MAX_RETRIES: "0"
+        run: |
+          out="$RUNNER_TEMP/live"
+          failed=0
+          for run in 1 2; do
+            status=0
+            uv run --no-sync review-bot "$out/smoke.diff" \
+              --context-repo . \
+              --context-rev "$SMOKE_HEAD" \
+              --max-cost-usd 0.30 \
+              --format json \
+              --audit-log "$out/audit-$run.jsonl" \
+              > "$out/report-$run.json" 2> "$out/stderr-$run.txt" || status=$?
+            echo "Run $run exited $status."
+            # 0 is no findings and 1 is findings; anything else is a failed review.
+            if [ "$status" -gt 1 ]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Upload the reports, audit logs and output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live/
+          retention-days: 90
+          if-no-files-found: warn

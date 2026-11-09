@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -176,18 +177,56 @@ def test_backfill_over_max_calls_refuses_before_any_call_naming_both_counts(
     assert list((tmp_path / "out").iterdir()) == []
 
 
-def test_backfill_in_ci_refuses_before_any_call_or_creating_out(
-    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("event", "flags"),
+    [
+        ("pull_request", ["--allow-dispatch"]),
+        ("push", ["--allow-dispatch"]),
+        ("schedule", ["--allow-dispatch"]),
+        (None, ["--allow-dispatch"]),
+        ("workflow_dispatch", []),
+    ],
+)
+def test_backfill_in_ci_refuses_before_any_call_or_creating_out_unless_an_allowed_dispatch(  # noqa: PLR0913, PLR0917 - parameters and fixtures pytest passes
+    event: str | None,
+    flags: list[str],
+    tmp_path: Path,
+    repo: Path,
+    ci_run: Callable[[str | None], None],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("CI", "")
+    ci_run(event)
     provider = MockProvider()
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 1), provider=provider)
+    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 1), *flags, provider=provider)
 
     assert exit_code == 2
     assert provider.requests == []
     assert not (tmp_path / "out").exists()
-    assert "backfill doesn't run in CI" in capsys.readouterr().err
+    assert (
+        "backfill runs in CI only from a workflow_dispatch run given --allow-dispatch"
+        in capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("ci", [True, False], ids=["ci-workflow-dispatch", "outside-ci"])
+def test_backfill_given_allow_dispatch_runs_in_a_ci_workflow_dispatch_and_outside_ci(
+    ci: bool,
+    tmp_path: Path,
+    repo: Path,
+    audit_log_in_tmp_path: Path,
+    ci_run: Callable[[str | None], None],
+) -> None:
+    if ci:
+        ci_run("workflow_dispatch")
+    provider = MockProvider(findings=[])
+
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 1), "--allow-dispatch", provider=provider
+    )
+
+    assert exit_code == 0
+    assert len(provider.requests) == 1
 
 
 def test_backfill_with_a_bad_entry_exits_19_naming_it_before_any_call(

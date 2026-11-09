@@ -387,6 +387,88 @@ S4 appends `evidence` and `evidence_dropped` to every `report/v1` finding and ev
 
 Not measured by the tester, who ran only this file and the changed suites. For coverage of `findings`, `context.evidence`, `prompt`, `review`, `report`, `render`, `pr.comments` and `pr.shadow`, see the main session's `pytest --cov`.
 
+## P3-S16: Run the live smoke from a manual workflow, and accept CI only for such a dispatch
+
+Tests are in `tests/integration/test_p3_s16_live_workflow.py` (AC1 to AC6, and AC7 for `pr backfill`) and `tests/evals/test_p3_s16_evals_live_dispatch.py` (AC7 for `evals live`), sharing the refused events in `tests/dispatch_support.py`. They were updated to the designer's amendment of AC2 (the diff of `src/`, and the 20 KB guard) and to reviewer round 1. They were written from the spec, design.md's "Spend and caps" and ADR 0015, in the style of the P2-S3 tests of `review.yml`, whose evaluator, YAML readers and script runner they import. No test makes a live call or reaches the network.
+
+### Gate
+
+All green, on the developer's AC7 code and the main session's `live.yml`:
+- `ruff format --check`, `ruff check` and `mypy`.
+- `pytest --cov`: 6,392 passed, 2 skipped (both Windows-only, from earlier slices), 99.38% coverage, after reviewer round 1.
+- Total coverage 99.38%.
+- This slice's own files alone, after reviewer round 1: 111 passed, none skipped (this clone holds the smoke's commits), with `ruff format --check`, `ruff check` and `mypy` clean. The full `pytest --cov` figures above are from before round 1, which changed only tests.
+
+### Seam and set-up (assumed)
+
+- **Reading `live.yml`.** PyYAML, as for P2-S3. Job `if:` expressions go through P2-S3's evaluator with `github.ref` and `inputs.step` set, so "main only" and "one choice" are checked by evaluating them, not only by matching text.
+- **Running the smoke job's steps.** The diff step runs with bash and the real git in this clone, with the job's literal env and `RUNNER_TEMP` in `tmp_path`: as written, and with its `-- src` pathspec removed, so the guard sees the whole 80,551-byte diff between the same SHAs. A clone without the two SHAs skips the tests that need them, except in CI, where they fail: CI's checkout has the full history. The review step runs with bash and a fake `uv` first on `PATH`: it records each call's argv and environment, writes one marker line to stdout and one to stderr, and exits with a chosen code. So the loop, the redirections and the exit handling are executed, not parsed.
+- **Each recorded `review-bot` command line** goes through the real parser (`review_bot.cli.parse_args`, with the call's `REVIEW_BOT_*` env), and through `review_bot.cli.main` with `MockProvider` on the real diff, from the repository root (ADR 0015's "the real CLI parser accepts its arguments").
+- **AC7** runs `review_bot.evals.main(["live", ...], sdk_call=...)` with P1-S16's `ScriptedSdk`, and `review_bot.pr.cli.main(["backfill", ...], provider=...)` with P2-S13's `History`, `Backfiller` and `PerPullProvider`. `CI` and `GITHUB_EVENT_NAME` are removed for every test and set only on purpose.
+
+### Criteria
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_only_trigger_is_workflow_dispatch`. `ac1_exactly_one_input_step_a_required_choice`. `ac1_the_only_option_is_smoke`. `ac1_no_free_form_input_has_a_default_or_other_type`. `ac1_no_other_input_is_read_anywhere`. `ac1_every_choice_an_if_compares_is_an_option`. `ac1_no_job_runs_for_a_value_that_isnt_an_option` ×5 (empty, `evals-diff`, `backfill`, `SMOKE-x`, `smoke `). `ac1_no_other_event_name_appears_in_the_triggers` ×4 | pass (15) |
+| AC2 | `ac2_smoke_checks_out_main_with_full_history`. `ac2_diff_is_written_with_git_diff_output`. `ac2_both_shas_are_literals_in_the_workflow`. `ac2_diff_step_writes_a_diff_under_20_kb` (runs the step: 8,028 bytes, starts with `diff --git`). `ac2_diff_holds_only_src` (every file header is under `src/`). `ac2_diff_of_20_kb_or_more_fails_the_step_naming_its_size` (without the pathspec: non-zero exit, the byte count and "20 KB" in the output). `ac2_no_review_runs_after_a_failed_diff_step` (the review step comes later and has no `always()`). `ac2_head_sha_is_in_mains_history`. `ac2_review_bot_runs_exactly_twice`. `ac2_each_review_reads_the_diff_step_output`. `ac2_each_review_has_context_repo_dot_and_the_head_sha`. `ac2_each_review_caps_cost_at_030_with_retries_0` (parsed settings: `max_cost_usd` 0.30, `max_retries` 0, provider claude). `ac2_flags_are_literals_on_the_command_line`. `ac2_total_spend_is_at_most_the_design_cap` (2 × 0.30 ≤ 0.60). `ac2_real_cli_runs_each_command_on_the_real_diff` (exit 0 with `MockProvider`) | pass (15) |
+| AC3 | `ac3_no_job_runs_off_main` ×4 (a feature branch, `refs/heads/main-old`, a tag, a PR merge ref). `ac3_every_job_if_compares_the_ref_with_main`. `ac3_every_job_shares_one_concurrency_group_that_never_cancels` (one literal group, `cancel-in-progress: false`, and no job group equal to a workflow-level group, which would deadlock). `ac3_every_job_has_a_timeout_of_at_most_60_minutes`. `ac3_every_job_has_exactly_contents_read`. `ac3_every_checkout_persists_no_credentials` | pass (9) |
+| AC4 | `ac4_the_only_secret_is_the_api_key`. `ac4_api_key_is_only_in_the_review_steps_env` (the one path in the YAML tree holding `secrets.`). `ac4_the_key_reaches_the_review_command`. `ac4_no_run_block_interpolates_event_or_inputs`. `ac4_no_env_or_with_carries_event_or_inputs`. `ac4_choice_is_read_only_in_if` | pass (6) |
+| AC5 | `ac5_one_upload_runs_always_and_is_kept_90_days`. `ac5_every_review_captures_stdout_and_stderr_to_uploaded_files` (two files each, under the upload path). `ac5_each_reviews_output_goes_to_its_own_files`. `ac5_every_audit_log_is_uploaded` (absolute, under the upload path). `ac5_a_failed_review_still_writes_its_output_and_fails_the_step` (fake exit 12: the step fails, stderr is on disk for the `always()` upload) | pass (5) |
+| AC6 | `ac6_no_job_is_named_gate`. `ac6_ci_yml_still_holds_the_gate_job`. `ac6_live_yml_can_never_report_on_a_pull_request` | pass (3) |
+| AC7 | **evals live:** `ac7_evals_live_runs_in_ci_for_a_dispatch_with_the_flag` ×3 (`CI` `true`, empty, `false`). `ac7_evals_live_with_the_flag_refuses_any_other_ci_event` ×12. `ac7_evals_live_for_a_dispatch_without_the_flag_refuses` ×3. `ac7_evals_live_without_ci_runs_whatever_the_flag_and_event` ×8. `ac7_evals_live_without_ci_the_flag_changes_no_result`. **pr backfill:** `ac7_backfill_runs_in_ci_for_a_dispatch_with_the_flag`. `ac7_backfill_with_ci_set_to_any_value_and_the_flag_runs_for_a_dispatch` ×3. `ac7_backfill_with_the_flag_refuses_any_other_ci_event` ×12 (no `--out` created). `ac7_backfill_for_a_dispatch_without_the_flag_refuses` ×3. `ac7_backfill_without_ci_runs_whatever_the_flag_and_event` ×8. The 12 refused events: the spec's `pull_request`, `push`, `schedule` and unset, plus empty, `pull_request_target`, `repository_dispatch`, `workflow_call`, `WORKFLOW_DISPATCH`, a leading space, a trailing newline and `workflow_dispatch_x`. Each refusal: exit 2, no call, no recording or report, and the message names CI | pass (54) |
+| Limits | `limits_dispatched_evals_live_still_refuses_over_its_budget`. `limits_dispatched_backfill_still_refuses_over_its_budget` (the dispatch passes the CI guard only) | pass (2) |
+| Interfaces | `interfaces_replay_has_no_allow_dispatch`. `interfaces_pr_run_rejects_allow_dispatch` (exit 2) | pass (2) |
+| AC8 | Recorded after merge (below) | pending dispatch |
+| AC9 | Recorded after merge (below) | pending dispatch |
+
+Mutation check of the workflow tests: each of these one-line changes to `live.yml` turns at least one test red: `cancel-in-progress: true`, `--max-cost-usd 0.31`, `persist-credentials: true`, `${{ inputs.step }}` in a `run:`, a third loop pass, dropping the stderr redirect, dropping the `github.ref` check, `timeout-minutes: 90`, `retention-days: 30`, a second option, the size check removed or raised to `-ge 200000`, a second pathspec (`-- src tests`), and a workflow-level `live` group.
+
+### AC8: the smoke's runs (pending dispatch)
+
+Filled in from each `smoke` run's artifact once the slice has merged. **Stop rule:** if any run's init tool list holds a built-in tool or is missing any of `mcp__repo__read`, `mcp__repo__grep` and `mcp__repo__glob`, S6 and S8 pause and S3 goes back to design.
+
+| Run (URL) | Review | SDK version | Init tool list (audit `agent_tools`) | Tool calls and outcomes | Reported cost (USD) | Findings | Exit | Stop rule |
+|---|---|---|---|---|---|---|---|---|
+| pending | 1 | | | | | | | |
+| pending | 2 | | | | | | | |
+
+### AC9: every dispatch of `live.yml` (pending dispatch)
+
+Every run, re-runs and failures included. S6, S8 and S15 add their runs here.
+
+| Date | Run (URL, attempt) | Step | Outcome | Reported spend (USD) | Step total / step cap | Phase 3 total / $20.00 |
+|---|---|---|---|---|---|---|
+| pending | | `smoke` | | | / 0.60 | / 20.00 |
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+- **`tests/evals/test_p1_s16_eval_live_command.py`**, `test_p1_s16_ac6_ci_set_exits_2_before_any_call_even_with_every_flag`: it pinned the old refusal text, "live never runs in CI, and CI is set in the environment.", which AC7 makes untrue. It now checks that the message names CI as a word. Exit 2, no call and no recording are still asserted.
+
+### Readings for the designer
+
+1. **AC2, retries 0** comes from the step's `REVIEW_BOT_MAX_RETRIES: "0"`, not a flag. The tests check the parsed setting, so either form passes.
+2. **AC3, concurrency.** The one job has job-level group `live` and no workflow-level group. The test requires every job to have the same literal group (job-level, or the workflow's if a job has none), and no job to repeat a workflow-level group. S6 and S8 must give their jobs the same group.
+3. **AC7, `GITHUB_EVENT_NAME` is compared exactly.** Case variants, whitespace and longer names refuse. GitHub always sets the lower-case name, so this costs nothing.
+4. **Beyond the spec, flagged for review:** a job must not run for a value that isn't an option (`ac1_no_job_runs_for_a_value_that_isnt_an_option`), and `--allow-dispatch` isn't on `evals replay` or `pr run`. The spec's Notes settle the single loop step and exit codes above 1 failing the step; `ac2_review_bot_runs_exactly_twice` and `ac5_a_failed_review_still_writes_its_output_and_fails_the_step` follow them.
+
+### Gaps
+
+- **A clone without the smoke's commits** (a shallow local clone) skips the five tests that run git on them. In CI they can't skip: `ci.yml` now checks out the full history, and a missing commit fails them.
+- **AC6, "isn't a required check".** Branch protection can't be read offline. The tests check what makes `live.yml` unable to be the required check: no job named `gate`, and no `pull_request` trigger.
+- **Actions themselves** (`actions/checkout` honouring `ref: main`, the upload, the secret's injection, the concurrency queue) are only exercised by the first dispatch, AC8.
+
+### Coverage
+
+From the full `pytest --cov` run:
+- `settings.py` and `evals/cli.py`: 100% (omitted by `skip_covered`), including `live_run_refused`.
+- `evals/live.py` 98% and `pr/cli.py` 99%. Their missed lines (`live.py` 190 and 192; `pr/cli.py` 259->261, 284->exit and 590) are outside this slice's changes; every line the slice changed is covered.
+- Total: 99.38%.
+
 ## P3-S12: Offer suggested fixes in comments
 
 Spec: [p3-s12-suggested-fixes.md](slices/p3-s12-suggested-fixes.md). Tests: [`tests/integration/test_p3_s12_suggested_fixes.py`](../../../tests/integration/test_p3_s12_suggested_fixes.py), 208 cases, and [`tests/evals/test_p3_s12_live_suggestion_scrub.py`](../../../tests/evals/test_p3_s12_live_suggestion_scrub.py), 3 cases (AC11). They were written from the spec's criteria, Limits and Interfaces, design.md (Q7, "Prompt versions", "Report keys, appended only"), P2-S1 AC11 and ADR 0005, while the developer built the slice and before any of its code was read.
