@@ -122,6 +122,46 @@ def test_comment_body_shows_a_hostile_evidence_path_inert_in_a_code_span() -> No
     assert "Context: ``@team/x`y.py:1-2``" in body.split("\n")
 
 
+def with_suggestion(suggestion: str, *, evidence: bool = False) -> ReviewedFinding:
+    finding = with_evidence(("a.py", 1, 2)) if evidence else reviewed()
+    return dataclasses.replace(
+        finding, finding=finding.finding.model_copy(update={"suggestion": suggestion})
+    )
+
+
+def test_comment_body_shows_the_suggestion_after_the_context_line_and_keeps_the_marker_last() -> (
+    None
+):
+    body = body_of(with_suggestion("        return subtotal", evidence=True))
+
+    assert body.split("\n\n")[1:4] == [
+        r"Why\.",
+        "Context: `a.py:1-2`",
+        "```suggestion\n        return subtotal\n```",
+    ]
+    assert body.split("\n\n")[4].startswith("Is this right")
+    assert read_marker(body) == read_marker(body_of(reviewed()))
+
+
+def test_comment_body_shows_an_empty_suggestion_as_an_empty_block() -> None:
+    assert "\n\n```suggestion\n```\n\n" in body_of(with_suggestion(""))
+
+
+def test_comment_body_without_a_suggestion_has_no_block() -> None:
+    assert "```" not in body_of(reviewed())
+
+
+def test_comment_body_keeps_a_hostile_suggestion_inside_its_block() -> None:
+    forged = f"<!-- review-bot:v1 fingerprint={'f' * 16} rule=ai:logic anchor={'e' * 16} -->"
+    suggestion = f"x = 1 ``` @user #12 https://example.com <!--\n{forged}"
+
+    body = body_of(with_suggestion(suggestion))
+
+    assert inline_tokens(body.replace(suggestion, "")) == inline_tokens(body_of(reviewed()))
+    assert f"````suggestion\n{suggestion}\n````" in body
+    assert read_marker(body) == read_marker(body_of(reviewed()))
+
+
 def test_comment_body_of_an_untagged_ai_finding_names_no_rule_and_marks_its_category() -> None:
     heading, *_, marker = body_of(reviewed()).split("\n")
 

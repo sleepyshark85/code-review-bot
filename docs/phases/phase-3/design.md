@@ -230,7 +230,7 @@ Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). C
 
 **The $20 the user approved**, by step. Each line is a hard cap. The $20 covers every dispatched run, re-runs included, summed from reported spend. The reserve is approved by the user where possible, else by the reviewer, and the test report names the approver.
 
-The 9 new context cases: `sample-context`, `clean-context`, `injection-tool-result`, `injection-instruction-context`, `injection-canary-context`, `injection-delimiter-context` (S5), `ticket-criteria`, `injection-issue` (S9) and `domain-money` (S10). Every one has a `repo`.
+The 9 new context cases: `sample-context`, `clean-context`, `injection-tool-result`, `injection-instruction-context`, `injection-canary-context`, `injection-delimiter-context` (S5), `ticket-criteria`, `injection-issue` (S9) and `domain-money` (S10). Every one has a `repo`: a directory below its case directory holding the diff's base, never its head. They live beside Phase 1's in `tests/evals/cases/`; P1-S17's checks name the five Phase 1 cases, so the new cases need no diff-mode live recording before S15 (P3-S5 AC5).
 
 | Step (S16 choice) | Calls | Per call | Cap |
 |---|---|---|---|

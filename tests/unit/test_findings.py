@@ -213,6 +213,31 @@ def test_parse_findings_rejects_invalid_evidence_whole(evidence: object) -> None
     assert caught.value.category is ErrorCategory.INVALID_OUTPUT
 
 
+@pytest.mark.parametrize(
+    ("fields", "suggestion"),
+    [
+        ({}, None),
+        ({"suggestion": None}, None),
+        ({"suggestion": ""}, ""),
+        ({"suggestion": "x\n" * 50}, "x\n" * 50),
+    ],
+)
+def test_parse_findings_reads_a_suggestion_as_given_and_leaves_its_checks_to_verify(
+    fields: dict[str, str | None], suggestion: str | None
+) -> None:
+    [finding] = parse_findings(json.dumps({"findings": [valid_fields(**fields)]}))
+
+    assert finding.suggestion == suggestion
+
+
+@pytest.mark.parametrize("suggestion", [12, ["x"], {"text": "x"}])
+def test_parse_findings_rejects_a_suggestion_that_is_not_a_string(suggestion: object) -> None:
+    raw = json.dumps({"findings": [valid_fields(suggestion=suggestion)]})
+
+    with pytest.raises(ProviderError):
+        parse_findings(raw)
+
+
 def test_severity_rank_follows_the_ascending_order() -> None:
     assert [severity.rank for severity in Severity] == [0, 1, 2, 3]
 

@@ -7,6 +7,7 @@ from typing import Final, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from review_bot.errors import ErrorCategory, ProviderError
+from review_bot.suggestion import SuggestionDropReason
 
 __all__ = [
     "Category",
@@ -81,7 +82,8 @@ class Finding(BaseModel):
 
     ``rule`` is the model's tag, naming the rule that would catch the same problem, or None.
     ``evidence`` is the context the finding relies on, as the model cites it; once verified, only
-    the spans the model was shown (``context.evidence``).
+    the spans the model was shown (``context.evidence``). ``suggestion`` is the model's
+    replacement for the anchored line, or None; once verified, None unless verify kept it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -94,6 +96,7 @@ class Finding(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     rule: RuleId | None = None
     evidence: tuple[EvidenceSpan, ...] = Field(default=(), max_length=_MAX_EVIDENCE_SPANS)
+    suggestion: str | None = None
 
 
 class Source(StrEnum):
@@ -110,6 +113,8 @@ class ReviewedFinding:
     ``rule`` is the rule that found it, or a model finding's tag (``Finding.rule``).
     ``fingerprint`` is its stable identity (``fingerprint.fingerprint_for``).
     ``evidence_dropped`` counts the cited spans verify dropped from ``finding.evidence``.
+    ``suggestion_dropped`` is why verify dropped the model's suggestion, or None if it kept one
+    or there was none.
     """
 
     finding: Finding
@@ -117,6 +122,7 @@ class ReviewedFinding:
     rule: RuleId | None
     fingerprint: str
     evidence_dropped: int = 0
+    suggestion_dropped: SuggestionDropReason | None = None
 
     @property
     def rule_part(self) -> str:

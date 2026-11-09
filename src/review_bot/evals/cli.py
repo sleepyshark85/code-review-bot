@@ -66,7 +66,7 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
         return _USAGE
     if args.command == "replay" and args.require_live:
         default_model = Settings().model
-        results = [require_live(result, default_model) for result in results]
+        results = [require_live(result, default_model, mode=args.mode) for result in results]
     write_output(render_live(results) if args.command == "live" else render_replay(results))
     return _PASS if all(result.passed for result in results) else _FAIL
 
@@ -81,7 +81,7 @@ async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> list[Cas
             allow_dispatch=args.allow_dispatch,
             sdk_call=sdk_call,
         )
-    return await replay_cases(args.cases, args.recording)
+    return await replay_cases(args.cases, args.recording, mode=args.mode)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -94,9 +94,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     replay.add_argument("--cases", type=Path, required=True, help="the eval cases directory")
     replay.add_argument(
+        "--mode",
+        choices=("diff", "context"),
+        default="diff",
+        help="the recordings to replay: diff mode (the default), or context mode over each repo",
+    )
+    replay.add_argument(
         "--recording",
         type=Path,
-        help="a synthetic recording to score in place of its case's live one",
+        help="a synthetic recording of --mode to score in place of its case's live one",
     )
     replay.add_argument(
         "--require-live",

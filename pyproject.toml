@@ -36,7 +36,10 @@ line-length = 100
 target-version = "py312"
 extend-exclude = [
     "Assignment",  # the inherited stopgap, kept as-is for reference
+    "tests/evals/cases/*/repo",  # eval fixture repositories: code under review, bugs included
 ]
+# So pre-commit, which names each file, skips the excluded ones too.
+force-exclude = true
 
 [tool.ruff.lint]
 select = [
@@ -65,6 +68,11 @@ addopts = ["--strict-markers", "--strict-config", "-ra"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["integration: end-to-end tests through the pipeline (with MockProvider)"]
+# pytest's defaults, and the eval fixture repositories, whose files are code under review.
+norecursedirs = [
+    "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}",
+    "tests/evals/cases/*/repo",
+]
 
 [tool.coverage.run]
 source = ["review_bot"]

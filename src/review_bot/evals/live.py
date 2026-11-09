@@ -164,8 +164,9 @@ async def _record_case(
             "runs": recorded_runs,
         }
     )
-    _write_recording(loaded.live_recording_path, recording)
-    return await score_recording(loaded, load_recording(loaded.live_recording_path))
+    path = loaded.live_recording_path("diff")
+    _write_recording(path, recording)
+    return await score_recording(loaded, load_recording(path), mode="diff")
 
 
 async def _record_run(loaded: LoadedCase, settings: Settings, provider: LLMProvider) -> RecordedRun:
@@ -223,8 +224,13 @@ def _unwritable_audit_log(settings: Settings) -> EvalInputError:
 
 
 def _scrubbed_finding(finding: Finding) -> Finding:
+    suggestion = None if finding.suggestion is None else _scrubbed(finding.suggestion)
     return finding.model_copy(
-        update={"file": _scrubbed(finding.file), "rationale": _scrubbed(finding.rationale)}
+        update={
+            "file": _scrubbed(finding.file),
+            "rationale": _scrubbed(finding.rationale),
+            "suggestion": suggestion,
+        }
     )
 
 

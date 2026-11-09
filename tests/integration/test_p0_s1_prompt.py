@@ -13,10 +13,10 @@ pytestmark = pytest.mark.integration
 FINDING_FIELDS = ("file", "line", "severity", "category", "rationale", "confidence", "rule")
 SEVERITY_VALUES = ("low", "medium", "high", "critical")
 CATEGORY_VALUES = ("logic", "security", "reliability", "maintainability", "testing")
-# P3-S4 AC9: only the context prompt asks for `evidence`; the diff-mode prompt is unchanged byte
-# for byte, so it doesn't label it. test_p3_s4_ac9_context_prompt_asks_for_evidence checks the
-# context prompt labels it.
-CONTEXT_ONLY_FIELDS = ("evidence",)
+# P3-S4 AC9 and P3-S12 AC9: only the context prompt asks for `evidence` and `suggestion`; the
+# diff-mode prompt is unchanged byte for byte, so it labels neither. The P3-S4 and P3-S12 AC9
+# tests check the context prompt labels them.
+CONTEXT_ONLY_FIELDS = ("evidence", "suggestion")
 
 ANY_DIFF = {
     "lf_terminated": "diff --git a/x.py b/x.py\n+unique-diff-marker = 1\n",

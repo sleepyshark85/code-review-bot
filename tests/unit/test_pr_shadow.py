@@ -234,6 +234,7 @@ def test_render_shadow_json_writes_each_comment_and_withheld_finding() -> None:
         "owners": [],
         "evidence": [],
         "evidence_dropped": 0,
+        "suggestion": None,
     }
     assert comment["body"].endswith(f"anchor={comment['anchor']} -->")
     assert document["withheld"] == [
@@ -344,6 +345,39 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
     assert item.startswith("- `a.py:1`\n\n  **high** logic (source ai, confidence 0.50)\n\n")
     assert item.endswith(" -->")
     assert all(line.startswith("  ") for line in item.split("\n")[1:] if line)
+
+
+def with_suggestion(suggestion: str) -> ReviewedFinding:
+    plain = reviewed(1)
+    return dataclasses.replace(
+        plain, finding=plain.finding.model_copy(update={"suggestion": suggestion})
+    )
+
+
+def test_render_shadow_json_writes_each_comments_kept_suggestion() -> None:
+    (comment,) = build(result(with_suggestion("x = 2")))["comments"]
+
+    assert comment["suggestion"] == "x = 2"
+    assert "```suggestion\nx = 2\n```" in comment["body"]
+
+
+def test_render_shadow_markdown_keeps_a_suggestion_block_inside_its_list_item() -> None:
+    shadow = build_shadow_report(
+        result(with_suggestion("    x = 2\n\n    y = 3")),
+        mode=Mode.SHADOW,
+        existing=(),
+        settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=Origin.LOCAL,
+        pr=None,
+    )
+
+    item = render_shadow_markdown(shadow).split("\n\n", 1)[1]
+
+    assert "\n  ```suggestion\n      x = 2\n\n      y = 3\n  ```\n" in item
 
 
 def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
@@ -530,6 +564,7 @@ def test_render_shadow_json_in_comment_mode_writes_paired_comments_then_resolves
         "owners": [],
         "evidence": None,
         "evidence_dropped": None,
+        "suggestion": None,
     }
 
 

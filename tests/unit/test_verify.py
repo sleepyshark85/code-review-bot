@@ -16,6 +16,7 @@ from review_bot.findings import (
     Source,
 )
 from review_bot.fingerprint import Fingerprinter, fingerprint_for
+from review_bot.suggestion import SuggestionDropReason
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult, verify_findings
 
 # `app.py` has added and context lines 10 to 12 and a removed line; `README.md` is skipped.
@@ -509,4 +510,58 @@ def test_verify_findings_checks_the_evidence_of_dropped_and_duplicate_findings()
         (1, 0),
         (1, 1),
         (0, 1),
+    ]
+
+
+def with_suggestion(suggestion: str, *, line: int = 11) -> Finding:
+    return make_finding(line=line).model_copy(update={"suggestion": suggestion})
+
+
+def test_verify_findings_keeps_a_requested_suggestion_for_an_added_line() -> None:
+    result = verify_findings(
+        [with_suggestion("b = 4")], (), parse_diff(DIFF), suggestions_requested=True
+    )
+
+    [kept] = result.kept
+    assert (kept.finding.suggestion, kept.suggestion_dropped) == ("b = 4", None)
+
+
+@pytest.mark.parametrize(
+    ("finding", "requested", "reason"),
+    [
+        (with_suggestion("b = 4"), False, SuggestionDropReason.NOT_REQUESTED),
+        (with_suggestion("a = 2", line=10), True, SuggestionDropReason.NOT_ADDED_LINE),
+        (with_suggestion("b = 3 "), True, SuggestionDropReason.UNCHANGED),
+    ],
+    ids=["diff-mode", "context-line", "unchanged"],
+)
+def test_verify_findings_drops_a_suggestion_with_its_reason_and_keeps_the_finding(
+    finding: Finding, requested: bool, reason: SuggestionDropReason
+) -> None:
+    result = verify_findings([finding], (), parse_diff(DIFF), suggestions_requested=requested)
+
+    [kept] = result.kept
+    assert (kept.finding.suggestion, kept.suggestion_dropped) == (None, reason)
+    assert kept.fingerprint == result.checks[0].fingerprint
+
+
+def test_verify_findings_leaves_a_finding_without_a_suggestion_with_no_reason() -> None:
+    [kept] = verify_findings([make_finding()], (), parse_diff(DIFF)).kept
+
+    assert (kept.finding.suggestion, kept.suggestion_dropped) == (None, None)
+
+
+def test_verify_findings_records_the_suggestion_reason_on_the_kept_check_only() -> None:
+    kept = with_suggestion("b = 3")
+    duplicate = with_suggestion("b = 3")
+    missed = with_suggestion("b = 3", line=99)
+
+    result = verify_findings(
+        [kept, duplicate, missed], (), parse_diff(DIFF), suggestions_requested=True
+    )
+
+    assert [check.suggestion_dropped for check in result.checks] == [
+        SuggestionDropReason.UNCHANGED,
+        None,
+        None,
     ]

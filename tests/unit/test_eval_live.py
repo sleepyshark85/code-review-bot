@@ -555,3 +555,17 @@ def test_live_reads_no_variable_for_a_setting_it_fixes(
 
     assert len(sdk.options) == 1, err
     assert exit_code == 1
+
+
+def test_live_writes_a_suggestion_with_secret_values_redacted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case_file = write_case(tmp_path / "cases")
+    suggestion = f'password = "{CREDENTIAL}"'
+    sdk = ScriptedSdk(answer(finding(suggestion=suggestion)))
+
+    live(capsys, sdk, "--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1)
+
+    recording = load_recording(case_file.parent / "recordings" / "live" / "recording.json")
+    [recorded] = recording.runs[0].findings or ()
+    assert recorded.suggestion == 'password = "[REDACTED]"'

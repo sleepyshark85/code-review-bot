@@ -39,7 +39,9 @@ class RunFindings:
     ``returned`` holds the model's findings as it returned them, before verify. ``anchor_valid``
     holds those whose anchor is in the diff, before dedup, each with ``file`` set to the diff path
     it names, and ``dropped`` the others, as returned. ``final`` holds the model's findings kept
-    after dedup, and ``fingerprints`` their fingerprints. All are empty for a failed run.
+    after dedup, and ``fingerprints`` their fingerprints. ``evidence_kept`` and
+    ``evidence_dropped`` count the evidence spans of the returned findings that verify kept and
+    dropped. For a failed run, all are empty and both counts 0.
     """
 
     returned: tuple[Finding, ...]
@@ -48,6 +50,8 @@ class RunFindings:
     final: tuple[Finding, ...]
     error: RunErrorCategory | None = None
     fingerprints: tuple[str, ...] = ()
+    evidence_kept: int = 0
+    evidence_dropped: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,7 +40,7 @@ from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
-__all__ = ["ReviewContext", "review_diff", "run_pipeline"]
+__all__ = ["ReviewContext", "review_diff", "run_pipeline", "tool_caps"]
 
 _MAX_NAMED_SECRETS: Final = 5
 # Caps each list in the parse record and each tool call's spans, so no record grows with the
@@ -113,7 +113,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
 
     The rules' findings come first. A model finding is reported only if its file and line are in
     the diff and it repeats no earlier one, and any finding only if its severity meets the
-    threshold. A kept model finding keeps only the evidence spans the model was shown. Each
+    threshold. A kept model finding keeps only the evidence spans the model was shown, and its
+    suggestion only in context mode, whose prompt asks for one, if it may replace the line. Each
     stage's decision goes to ``audit``; the run's end is the caller's to record. The provider's
     warnings go to stderr too, before the caller writes the review.
 
@@ -166,7 +167,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         )
 
     _stop_if_too_large_to_review(parsed, settings, name, audit)
-    tools = None if context is None else RepoTools(context.repo, caps=_tool_caps(settings))
+    tools = None if context is None else RepoTools(context.repo, caps=tool_caps(settings))
     if tools is None:
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
@@ -184,6 +185,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         parsed,
         ledger=ledger,
         is_diff_head=context is not None and context.is_diff_head,
+        suggestions_requested=context is not None,
     )
     _record_verification(verification, audit)
     decision = decide(verification.kept, settings.threshold)
@@ -203,7 +205,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
     )
 
 
-def _tool_caps(settings: Settings) -> ToolCaps:
+def tool_caps(settings: Settings) -> ToolCaps:
+    """The tool caps a context review runs with, from ``settings``."""
     return ToolCaps(
         max_calls=settings.max_tool_calls,
         max_result_bytes=settings.max_tool_result_bytes,
@@ -395,7 +398,8 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
 
     A ``file`` that names no diff path is the model's own text, so only its hash and length are
     kept. ``fingerprint`` is set for a kept finding, and ``duplicate_of`` for a duplicate. Its
-    evidence is only counted, so no span the model wrote is recorded.
+    evidence is only counted, so no span the model wrote is recorded, and of its suggestion only
+    the reason it was dropped is.
     """
     finding = check.proposed
     if check.diff_path is None:
@@ -416,6 +420,7 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
         "rationale_sha256": _sha256(finding.rationale),
         "evidence_kept": len(check.evidence.kept),
         "evidence_dropped": check.evidence.dropped,
+        "suggestion_dropped": check.suggestion_dropped,
     }
 
 

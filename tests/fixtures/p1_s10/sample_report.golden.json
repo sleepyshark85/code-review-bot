@@ -18,7 +18,9 @@
       "triage": null,
       "original_rationale": null,
       "evidence": [],
-      "evidence_dropped": 0
+      "evidence_dropped": 0,
+      "suggestion": null,
+      "suggestion_dropped": null
     },
     {
       "fingerprint": "c9af0c94fdf8af0d",
@@ -33,7 +35,9 @@
       "triage": null,
       "original_rationale": null,
       "evidence": [],
-      "evidence_dropped": 0
+      "evidence_dropped": 0,
+      "suggestion": null,
+      "suggestion_dropped": null
     }
   ],
   "counts": {
