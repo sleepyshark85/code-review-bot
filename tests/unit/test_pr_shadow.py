@@ -143,6 +143,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "threshold": "low",
         "exclude": [],
         "max_open_comments": 10,
+        "domain_rules": [],
     }
 
 
@@ -162,6 +163,7 @@ def test_render_shadow_json_shows_the_repository_config_with_the_threshold_used(
         "threshold": "low",
         "exclude": ["*.snap"],
         "max_open_comments": 3,
+        "domain_rules": [],
     }
 
 

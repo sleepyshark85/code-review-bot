@@ -35,7 +35,7 @@ from review_bot.prompt import (
 )
 from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.report import PipelineResult, section_path
-from review_bot.rules import RuleResult, run_rules
+from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
@@ -79,13 +79,14 @@ class ReviewContext:
     is_diff_head: bool = False
 
 
-async def run_pipeline(
+async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-only
     diff_path: Path,
     settings: Settings,
     provider: LLMProvider,
     audit: AuditLog,
     *,
     context: ReviewContext | None = None,
+    domain_rules: Sequence[DomainRule] = (),
 ) -> PipelineResult:
     """Read the diff at ``diff_path``, then review it as ``review_diff`` does.
 
@@ -96,10 +97,12 @@ async def run_pipeline(
     """
     diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
     name = redact(str(diff_path))
-    return await review_diff(diff, settings, provider, audit, name=name, context=context)
+    return await review_diff(
+        diff, settings, provider, audit, name=name, context=context, domain_rules=domain_rules
+    )
 
 
-async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-only
+async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rules are keyword-only
     diff: str,
     settings: Settings,
     provider: LLMProvider,
@@ -108,6 +111,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
     name: str,
     exclude: Sequence[str] = (),
     context: ReviewContext | None = None,
+    domain_rules: Sequence[DomainRule] = (),
 ) -> PipelineResult:
     """Review ``diff`` with ``provider``, sending only the files not skipped.
 
@@ -127,6 +131,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         exclude: Globs whose matching files are skipped too, as ``parse_diff`` matches them.
         context: The commit the model's tools read, within the settings' tool caps, with the
             context prompt; None reviews in diff mode, with no tools.
+        domain_rules: The domain rules the repository enables, which run with the built-in
+            rules, and in context mode are named in the prompt too.
 
     Raises:
         InputError: If the diff isn't a diff, holds a possible secret, or its files to review
@@ -148,7 +154,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
     # which names paths.
     _stop_on_secrets(_scan_decoded_paths(parsed.decoded_paths), audit)
     audit.record(Stage.PARSE, "parsed", _parsed_data(parsed))
-    rule_result = run_rules(parsed)
+    rule_result = run_rules(parsed, domain_rules=domain_rules)
     audit.record(Stage.STATIC, "rules", _rules_data(rule_result))
 
     skipped = tuple(file for file in parsed.files if file.skip_reason is not None)
@@ -171,7 +177,9 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
     if tools is None:
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
-        request = build_context_request(parsed.reviewable_text, model=settings.model, tools=tools)
+        request = build_context_request(
+            parsed.reviewable_text, model=settings.model, tools=tools, domain_rules=domain_rules
+        )
     try:
         response = await _call_provider(provider, request, diff, audit)
     finally:
@@ -357,6 +365,7 @@ def _rules_data(result: RuleResult) -> dict[str, JsonValue]:
             for reviewed in result.findings
         ],
         "unanchored_hits": result.unanchored_hits,
+        "unchecked_lines": result.unchecked_lines,
     }
 
 

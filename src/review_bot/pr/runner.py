@@ -218,7 +218,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
             review = _Review(exc, recorded)
         else:
             settings = with_repo_threshold(settings, config)
-            review = await _review(pr, git, github, make_provider, settings, config.exclude, audit)
+            review = await _review(pr, git, github, make_provider, settings, config, audit)
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
     if review.plans_comments:
@@ -351,12 +351,13 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     github: GitHubClient | None,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
-    exclude: Sequence[str],
+    config: RepoConfig,
     audit: AuditLog,
 ) -> _Review:
     """Diff the pull request and review it: all of it, or only what changed since last time.
 
-    Files matching an ``exclude`` glob are skipped, as the built-in skips are.
+    The review runs under ``config``: files matching an ``exclude`` glob are skipped, as the
+    built-in skips are, and its domain rules run with the built-in rules.
 
     The PR diff comes first, so a diff that can't be reviewed, or whose files are all skipped,
     is reported with no GitHub call. Otherwise, in comment mode, the bot's summary says the
@@ -371,9 +372,9 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         diff = await asyncio.to_thread(git.diff, pr.base_sha, pr.head_sha, max_bytes=max_bytes)
     except REPORTED_ERRORS as exc:
         return _Review(exc)
-    parsed = _reviewable(diff, exclude)
+    parsed = _reviewable(diff, config.exclude)
     review_part = functools.partial(
-        _review_diff, make_provider=make_provider, settings=settings, exclude=exclude, audit=audit
+        _review_diff, make_provider=make_provider, settings=settings, config=config, audit=audit
     )
     if github is None or parsed is None:
         return _Review(await review_part(diff, name))
@@ -401,15 +402,23 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     *,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
-    exclude: Sequence[str],
+    config: RepoConfig,
     audit: AuditLog,
 ) -> PipelineResult | ReportedError:
-    """Review ``diff``, skipping files matching ``exclude``.
+    """Review ``diff`` under ``config``: its exclusions and its domain rules.
 
     An error that still ends in a report is returned.
     """
     try:
-        return await review_diff(diff, settings, make_provider(), audit, name=name, exclude=exclude)
+        return await review_diff(
+            diff,
+            settings,
+            make_provider(),
+            audit,
+            name=name,
+            exclude=config.exclude,
+            domain_rules=config.domain_rules,
+        )
     except REPORTED_ERRORS as exc:
         return exc
 

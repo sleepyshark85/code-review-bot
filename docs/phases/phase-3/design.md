@@ -47,6 +47,7 @@ New or changed modules under `src/review_bot/`. `context.paths`, `context.ledger
 | `prompt` (changed) | The context prompt, its version, and the untrusted framing of tool results and issues | `build_context_request`, `CONTEXT_PROMPT_VERSION` | S1, grows in S4, S9, S10, S12 |
 | `findings` (changed) | `evidence` and `suggestion` on `Finding`; `decimal-money` in `RuleId` | | S4, S10, S12 |
 | `rules` (changed) | Domain checks switched on per path | `DomainRule` | S10 |
+| `python_tokens` | Pure: the code tokens of diff lines for `rules`' checks, in time and memory linear in a line's length; a line read alone that ends inside a string has none (split from `rules` in build, S10) | `TokenKind`, `tokens_of`, `line_tokens` | S10 |
 | `review` (changed) | Context mode: build the tools, record the ledger, verify evidence and suggestions | `review_diff(..., context=...)`, `ReviewContext` | S1 |
 | `pr.config` (changed) | `[[domain_rules]]` in `.review-bot.toml` | `RepoConfig.domain_rules` | S10 |
 | `pr.event` (changed) | Linked issue numbers from the PR body, never the body | `PullRequestRef.linked_issues` | S9 |

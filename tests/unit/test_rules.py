@@ -7,7 +7,7 @@ from diff_samples import section
 from review_bot.diff_parser import parse_diff
 from review_bot.findings import Category, RuleId, Severity, Source
 from review_bot.fingerprint import fingerprint_for
-from review_bot.rules import RuleResult, run_rules
+from review_bot.rules import DOMAIN_RULE_IDS, DomainRule, RuleResult, run_rules
 
 RATIONALE = (
     "Exception swallowed: the handler discards it, so failures pass silently. "
@@ -453,3 +453,195 @@ def test_run_rules_reads_hostile_open_calls_in_linear_time(body: str, hit_count:
 
     assert time.perf_counter() - started < 5.0
     assert len(result.findings) == hit_count
+
+
+MONEY = DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",))
+MONEY_RATIONALE = (
+    "Money as a binary float: most decimal amounts have no exact float value, so sums and "
+    "rounding drift. Use decimal.Decimal, built from a string or an int."
+)
+
+
+def money_hits(
+    body: str, *, path: str = "billing/invoice.py", rules: tuple[DomainRule, ...] = (MONEY,)
+) -> list[int]:
+    result = run_rules(parse_diff(hunk_diff(body, path=path)), domain_rules=rules)
+    return [item.finding.line for item in result.findings if item.rule is RuleId.DECIMAL_MONEY]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "price = 19.99",
+        "rate = .5",
+        "big = 1e3",
+        "small = 2E-4",
+        "whole = 10.",
+        "grouped = 1_000.50",
+        "amount = float(raw)",
+        "amount = float (raw)",
+        "    total = round(price * 1.2, 2)  # with tax",
+    ],
+)
+def test_run_rules_reports_float_money_on_an_added_line_of_a_matched_file(line: str) -> None:
+    assert money_hits(f"+{line}\n") == [10]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'tax = Decimal("0.2")',
+        "count = 3",
+        "# rate 0.5",
+        'label = "0.5"',
+        "z = 2j",
+        "mask = 0x1e3",
+        "flags = 0b101",
+        "value = obj.float(raw)",
+        "def float(raw):",
+        "cast = float",
+        "name_1e3 = 1",
+        "x = data['1.5']",
+    ],
+)
+def test_run_rules_leaves_a_line_without_float_money_alone(line: str) -> None:
+    assert money_hits(f"+{line}\n") == []
+
+
+def test_run_rules_gives_a_domain_finding_its_fixed_fields_and_rule_fingerprint() -> None:
+    result = run_rules(
+        parse_diff(hunk_diff("+price = 19.99\n", path="billing/invoice.py")),
+        domain_rules=(MONEY,),
+    )
+
+    [reviewed] = result.findings
+    assert reviewed.finding.model_dump() == {
+        "file": "billing/invoice.py",
+        "line": 10,
+        "severity": Severity.HIGH,
+        "category": Category.LOGIC,
+        "rationale": MONEY_RATIONALE,
+        "confidence": 1.0,
+        "rule": None,
+        "evidence": (),
+        "suggestion": None,
+    }
+    assert (reviewed.source, reviewed.rule) == (Source.RULE, RuleId.DECIMAL_MONEY)
+    assert reviewed.fingerprint == fingerprint_for(
+        file="billing/invoice.py", rule="decimal-money", anchor_text="price = 19.99", ordinal=0
+    )
+
+
+def test_run_rules_reports_one_domain_finding_per_line_however_many_hits_it_holds() -> None:
+    assert money_hits("+price = float(raw) * 1.5 + 2e3\n") == [10]
+
+
+def test_run_rules_checks_only_added_lines_for_a_domain_rule() -> None:
+    assert money_hits(" a = 1.5\n-b = 2.5\n+c = 3.5\n") == [11]
+
+
+@pytest.mark.parametrize("path", ["api/views.py", "billing/rates.json", "src/billing/invoice.py"])
+def test_run_rules_skips_a_file_the_domain_rule_isnt_enabled_on(path: str) -> None:
+    assert money_hits("+price = 19.99\n", path=path) == []
+
+
+def test_run_rules_without_domain_rules_reports_no_float_money() -> None:
+    assert money_hits("+price = 19.99\n", rules=()) == []
+
+
+def test_run_rules_gives_a_domain_finding_its_entrys_severity() -> None:
+    medium = DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",), Severity.MEDIUM)
+
+    result = run_rules(
+        parse_diff(hunk_diff("+price = 19.99\n", path="billing/a.py")), domain_rules=(medium,)
+    )
+
+    assert [item.finding.severity for item in result.findings] == [Severity.MEDIUM]
+
+
+def test_run_rules_reports_a_rule_enabled_twice_on_a_file_once_at_its_most_severe() -> None:
+    rules = (
+        DomainRule(RuleId.DECIMAL_MONEY, ("*.py",), Severity.LOW),
+        DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",), Severity.CRITICAL),
+        DomainRule(RuleId.DECIMAL_MONEY, ("billing/*.py",), Severity.MEDIUM),
+    )
+
+    result = run_rules(
+        parse_diff(hunk_diff("+price = 19.99\n", path="billing/a.py")), domain_rules=rules
+    )
+
+    assert [item.finding.severity for item in result.findings] == [Severity.CRITICAL]
+
+
+@pytest.mark.parametrize(
+    "line", ['s = """', "s = '''abc", "s = 'abc", 's = "abc\\"', "s = r'abc\\'"]
+)
+def test_run_rules_skips_and_counts_an_added_line_that_ends_inside_a_string(line: str) -> None:
+    result = run_rules(
+        parse_diff(hunk_diff(f"+{line} 1.5\n+price = 19.99\n", path="billing/a.py")),
+        domain_rules=(MONEY,),
+    )
+
+    assert [item.finding.line for item in result.findings] == [11]
+    assert result.unchecked_lines == 1
+
+
+@pytest.mark.parametrize("line", ['s = """1.5"""', "s = 'a\\\\'", 's = ""'])
+def test_run_rules_checks_a_line_whose_strings_all_close(line: str) -> None:
+    result = run_rules(
+        parse_diff(hunk_diff(f"+{line}\n", path="billing/a.py")), domain_rules=(MONEY,)
+    )
+
+    assert (result.findings, result.unchecked_lines) == ((), 0)
+
+
+def test_run_rules_tokenises_no_line_where_no_domain_rule_is_enabled() -> None:
+    result = run_rules(parse_diff(hunk_diff('+s = """\n', path="billing/a.py")))
+
+    assert result.unchecked_lines == 0
+
+
+def test_run_rules_counts_a_domain_hit_it_cant_anchor() -> None:
+    diff = hunk_diff("+price = 19.99\n", path="billing/a.py", header="@@ -10,2 +ten,2 @@")
+
+    result = run_rules(parse_diff(diff), domain_rules=(MONEY,))
+
+    assert (result.findings, result.unanchored_hits) == ((), 1)
+
+
+def test_run_rules_orders_domain_and_built_in_findings_by_file_and_line() -> None:
+    body = "+price = 19.99\n+try:\n+    x()\n+except E:\n+    pass\n+rate = .5\n"
+
+    result = run_rules(parse_diff(hunk_diff(body, path="billing/a.py")), domain_rules=(MONEY,))
+
+    assert [(item.finding.line, item.rule) for item in result.findings] == [
+        (10, RuleId.DECIMAL_MONEY),
+        (13, RuleId.SWALLOWED_EXCEPTION),
+        (15, RuleId.DECIMAL_MONEY),
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["x = " + "1.5 + " * 100_000 + "1", "s = '" + "\\'" * 200_000, "x = " + "(" * 200_000],
+    ids=["many_numbers", "escaped_quotes", "brackets"],
+)
+def test_run_rules_tokenises_a_long_added_line_in_linear_time(line: str) -> None:
+    # Python's own tokenize copies the line for every token, which took minutes and gigabytes on
+    # lines like these.
+    parsed = parse_diff(hunk_diff(f"+{line}\n", path="billing/a.py"))
+
+    started = time.perf_counter()
+    run_rules(parsed, domain_rules=(MONEY,))
+
+    assert time.perf_counter() - started < 5.0
+
+
+def test_domain_rule_rejects_a_built_in_rule() -> None:
+    with pytest.raises(ValueError, match="not a domain rule"):
+        DomainRule(RuleId.SWALLOWED_EXCEPTION, ("*.py",))
+
+
+def test_domain_rule_ids_are_the_catalogue() -> None:
+    assert {RuleId.DECIMAL_MONEY} == DOMAIN_RULE_IDS
+    assert "decimal.Decimal" in MONEY.description

@@ -21,7 +21,7 @@ from review_bot.errors import (
     ProviderError,
     SecretDetectedError,
 )
-from review_bot.findings import Category, EvidenceSpan, Finding, Severity, Source
+from review_bot.findings import Category, EvidenceSpan, Finding, RuleId, Severity, Source
 from review_bot.fingerprint import fingerprint_for
 from review_bot.git import GitRepo
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
@@ -29,6 +29,7 @@ from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, run_pipeline
+from review_bot.rules import DomainRule
 from review_bot.settings import Settings
 
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"
@@ -559,6 +560,7 @@ def test_run_pipeline_records_each_rule_finding_and_the_unanchored_hits(tmp_path
             }
         ],
         "unanchored_hits": 1,
+        "unchecked_lines": 0,
     }
 
 
@@ -813,3 +815,79 @@ def test_run_pipeline_records_why_a_suggestion_was_dropped_and_never_its_text(
     checked = data_of(tmp_path / "audit.jsonl", "verify.checked")
     assert checked["suggestion_dropped"] == dropped
     assert suggestion not in json.dumps(checked, ensure_ascii=False)
+
+
+MONEY = DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",), Severity.MEDIUM)
+MONEY_DIFF = section("billing/a.py", '+price = 19.99\n+s = """\n')
+
+
+def review_money(
+    tmp_path: Path, provider: MockProvider, context: ReviewContext | None = None
+) -> PipelineResult:
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 9, tzinfo=UTC))
+    diff = write_diff(tmp_path, MONEY_DIFF)
+    return asyncio.run(
+        run_pipeline(
+            diff,
+            Settings(provider="mock"),
+            provider,
+            audit,
+            context=context,
+            domain_rules=(MONEY,),
+        )
+    )
+
+
+def test_run_pipeline_runs_the_domain_rules_and_records_the_lines_left_unchecked(
+    tmp_path: Path,
+) -> None:
+    result = review_money(tmp_path, MockProvider(findings=[]))
+
+    [reviewed] = result.decision.reported
+    assert (reviewed.rule, reviewed.finding.line, reviewed.finding.severity) == (
+        RuleId.DECIMAL_MONEY,
+        1,
+        Severity.MEDIUM,
+    )
+    record = data_of(tmp_path / "audit.jsonl", "static.rules")
+    assert (record["findings"][0]["rule"], record["unchecked_lines"]) == ("decimal-money", 1)
+
+
+def test_run_pipeline_in_diff_mode_leaves_the_prompt_without_domain_rules(tmp_path: Path) -> None:
+    provider = MockProvider(findings=[])
+
+    review_money(tmp_path, provider)
+
+    [request] = provider.requests
+    assert RuleId.DECIMAL_MONEY not in request.system_prompt
+
+
+def test_run_pipeline_in_context_mode_names_the_domain_rules_in_the_prompt(
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider(findings=[])
+
+    review_money(tmp_path, provider, context_repo(tmp_path))
+
+    [request] = provider.requests
+    assert f"- decimal-money: {MONEY.description}" in request.system_prompt
+
+
+def test_run_pipeline_reports_a_model_finding_tagged_with_a_domain_rule_once_as_the_rules(
+    tmp_path: Path,
+) -> None:
+    tagged = Finding(
+        file="billing/a.py",
+        line=2,
+        severity=Severity.MEDIUM,
+        category=Category.LOGIC,
+        rationale="Float money.",
+        confidence=0.9,
+        rule=RuleId.DECIMAL_MONEY,
+    )
+
+    result = review_money(tmp_path, MockProvider(findings=[tagged]), context_repo(tmp_path))
+
+    assert [(item.source, item.finding.line) for item in result.decision.reported] == [
+        (Source.RULE, 1)
+    ]

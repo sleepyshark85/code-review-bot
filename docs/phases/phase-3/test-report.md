@@ -576,3 +576,85 @@ From the full `pytest --cov` run (total 99%):
 - `evals/render.py` 99% (branch 67->71).
 - `evals/live.py` 98% (lines 185 and 187).
 - `evals/__main__.py` 0%: the `python -m` entry, which the in-process tests don't run.
+
+## P3-S10: Enforce domain rules configured per repository
+
+Spec: [p3-s10-domain-rules.md](slices/p3-s10-domain-rules.md), as amended by the designer for AC1, AC3, AC5, AC7, the Limits and the Interfaces, then clarified for AC1, AC3 and AC9. Tests: [`tests/integration/test_p3_s10_domain_rules.py`](../../../tests/integration/test_p3_s10_domain_rules.py) (120 cases) and [`tests/evals/test_p3_s10_domain_money_eval.py`](../../../tests/evals/test_p3_s10_domain_money_eval.py) (22 cases), with the `domain-money` eval case. They were written from the spec's criteria, Limits and Interfaces, design.md (Interfaces, Prompt versions, Pipeline) and ADR 0017, while the developer built the slice and before any of its code was read.
+
+**Status: every criterion passes. All 142 cases pass, and the full gate is green** (base `68a6555`, the developer's uncommitted tree).
+
+**On the way:**
+- Before the code was wired in, 42 of 121 failed, each on a missing feature: no rule finding, no `config.domain_rules`, no `unchecked_lines`, and replay not reading the case's config.
+- On the developer's tree, 3 failed, all test bugs. No assertion was weakened to fix them:
+  - the `**` bound test wrote 20 entries of 20 long patterns, which is over P2-S9's 64 KB, so it now writes 15;
+  - the hostile-lines test raised the wrong cap (`REVIEW_BOT_MAX_REVIEW_BYTES`, where the 400,000-byte diff cap applied), so it now raises `REVIEW_BOT_MAX_DIFF_BYTES`;
+  - one test expected the sample diff to hold a float literal on an added line, and it doesn't. That assertion moved to a test of its own, `ac7_diff_mode_still_enforces_the_rule_without_naming_it`, on a diff that has one.
+- After the amendment, the new AC1, AC3, AC5 and AC7 tests passed on their first run. So did the tests added after the clarification, for AC1, AC3 and AC9.
+
+### Gate
+
+- `ruff format --check`, `ruff check` and `mypy`: clean.
+- `pytest --cov`: 7,092 passed, 0 failed, 2 skipped (no `/dev/full` on Windows), on a tree whose `src/` didn't change during the run (after the developer's 21:01 edits).
+- Total coverage: 99%.
+
+### Seam and set-up (assumed)
+
+- **`run`**, as P2-S9's and P3-S11's suites drive it: `review_bot.pr.cli.main(["run", ...], provider=MockProvider(findings=[...])[, github=FAKE])`, in process. Each pull request comes from P3-S11's `make_pr`, with `.review-bot.toml` in the base commit. `run` has no context mode until S8, so every `run` here is a diff-mode run.
+- **Context mode (AC6, AC7)** runs through `review_diff(..., context=ReviewContext(repo=RepoRef(...), is_diff_head=True), domain_rules=...)`, design.md's interface. The rules come from `pr.config.parse_config_file(data, source=...).domain_rules`, the amended Interfaces' function, so the tests never build a `DomainRule` themselves. The 300 KB memory test calls `rules.run_rules(parsed, domain_rules=...)` under `tracemalloc`.
+- **Readings of key names:**
+  - A rule finding is a `report/v1` finding with `source` `rule` and `rule` `decimal-money`.
+  - `config.domain_rules` is a list of objects with `rule` and `paths`, and `severity` when it is shown.
+  - `unchecked_lines` is read from the `static` `rules` record in the run's `audit.jsonl`.
+  - An entry is named in the summary as `domain_rules[<index>]`, together with the key.
+- **The prompt version** is pinned at `p3-v4` (AC7).
+
+### The case (tester-owned)
+
+`domain-money`: its own diff, which adds `PER_KG_RATE = 0.85` at line 6 of `billing/shipping.py` and wraps it in `Decimal(...)` where it is used. Its `repo`, the diff's base, holds `billing/shipping.py` before the change, an empty `billing/__init__.py`, and `.review-bot.toml` enabling `decimal-money` on `billing/**`. It has one bug: `decimal-money`, a `rule` bug on line 6. It has no AI bug, no noise budget and no recordings, so it is scored on rules alone in either mode, until S15 records it live.
+
+### Criteria
+
+Test names drop the `test_p3_s10_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_each_float_money_line_gets_one_rule_finding` (lines 2 to 5 exactly; category `logic`, `high`, 1.0). `ac1_decimal_int_comment_string_and_complex_get_no_finding` ×8 (the spec's eight, `mask = 0xE5`, `obj.float(raw)` and `def float(self):` included). `ac1_each_line_alone_gets_exactly_one_finding` ×4. Beyond the examples, from the Interfaces: `ac1_interfaces_number_with_point_or_exponent_or_float_call_is_found` ×6 (`1E5`, `2.5e-3`, `3.`, `1_000.50`, `float (raw)`, `qty * 0.5`). `ac1_interfaces_other_tokens_are_not_found` ×10 (`0x1e3`, octal, binary, `1_000`, `float` not called, `float` as an argument, a single-quoted string, a docstring line, an f-string's `:.2f`, a name holding digits). `ac1_two_hits_on_one_line_are_one_finding`. **Clarified:** `ac1_float_call_of_a_float_times_a_float_is_one_finding` (`pay = float(1.5) * 2.0`: exactly one finding, `logic`, `high`, 1.0). `ac1_a_nested_billing_path_matches`. `ac1_added_lines_of_a_changed_file_only` (context lines holding floats aren't checked) | pass (33) |
+| AC2 | `ac2_same_lines_in_api_views_get_no_finding`. `ac2_paths_outside_the_pattern_get_no_finding` ×3 (`src/billing/`, `billing_old/`, root). `ac2_removed_lines_get_no_finding`. `ac2_deleted_billing_file_gets_no_finding`. `ac2_file_moved_out_of_billing_is_matched_on_its_new_path`. `ac2_non_python_file_in_billing_gets_no_finding` ×3 (`.json`, `.pyi`, `.txt`). `ac2_no_domain_rules_means_no_finding_anywhere` ×3 (no file, a file without the key, `domain_rules = []`). `ac2_config_only_the_head_adds_is_ignored` (the head can't switch the rule on or off) | pass (14) |
+| AC3 | `ac3_entry_severity_sets_the_findings_severity` ×4. `ac3_two_entries_each_set_their_own_paths_severity`. **Amended:** `ac3_critical_entry_for_one_file_beside_the_default_gives_one_critical_finding` ×2, with the `critical` entry first and second (one finding and one comment on `price = 19.99`, `critical`; another `billing/` file stays `high`). `ac3_medium_findings_fall_below_a_high_threshold` | pass (8) |
+| AC4 | `ac4_invalid_entry_fails_invalid_config_without_a_call_and_exits_2` ×20: an unknown rule, a rule in other case, a rule that isn't a string, a missing rule, missing paths, empty paths, paths given as a string, 21 paths, a pattern over 200 characters, a leading or trailing `/`, `//`, an empty pattern, `severity = "urgent"`, a severity that isn't a string, the unknown keys `message` and `description`, a bad second entry (named `[1]`), 21 entries, and `[domain_rules]` as a table. Each checks exit 2, `failed`/`invalid_config`, no provider request, and the entry and key in the summary. `ac4_limits_boundaries_are_accepted` (20 entries, 20 patterns, one of 200 characters). `ac4_limits_nested_double_star_paths_match_in_bounded_time` (300 patterns of 60 `**` segments against a 30-deep path, within 60 s) | pass (22) |
+| AC5 | **Amended:** `ac5_spec_lines_ending_inside_a_string_are_skipped` ×2 (`s = """0.5`, `s = "0.5`). `ac5_open_bracket_or_continuation_is_checked_not_counted` ×2 (`total = (19.99,`, `total = 1.5 + \`: a finding each, `unchecked_lines` 0). `ac5_limits_300_kb_line_gives_one_finding_in_bounded_time` (75,000 × `1.5,` through `run`, within 60 s). `ac5_limits_300_kb_line_is_checked_in_bounded_memory` (Python peak under 200 MB under `tracemalloc`; a copy per token would be about 45 GB). Earlier: `ac5_untokenisable_line_is_skipped_and_counted` (the next line is still checked). `ac5_unterminated_strings_are_skipped_without_error` ×4. `ac5_every_skipped_line_is_counted` (3). `ac5_clean_lines_count_zero`. `ac5_lines_of_unmatched_files_arent_counted`. `ac5_limits_hostile_lines_are_checked_in_bounded_time` (a 30,000-term sum, 50,000 nested brackets, a 200 KB unterminated string, 5,000 float lines) | pass (15) |
+| AC6 | `ac6_tagged_model_finding_near_the_rule_is_reported_once_as_the_rules` ×5 (the same line, 3 after, 3 before, less severe, `low`): one finding, `source` `rule`, at the rule's line and severity. `ac6_otherwise_both_are_reported` ×4 (4 after, 4 before, more severe, untagged). `ac6_tagged_finding_in_another_file_isnt_deduped`. `ac6_context_mode_enforces_the_rule_with_no_model_finding` | pass (11) |
+| AC7 | `ac7_context_prompt_names_the_rule_and_its_patterns`. **Amended:** `ac7_patterns_are_written_as_one_json_list` and `ac7_pattern_holding_a_newline_adds_no_prompt_line` (the JSON list is in the prompt, the injected text starts no line, and the line count matches a one-pattern config). `ac7_context_prompt_without_domain_rules_doesnt_name_the_rule` (no tag offered). `ac7_description_is_fixed_text_only_the_patterns_vary` (two configs give prompts that differ only in the patterns, and a description line is added beside them). `ac7_context_prompt_version_is_the_next_free_number` (`p3-v4`, the constant and the result). `ac7_diff_mode_prompts_are_byte_for_byte_phase_1s` (P3-S1's goldens, with the rule on). `ac7_diff_mode_offers_only_the_two_built_in_rule_tags`. `ac7_diff_mode_still_enforces_the_rule_without_naming_it`. `ac7_pr_run_prompts_dont_change_when_the_rule_is_on` (`run`: the same system and user prompts with the rule on or off, `p1-v1`) | pass (10) |
+| AC8 | `ac8_shadow_config_lists_the_domain_rules` (two entries, in order, with their paths and severity). `ac8_shadow_config_lists_no_domain_rules` ×2 (`[]`). `ac8_report_finding_carries_the_rule` (with the fingerprint computed independently, rule part `decimal-money`). `ac8_comment_marker_and_fingerprint_carry_the_rule` ×2 (shadow, and comment mode's posted body). `ac8_audit_rules_record_carries_the_rule` | pass (7) |
+| AC9 | Case shape: `ac9_case_has_a_repo_and_one_rule_bug_on_the_float_line`, `ac9_case_repo_config_switches_the_rule_on_for_billing`, `ac9_case_repo_is_the_diffs_base`, `ac9_case_is_listed_in_the_committed_cases`. In diff and context mode: `ac9_replay_scores_the_rule_bug_caught` ×2 (exit 0, `rules 1/1`). `ac9_without_the_repo_config_the_rule_bug_is_missed` ×2. `ac9_config_for_other_paths_misses_the_rule_bug` ×2. `ac9_rule_isnt_switched_on_by_a_config_beside_the_case` ×2 (a config in the case directory or at the cases root isn't read). **Clarified:** `ac9_invalid_case_config_exits_2_scoring_nothing` ×6, for an unknown `rule`, a config that isn't TOML, and one over 64 KB, each in both modes. Each exits 2, prints no case header, rule recall or `caught`, and names `domain-money/case.json`, `.review-bot.toml` and the problem. Phase 1: `ac9_phase_1_cases_score_as_before` ×2. `ac9_committed_cases_still_exit_1_only_for_double_tax`. `ac9_phase_1_cases_name_no_domain_rule` | pass (22) |
+
+### Failures
+
+None. The failures seen on the way were test bugs, described in Status.
+
+### Earlier suites changed
+
+No assertion was weakened.
+
+- **`tests/integration/test_p3_s1_local_review_with_repo_tools.py`**, **`test_p3_s4_finding_evidence.py`** and **`test_p3_s12_suggested_fixes.py`:** `CONTEXT_PROMPT_VERSION` moves from `p3-v3` to `p3-v4` (AC7).
+- **The 15 synthetic context controls** under `tests/evals/cases/*-context/` and `injection-tool-result/` were regenerated with `tests/evals/write_context_controls.py`. Only `prompt_version` changed: these cases have no domain rules, so their `prompt_sha256` stayed the same.
+- **`tests/evals/test_p3_s5_context_eval_cases.py`:** `committed_cases_are_phase_1s_five_and_this_slices_six` also allows `LATER_CASES = ("domain-money",)`.
+- **`tests/evals/test_p1_s14_eval_sample.py`:** AC4's disabled-rule test double now passes `run_rules`' keyword arguments through, for the new `domain_rules`. It is parametrized over the sample's two rules instead of the whole `RuleId`: `decimal-money` never fires on the sample, which has no config, so "disabling" it can't lower the score.
+
+### Readings for the designer
+
+1. **Overlapping entries:** the clarified AC3 settles them: the most severe matching entry wins, in either order, and both orders are tested. Two matching entries of equal severity give the same finding either way, so there is nothing to pin.
+2. **AC4's naming** is read as `domain_rules[<index>]` and the key's name, both in the summary. For 21 entries and a table instead of an array, only `domain_rules` is required.
+3. **Not tested:**
+   - A different hunk within 3 lines (AC6): with git's 3 context lines, two changes within 3 lines always share a hunk.
+   - Context mode through `run`: it lands in S8.
+
+### Coverage
+
+From the full `pytest --cov` run (total 99%). The report leaves out files at 100%, so these are at 100%: `rules.py`, `python_tokens.py`, `pr/config.py`, `prompt.py`, `review.py`, `findings.py` and `evals/replay.py`.
+
+Two of the slice's modules are below 100%:
+- `pr/runner.py` 99% (lines 435 and 436).
+- `pr/shadow.py` 99% (lines 384 and 385, and one branch).
+
+Neither gap is on a line this slice's criteria reach.

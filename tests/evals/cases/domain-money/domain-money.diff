@@ -1,0 +1,16 @@
+diff --git a/billing/shipping.py b/billing/shipping.py
+index 3c1d1f0..8a2b7e4 100644
+--- a/billing/shipping.py
++++ b/billing/shipping.py
+@@ -3,8 +3,9 @@
+ from decimal import Decimal
+ 
+ FLAT_RATE = Decimal("4.99")
++PER_KG_RATE = 0.85
+ 
+ 
+ def shipping_for(weight_kg: Decimal) -> Decimal:
+-    """The flat rate, whatever the weight."""
+-    return FLAT_RATE
++    """The flat rate, plus a rate for each kilogram."""
++    return FLAT_RATE + Decimal(PER_KG_RATE) * weight_kg

@@ -1,0 +1,20 @@
+{
+  "schema": "eval-case/v1",
+  "id": "domain-money",
+  "diff": "domain-money.diff",
+  "repo": "repo",
+  "bugs": [
+    {
+      "id": "decimal-money",
+      "source": "rule",
+      "file": "billing/shipping.py",
+      "lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "keywords": []
+    }
+  ]
+}

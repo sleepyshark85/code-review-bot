@@ -425,7 +425,12 @@ def test_p1_s14_ac3_double_tax_in_3_of_5_runs_passes(
 # --- AC4: the rules score can fall --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("disabled", list(RuleId))
+# The sample's two rules. P3-S10's `decimal-money` runs only where a case's config enables it, and
+# the sample has none; its own disabled-rule check is in P3-S10's eval suite.
+SAMPLE_RULES = (RuleId.SWALLOWED_EXCEPTION, RuleId.OPEN_WITHOUT_ENCODING)
+
+
+@pytest.mark.parametrize("disabled", SAMPLE_RULES)
 def test_p1_s14_ac4_rule_disabled_by_a_test_double_lowers_rules_and_exits_1(
     replay: Callable[..., Replay],
     cases: Path,
@@ -435,8 +440,8 @@ def test_p1_s14_ac4_rule_disabled_by_a_test_double_lowers_rules_and_exits_1(
     rules = importlib.import_module("review_bot.rules")
     real_run_rules = rules.run_rules
 
-    def run_rules_without_one(parsed: Any) -> Any:
-        result = real_run_rules(parsed)
+    def run_rules_without_one(parsed: Any, **options: Any) -> Any:
+        result = real_run_rules(parsed, **options)  # P3-S10 added `domain_rules`
         kept = tuple(found for found in result.findings if found.rule != disabled)
         return dataclasses.replace(result, findings=kept)
 
