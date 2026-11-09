@@ -1,5 +1,6 @@
 import dataclasses
 from collections.abc import Mapping
+from decimal import Decimal
 
 import pytest
 
@@ -97,6 +98,13 @@ async def test_review_with_scripted_usage_reports_it() -> None:
     response = await MockProvider(usage=TokenUsage(10, 20_000)).review(REQUEST)
 
     assert response.usage == TokenUsage(10, 20_000)
+
+
+async def test_review_reports_a_scripted_cost_or_none() -> None:
+    assert (await MockProvider(cost_usd=Decimal("0.25")).review(REQUEST)).cost_usd == Decimal(
+        "0.25"
+    )
+    assert (await MockProvider().review(REQUEST)).cost_usd is None
 
 
 class RecordingTools:

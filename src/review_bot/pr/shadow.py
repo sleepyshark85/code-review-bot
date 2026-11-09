@@ -8,6 +8,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Final, assert_never
 
@@ -44,7 +45,6 @@ from review_bot.pr.plan import (
     WithheldFinding,
     plan_comments,
 )
-from review_bot.providers.base import TokenUsage
 from review_bot.render import (
     evidence_json,
     indented_in_list_item,
@@ -163,13 +163,15 @@ class ShadowReport:
     ``pr`` is None exactly when ``origin`` is ``local``. ``report`` is the ``report/v1`` object,
     with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
     ``withheld`` are in comment order, and ``resolves`` oldest first. ``caps`` are the run's
-    effective limits, None where there is no cap. ``config`` is the review policy the run used,
-    or None if it read none: it was refused, or its repository config was invalid.
+    effective limits, None where there is no cap; context mode adds its tool and cost caps, the
+    cost as a decimal string. ``config`` is the review policy the run used, or None if it read
+    none: it was refused, or its repository config was invalid.
     ``codeowners`` is the base commit's CODEOWNERS, which names each entry's owners, or None if
     the run read none: it planned no comments, or ran on a local diff. ``since`` is the last
     reviewed commit a comment mode run started from, the head or an ancestor of it, else None.
     ``error`` is the error that ended the run, if any, for the caller's message and exit code;
-    it is never written.
+    it is never written. ``cost_usd`` is the review's cost as the provider reported it, None if
+    it reported none or the model wasn't called.
     """
 
     run_id: str
@@ -185,12 +187,13 @@ class ShadowReport:
     comments: tuple[ShadowComment, ...]
     resolves: tuple[ShadowResolve, ...]
     withheld: tuple[WithheldFinding, ...]
-    caps: Mapping[str, int | float | None]
+    caps: Mapping[str, int | float | str | None]
     config: Mapping[str, object] | None
     codeowners: CodeOwners | None
     over_budget: bool
     since: str | None
     error: ReportedError | GitHubError | None
+    cost_usd: Decimal | None = None
 
     @property
     def scope(self) -> Scope:
@@ -228,7 +231,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     is ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; an
     invalid repository config is ``failed``, ``invalid_config``; and a provider error is
     ``failed`` with its category. A review is over budget when it reports more output tokens
-    than ``max_output_tokens``.
+    than ``max_output_tokens``, or in context mode a cost over ``max_cost_usd``.
 
     ``settings`` are those the review ran with, the repository's threshold applied, and
     ``config`` the repository's policy, or None if the run read none. Comments are planned up
@@ -296,18 +299,13 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         comments=comments,
         resolves=resolves,
         withheld=withheld,
-        caps={
-            "max_diff_bytes": settings.max_diff_bytes,
-            "max_review_bytes": settings.max_review_bytes,
-            "max_output_tokens": settings.max_output_tokens,
-            "max_retries": settings.max_retries,
-            "deadline_s": settings.deadline_s,
-        },
+        caps=_caps(settings),
         config=None if config is None else _config_json(config, settings),
         codeowners=codeowners,
-        over_budget=isinstance(review, PipelineResult) and _is_over_budget(review.usage, settings),
+        over_budget=isinstance(review, PipelineResult) and _is_over_budget(review, settings),
         since=since,
         error=error,
+        cost_usd=review.cost_usd if isinstance(review, PipelineResult) else None,
     )
 
 
@@ -357,9 +355,38 @@ def _planned(
     return comments, resolves, plan.withheld
 
 
-def _is_over_budget(usage: TokenUsage, settings: Settings) -> bool:
-    cap = settings.max_output_tokens
-    return cap is not None and usage.output_tokens > cap
+def _caps(settings: Settings) -> dict[str, int | float | str | None]:
+    """The run's effective caps: Phase 2's, then in context mode the tool and cost caps."""
+    caps: dict[str, int | float | str | None] = {
+        "max_diff_bytes": settings.max_diff_bytes,
+        "max_review_bytes": settings.max_review_bytes,
+        "max_output_tokens": settings.max_output_tokens,
+        "max_retries": settings.max_retries,
+        "deadline_s": settings.deadline_s,
+    }
+    if settings.context == "repo":
+        max_cost_usd = settings.max_cost_usd
+        caps |= {
+            "max_tool_calls": settings.max_tool_calls,
+            "max_tool_result_bytes": settings.max_tool_result_bytes,
+            "max_tool_total_bytes": settings.max_tool_total_bytes,
+            "max_cost_usd": None if max_cost_usd is None else str(max_cost_usd),
+        }
+    return caps
+
+
+def _is_over_budget(review: PipelineResult, settings: Settings) -> bool:
+    """Whether the review reported more output tokens, or in context mode cost more, than its cap.
+
+    Diff mode is judged on tokens only, as in Phase 2, so its reports don't change.
+    """
+    token_cap = settings.max_output_tokens
+    if token_cap is not None and review.usage.output_tokens > token_cap:
+        return True
+    cost_cap, cost = settings.max_cost_usd, review.cost_usd
+    if settings.context == "off" or cost_cap is None or cost is None:
+        return False
+    return cost > cost_cap
 
 
 def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:  # noqa: PLR0911 - one return per error type
@@ -432,6 +459,8 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "since": shadow.since,
         "config": shadow.config,
         "codeowners": _codeowners_json(shadow.codeowners),
+        # The same as the review's own, so readers of shadow/v1 needn't open ``report``.
+        "context": None if shadow.report is None else shadow.report["context"],
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
 

@@ -23,6 +23,7 @@ from review_bot.context.codeowners import (
     CodeOwnersStatus,
     parse_codeowners,
 )
+from review_bot.context.tools import RepoRef
 from review_bot.diff_parser import ParsedDiff, parse_diff
 from review_bot.errors import (
     DiffEmptyError,
@@ -61,7 +62,7 @@ from review_bot.pr.shadow import (
 )
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
-from review_bot.review import review_diff
+from review_bot.review import ReviewContext, review_diff
 from review_bot.settings import Settings, in_ci
 
 __all__ = ["backfill_pull_request", "run_pull_request"]
@@ -93,8 +94,10 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     GitHub runs, and the report is ``skipped`` with that reason. Otherwise the repository's
     policy is read from the base commit's ``.review-bot.toml`` (``_repo_config``): if it is
     invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
-    provider is made, and called at most once. A run that plans comments reads the base
-    commit's CODEOWNERS too (``_code_owners``), to name the owners of each finding.
+    provider is made, and called at most once. With ``settings.context`` ``repo``, the model's
+    tools read the head commit through git objects, never a checkout (``_review_context``). A run
+    that plans comments reads the base commit's CODEOWNERS too (``_code_owners``), to name the
+    owners of each finding.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -374,7 +377,12 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         return _Review(exc)
     parsed = _reviewable(diff, config.exclude)
     review_part = functools.partial(
-        _review_diff, make_provider=make_provider, settings=settings, config=config, audit=audit
+        _review_diff,
+        make_provider=make_provider,
+        settings=settings,
+        config=config,
+        context=_review_context(pr, git, settings),
+        audit=audit,
     )
     if github is None or parsed is None:
         return _Review(await review_part(diff, name))
@@ -396,6 +404,17 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     return _Review(result, recorded, incremental)
 
 
+def _review_context(pr: PullRequestRef, git: GitRepo, settings: Settings) -> ReviewContext | None:
+    """The commit the model's tools read in context mode: the head, which the diff ends at.
+
+    The tools read it through git objects only, never a checkout, so no filter, hook or
+    attribute driver from the pull request runs (ADR 0013). None in diff mode.
+    """
+    if settings.context == "off":
+        return None
+    return ReviewContext(repo=RepoRef(git=git, commit=pr.head_sha), is_diff_head=True)
+
+
 async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     diff: str,
     name: str,
@@ -403,11 +422,13 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
     config: RepoConfig,
+    context: ReviewContext | None,
     audit: AuditLog,
 ) -> PipelineResult | ReportedError:
     """Review ``diff`` under ``config``: its exclusions and its domain rules.
 
-    An error that still ends in a report is returned.
+    ``context`` is the commit the model's tools read; None reviews in diff mode. An error that
+    still ends in a report is returned.
     """
     try:
         return await review_diff(
@@ -417,6 +438,7 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
             audit,
             name=name,
             exclude=config.exclude,
+            context=context,
             domain_rules=config.domain_rules,
         )
     except REPORTED_ERRORS as exc:

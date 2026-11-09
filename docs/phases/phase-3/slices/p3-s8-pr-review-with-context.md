@@ -1,6 +1,6 @@
 # P3-S8: Review pull requests with repository context
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S2, P3-S3, P3-S16
 - **Touches:** `pr` (`runner`, `cli`, `shadow`), `settings`, `.github/workflows/live.yml` (main session, from this spec: the `backfill` choice), `tests/` (the tester parses the workflow)
 
@@ -35,3 +35,8 @@ As P2-S2 and P3-S2. The head commit is read only through git objects, never chec
 
 ## Notes
 - **README (main session):** describe `--context repo` on `run` and `backfill`, and backfill's dollar cap.
+- **Build choices (developer):**
+  - `context` is a `Settings` field (`off`/`repo`), so `--context` and `REVIEW_BOT_CONTEXT` are validated like every setting (exit 2 naming the flag or variable). `run` and `backfill` also take the tool cap flags. `pr shadow` (a local diff, no commit) and `review-bot` (which has `--context-repo`) ignore it.
+  - Everything new in `shadow.json` is gated on context mode, so a diff-mode run is Phase 2's even with `--max-cost-usd` set: `caps` adds the four keys only in context mode (`max_cost_usd` a decimal string, as `usage.cost_usd`, or null), and `over_budget` counts cost only there. The one new key in every run is the top-level `context`, the report's own `context` (null in diff mode or with no review), as the design's `shadow/v1` lists it.
+  - `backfill`'s dollar budget applies whenever `--max-usd` is given, and `--context repo` requires it (as P3-S6 AC6 for evals). It is checked after `--max-calls`. A run is charged only if it called the model: its reported cost, or `--max-cost-usd` if it reported none or failed in the provider. A budget stop writes a stderr line and the totals line adds `spent_usd=S stopped=budget`; `spent_usd` shows in every budgeted run. The exit code stays P2-S13's (0, or the first failure's): stopping within an approved budget isn't a failure.
+  - The pure budget arithmetic is `review_bot.spend.DollarBudget`, outside `pr`, so `evals live` (S6) can share it. `MockProvider` takes `cost_usd`, so tests script reported costs.

@@ -247,6 +247,33 @@ def test_load_settings_with_an_invalid_cost_cap_variable_names_it(
         load_settings({})
 
 
+def test_load_settings_with_no_context_set_reviews_in_diff_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REVIEW_BOT_CONTEXT", raising=False)
+
+    assert load_settings({}).context == "off"
+
+
+def test_load_settings_reads_the_context_from_the_environment_unless_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_CONTEXT", "repo")
+
+    assert load_settings({}).context == "repo"
+    assert load_settings({"context": "off"}).context == "off"
+
+
+@pytest.mark.parametrize("value", ["on", "REPO", ""])
+def test_load_settings_with_an_unknown_context_variable_names_it(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_CONTEXT", value)
+
+    with pytest.raises(ConfigError, match="REVIEW_BOT_CONTEXT"):
+        load_settings({})
+
+
 @pytest.mark.parametrize(
     ("environ", "expected"), [({"CI": ""}, True), ({"CI": "false"}, True), ({}, False)]
 )

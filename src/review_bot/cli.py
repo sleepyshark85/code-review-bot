@@ -51,6 +51,7 @@ from review_bot.triage import TriageResult, run_triage
 __all__ = [
     "RaisingArgumentParser",
     "add_setting_arguments",
+    "add_tool_cap_arguments",
     "build_provider",
     "main",
     "parse_args",
@@ -205,6 +206,11 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--context-rev", help="the commit of --context-repo the model reads (default: HEAD)"
     )
+    add_tool_cap_arguments(parser)
+
+
+def add_tool_cap_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the context mode's tool cap flags, each named after its ``Settings`` field."""
     parser.add_argument("--max-tool-calls", help="the most tool calls in a review (default: 12)")
     parser.add_argument(
         "--max-tool-result-bytes", help="the most bytes one tool call returns (default: 16000)"

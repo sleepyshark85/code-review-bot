@@ -1,6 +1,7 @@
 import dataclasses
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, get_args
 
 import pytest
@@ -124,6 +125,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "since",
         "config",
         "codeowners",
+        "context",
     ]
     assert document["schema"] == "shadow/v1"
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
@@ -754,3 +756,122 @@ def test_render_shadow_json_without_usable_codeowners_names_no_owner(
         [],
     ]
     assert "Owners:" not in document["summary_body"]
+
+
+# Context mode (P3-S8).
+
+CONTEXT = Settings(provider="mock", context="repo", max_cost_usd=Decimal("0.60"))
+PHASE_2_CAPS = {
+    "max_diff_bytes": 400_000,
+    "max_review_bytes": None,
+    "max_output_tokens": None,
+    "max_retries": 2,
+    "deadline_s": 300,
+}
+
+
+def build_with(settings: Settings, review: PipelineResult | ReportedError) -> dict[str, Any]:
+    shadow = build_shadow_report(
+        review,
+        mode=Mode.SHADOW,
+        existing=(),
+        settings=settings,
+        config=DEFAULT_REPO_CONFIG,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=Origin.LOCAL,
+        pr=None,
+    )
+    document: dict[str, Any] = json.loads(render_shadow_json(shadow))
+    return document
+
+
+def costing(cost_usd: str | None, *, context_commit: str | None = "c" * 40) -> PipelineResult:
+    return dataclasses.replace(
+        result(),
+        cost_usd=None if cost_usd is None else Decimal(cost_usd),
+        context_commit=context_commit,
+    )
+
+
+def test_render_shadow_json_in_context_mode_adds_the_tool_and_cost_caps() -> None:
+    document = build_with(CONTEXT, costing("0.10"))
+
+    assert document["caps"] == PHASE_2_CAPS | {
+        "max_tool_calls": 12,
+        "max_tool_result_bytes": 16_000,
+        "max_tool_total_bytes": 96_000,
+        "max_cost_usd": "0.60",
+    }
+
+
+def test_render_shadow_json_in_context_mode_without_a_cost_cap_shows_it_null() -> None:
+    settings = CONTEXT.model_copy(update={"max_cost_usd": None})
+
+    document = build_with(settings, costing("0.10"))
+
+    assert document["caps"]["max_cost_usd"] is None
+    assert document["over_budget"] is False
+
+
+def test_render_shadow_json_in_diff_mode_keeps_phase_2s_caps_and_budget_whatever_the_cost() -> None:
+    settings = Settings(provider="mock", max_cost_usd=Decimal("0.60"))
+
+    document = build_with(settings, costing("0.75", context_commit=None))
+
+    assert document["caps"] == PHASE_2_CAPS
+    assert document["over_budget"] is False
+    assert document["context"] is None
+
+
+@pytest.mark.parametrize(
+    ("cost_usd", "over_budget"),
+    [("0.61", True), ("0.60", False), (None, False)],
+    ids=["over", "at-the-cap", "unreported"],
+)
+def test_build_shadow_report_in_context_mode_is_over_budget_past_the_cost_cap(
+    cost_usd: str | None, *, over_budget: bool
+) -> None:
+    document = build_with(CONTEXT, costing(cost_usd))
+
+    assert document["over_budget"] is over_budget
+    assert document["report"]["usage"]["cost_usd"] == cost_usd
+
+
+def test_render_shadow_json_repeats_the_reviews_context_at_the_top() -> None:
+    document = build_with(CONTEXT, costing("0.10"))
+
+    assert document["context"] == document["report"]["context"]
+    assert document["context"]["commit"] == "c" * 40
+
+
+def test_render_shadow_json_of_a_failed_context_run_has_no_context() -> None:
+    error = ProviderError(ErrorCategory.PERMANENT, "Over --max-cost-usd.", cap="cost")
+
+    document = build_with(CONTEXT, error)
+
+    assert (document["outcome"], document["reason"], document["context"]) == (
+        "failed",
+        "permanent",
+        None,
+    )
+
+
+def test_build_shadow_report_keeps_the_reviews_reported_cost_and_none_for_an_error() -> None:
+    def cost_of(review: PipelineResult | ReportedError) -> Decimal | None:
+        return build_shadow_report(
+            review,
+            mode=Mode.SHADOW,
+            existing=(),
+            settings=CONTEXT,
+            config=DEFAULT_REPO_CONFIG,
+            run_id="run-1",
+            started_at=STARTED,
+            finished_at=STARTED,
+            origin=Origin.LOCAL,
+            pr=None,
+        ).cost_usd
+
+    assert cost_of(costing("0.25")) == Decimal("0.25")
+    assert cost_of(ProviderError(ErrorCategory.PERMANENT, "Failed.")) is None
