@@ -153,3 +153,27 @@ def test_shadow_of_a_local_diff_reviews_in_diff_mode_whatever_review_bot_context
     assert exit_code == 0
     assert provider.requests[0].tools is None
     assert "max_tool_calls" not in shadow_json(tmp_path)["caps"]
+
+
+def help_text(command: str, capsys: pytest.CaptureFixture[str]) -> str:
+    with pytest.raises(SystemExit):
+        main([command, "--help"])
+    return " ".join(capsys.readouterr().out.split())
+
+
+def test_shadow_help_doesnt_offer_context(capsys: pytest.CaptureFixture[str]) -> None:
+    text = help_text("shadow", capsys)
+
+    assert "such as --provider or --max-cost-usd, can also be set with REVIEW_BOT_" in text
+    assert "--context" not in text
+
+
+@pytest.mark.parametrize("command", ["run", "backfill"])
+def test_run_and_backfill_help_say_context_can_be_set_from_the_environment(
+    command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = help_text(command, capsys)
+
+    assert "such as --provider, --max-cost-usd or --context, can also be set with REVIEW_BOT_" in (
+        text
+    )

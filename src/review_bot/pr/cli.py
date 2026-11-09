@@ -316,12 +316,14 @@ def _parse_args(
         commands.add_parser,
         "shadow",
         "write the comments and summary the bot would post for a diff file, posting nothing",
+        context=False,
     )
     shadow.add_argument("diff_path", help="the diff file to review")
     run = _add_command(
         commands.add_parser,
         "run",
         "review a pull request from its event file and a clone, posting nothing",
+        context=True,
     )
     run.add_argument(
         "--event", type=Path, required=True, help="the pull_request event file (GITHUB_EVENT_PATH)"
@@ -335,12 +337,12 @@ def _parse_args(
         default=Mode.SHADOW.value,
         help="shadow (default) only reports; comment also posts on the pull request",
     )
-    _add_context_arguments(run)
     backfill = _add_command(
         commands.add_parser,
         "backfill",
         "review merged pull requests from a pulls file and a clone, posting nothing; each call "
         "is one attempt, whatever --max-retries says",
+        context=True,
     )
     backfill.add_argument(
         "--pulls",
@@ -373,7 +375,6 @@ def _parse_args(
         help="the most all calls may cost, in USD; required with --context repo, with "
         "--max-cost-usd, and checked against each call's --max-cost-usd before and during the run",
     )
-    _add_context_arguments(backfill)
     backfill.add_argument(
         "--allow-dispatch",
         action="store_true",
@@ -593,20 +594,25 @@ def _whole_number(text: str) -> int:
 
 
 def _add_command(
-    add_parser: Callable[..., RaisingArgumentParser], name: str, summary: str
+    add_parser: Callable[..., RaisingArgumentParser], name: str, summary: str, *, context: bool
 ) -> RaisingArgumentParser:
-    """Add a subcommand with ``--out`` and the setting flags."""
+    """Add a subcommand with ``--out`` and the setting flags, and ``--context`` if ``context``."""
+    examples = (
+        "--provider, --max-cost-usd or --context" if context else "--provider or --max-cost-usd"
+    )
     command = add_parser(
         name,
         help=summary,
-        description="Each setting option, such as --provider, --max-cost-usd or --context, can "
-        "also be set with REVIEW_BOT_<OPTION>.",
+        description=f"Each setting option, such as {examples}, can also be set with "
+        "REVIEW_BOT_<OPTION>.",
         allow_abbrev=False,
     )
     command.add_argument(
         "--out", type=Path, required=True, help="the directory to write shadow.json and shadow.md"
     )
     add_setting_arguments(command)
+    if context:
+        _add_context_arguments(command)
     return command
 
 
@@ -926,20 +932,23 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
 
 
 def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:
-    """The dollar budget the backfill's calls are charged to, or None in diff mode without one.
+    """The dollar budget the backfill's calls are charged to, or None if there is none.
 
     ``--context repo`` needs one, and ``--max-usd`` makes one in either mode: ``--max-usd`` is
-    the allowance, and ``--max-cost-usd`` each call's cap (ADR 0015).
+    the allowance, and ``--max-cost-usd`` each call's cap (ADR 0015). With no calls planned,
+    nothing will be spent, so missing amounts mean no budget rather than an error.
 
     Raises:
-        ConfigError: If one is needed and either amount is missing, or the ``planned`` calls,
-            each at its cap, could cost more than ``--max-usd``.
+        ConfigError: If calls are planned and one is needed but either amount is missing, or
+            the ``planned`` calls, each at its cap, could cost more than ``--max-usd``.
     """
     settings = command.settings
     max_usd, max_cost_usd = command.max_usd, settings.max_cost_usd
     if max_usd is None and settings.context == "off":
         return None
     if max_usd is None or max_cost_usd is None:
+        if planned == 0:
+            return None
         given = "--context repo" if settings.context == "repo" else "--max-usd"
         raise ConfigError(
             f"backfill with {given} needs both --max-usd and --max-cost-usd (or "
@@ -980,6 +989,17 @@ class _BackfillProgress:
         if self.budget is not None and made_call:
             self.spent_usd += self.budget.charge(shadow.cost_usd)
 
+    def stop_if_out_of_budget(self, *, unreviewed: int) -> bool:
+        """Whether the budget can't cover another call; if so, mark the stop and say why.
+
+        ``unreviewed`` is how many pull requests the stop leaves without a report.
+        """
+        if self.budget is None or self.budget.has_room(self.spent_usd):
+            return False
+        self.stopped_by_budget = True
+        write_diagnostic(_budget_stop_line(self.budget, self.spent_usd, unreviewed))
+        return True
+
 
 async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the runner's
     prs: Sequence[PullRequestRef],
@@ -1006,10 +1026,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
     """
     first_failure = 0
     for index, pr in enumerate(prs):
-        budget = progress.budget
-        if budget is not None and not budget.has_room(progress.spent_usd):
-            progress.stopped_by_budget = True
-            write_diagnostic(_budget_stop_line(budget, progress.spent_usd, len(prs) - index))
+        if progress.stop_if_out_of_budget(unreviewed=len(prs) - index):
             break
         audit = AuditLog(settings.audit_log, clock=utc_now)
         pr_dir = out_dir / str(pr.number)

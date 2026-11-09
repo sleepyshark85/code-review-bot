@@ -475,6 +475,23 @@ def test_backfill_with_a_dollar_budget_missing_an_amount_refuses_before_any_call
     assert list((tmp_path / "out").iterdir()) == []
 
 
+def test_backfill_in_context_mode_with_every_report_already_written_runs_without_amounts(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    existing = tmp_path / "out" / "1" / "shadow.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"kept as it is\n")
+    provider = MockProvider()
+
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 1), "--context", "repo", provider=provider
+    )
+
+    assert exit_code == 0
+    assert provider.requests == []
+    assert "backfill: entries=1 already_in_out=1 run=0\n" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("context", ["repo", "off"])
 def test_backfill_whose_planned_calls_at_their_cap_exceed_max_usd_refuses_naming_them(
     context: str, tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]

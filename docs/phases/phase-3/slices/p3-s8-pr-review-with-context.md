@@ -18,7 +18,7 @@ A pull request is reviewed with the model able to read the PR's head commit, in 
 - **AC7:** Given `backfill --context repo` without `--max-usd` or `--max-cost-usd`, or with planned calls × `--max-cost-usd` over `--max-usd`, then it refuses before any call, naming them. Exit 2.
 - **AC8:** Given reported costs that leave less than `--max-cost-usd` of `--max-usd`, then no further PR is reviewed and no report is written for those PRs, so a later run picks them up. stdout's counts add `stopped=budget` and the spend.
 - **AC9:** Given `backfill` without `--context`, then it behaves exactly as P2-S13.
-- **AC10:** Given a context run, then `DIR/audit.jsonl` holds its `context` `tool_call` records.
+- **AC10:** Given a context run, then `OUT/audit.jsonl` (the `--out` directory) holds its `context` `tool_call` records.
 - **AC11:** Given `live.yml`, then its `step` choice adds `backfill`. That job checks out `main` with `fetch-depth: 0`, fetches `refs/pull/*/head`, and runs `pr backfill --pulls tests/evals/labelled/phase-3-pulls.json --github-repo sleepyshark85/code-review-bot --repo . --context repo --max-calls 12 --max-usd 7.20 --max-cost-usd 0.60 --allow-dispatch` with retries 0. Its permissions are exactly `contents: read` and `issues: read` (for S9's issue reads), and `GITHUB_TOKEN` reaches only that step. P3-S16 AC3 to AC6 otherwise hold, and the artifact holds `--out`.
 - **AC12:** Given that step's argument list, read from `live.yml`, then the real `pr` CLI argument parser accepts it, with no call made and no file read.
 
