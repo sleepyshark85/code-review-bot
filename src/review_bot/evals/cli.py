@@ -78,6 +78,7 @@ async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> list[Cas
             runs=args.runs,
             max_calls=args.max_calls,
             environ=os.environ,
+            allow_dispatch=args.allow_dispatch,
             sdk_call=sdk_call,
         )
     return await replay_cases(args.cases, args.recording, mode=args.mode)
@@ -120,6 +121,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     # Not required by the parser, so its absence can be refused with the planned call count.
     live.add_argument(
         "--max-calls", type=_positive_int, help="the most calls allowed in all; required"
+    )
+    live.add_argument(
+        "--allow-dispatch",
+        action="store_true",
+        help="in CI, run only if started by workflow_dispatch; any other CI run still refuses",
     )
     args = parser.parse_args(argv)
     if args.command == "replay" and args.recording is not None and args.require_live:

@@ -12,10 +12,20 @@ from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
 
-__all__ = ["GITHUB_TOKEN_VARIABLE", "Settings", "in_ci", "load_settings", "take_github_token"]
+__all__ = [
+    "GITHUB_TOKEN_VARIABLE",
+    "Settings",
+    "in_ci",
+    "live_run_refused",
+    "load_settings",
+    "take_github_token",
+]
 
 # Set by GitHub Actions and most CI services.
 _CI_VARIABLE: Final = "CI"
+# Set by GitHub Actions to the event that started the workflow.
+_EVENT_NAME_VARIABLE: Final = "GITHUB_EVENT_NAME"
+_MANUAL_DISPATCH: Final = "workflow_dispatch"
 GITHUB_TOKEN_VARIABLE: Final = "GITHUB_TOKEN"  # noqa: S105 - the variable's name, not a token
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
@@ -58,6 +68,16 @@ class Settings(BaseModel):
 def in_ci(environ: Mapping[str, str]) -> bool:
     """Whether ``environ`` is a CI run's: ``CI`` is set, whatever its value."""
     return _CI_VARIABLE in environ
+
+
+def live_run_refused(environ: Mapping[str, str], *, allow_dispatch: bool) -> bool:
+    """Whether a live command must refuse to call a model in ``environ`` (ADR 0015).
+
+    It must in CI, unless the run is a manual ``workflow_dispatch`` and ``allow_dispatch``
+    (``--allow-dispatch``) is given. Outside CI, it never must, whatever ``allow_dispatch`` is.
+    """
+    manual_dispatch = environ.get(_EVENT_NAME_VARIABLE) == _MANUAL_DISPATCH
+    return in_ci(environ) and not (manual_dispatch and allow_dispatch)
 
 
 def take_github_token() -> str | None:
