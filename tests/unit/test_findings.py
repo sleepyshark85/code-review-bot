@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import (
     Category,
+    EvidenceSpan,
     Finding,
     ReviewedFinding,
     RuleId,
@@ -145,6 +146,69 @@ def test_parse_findings_reads_a_null_or_absent_rule_as_untagged(raw_rule: dict[s
 def test_parse_findings_rejects_a_rule_that_is_not_a_rule_id(rule: str) -> None:
     with pytest.raises(ProviderError) as caught:
         parse_findings(json.dumps({"findings": [valid_fields(rule=rule)]}))
+
+    assert caught.value.category is ErrorCategory.INVALID_OUTPUT
+
+
+def evidence_span(
+    start: int = 12, end: int = 12, file: str = "billing/checkout.py"
+) -> dict[str, object]:
+    return {"file": file, "start_line": start, "end_line": end}
+
+
+def test_parse_findings_reads_evidence_spans_in_the_order_given() -> None:
+    spans = [evidence_span(10, 14), evidence_span(3, 3, file="a.py")]
+
+    [finding] = parse_findings(json.dumps({"findings": [valid_fields(evidence=spans)]}))
+
+    assert finding.evidence == (
+        EvidenceSpan(file="billing/checkout.py", start_line=10, end_line=14),
+        EvidenceSpan(file="a.py", start_line=3, end_line=3),
+    )
+
+
+def test_parse_findings_reads_absent_evidence_as_empty() -> None:
+    [finding] = parse_findings(json.dumps({"findings": [valid_fields()]}))
+
+    assert finding.evidence == ()
+
+
+def test_parse_findings_accepts_five_evidence_spans() -> None:
+    raw = json.dumps({"findings": [valid_fields(evidence=[evidence_span()] * 5)]})
+
+    assert len(parse_findings(raw)[0].evidence) == 5
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        [evidence_span()] * 6,
+        [evidence_span(13, 12)],
+        [evidence_span(0, 12)],
+        [evidence_span(1, 0)],
+        [evidence_span(file="")],
+        [{**evidence_span(), "text": "x = 1"}],
+        [{"file": "a.py", "start_line": 1}],
+        [evidence_span(start="12")],  # type: ignore[arg-type]
+        evidence_span(),
+    ],
+    ids=[
+        "six-spans",
+        "start-after-end",
+        "start-below-one",
+        "end-below-one",
+        "empty-file",
+        "extra-field",
+        "missing-end",
+        "line-as-string",
+        "not-a-list",
+    ],
+)
+def test_parse_findings_rejects_invalid_evidence_whole(evidence: object) -> None:
+    raw = json.dumps({"findings": [valid_fields(), valid_fields(evidence=evidence)]})
+
+    with pytest.raises(ProviderError) as caught:
+        parse_findings(raw)
 
     assert caught.value.category is ErrorCategory.INVALID_OUTPUT
 

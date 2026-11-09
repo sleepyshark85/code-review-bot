@@ -91,6 +91,10 @@ FINDING_KEYS = frozenset(
         "confidence",
         "triage",
         "original_rationale",
+        # Appended by P3-S4 (AC6): every finding has `evidence`, the kept spans (`[]` for a rule
+        # finding, or a model finding citing none), and `evidence_dropped`.
+        "evidence",
+        "evidence_dropped",
     }
 )
 ZERO_COUNTS = dict.fromkeys(COUNT_KEYS, 0)
@@ -202,6 +206,9 @@ def rule_entry(line: int) -> dict[str, Any]:
         "confidence": 1.0,
         "triage": None,
         "original_rationale": None,
+        # P3-S4 (AC6): a rule finding cites nothing.
+        "evidence": [],
+        "evidence_dropped": 0,
     }
 
 
@@ -378,6 +385,9 @@ def test_p1_s10_ac2_untagged_ai_finding_follows_the_rules_with_rule_null(
             "confidence": 0.8,
             "triage": None,
             "original_rationale": None,
+            # P3-S4 (AC6): a model finding citing nothing.
+            "evidence": [],
+            "evidence_dropped": 0,
         }
     ]
 

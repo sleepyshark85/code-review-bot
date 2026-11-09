@@ -8,7 +8,15 @@ from markdown_it.token import Token
 
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.diff_parser import FileDiff, ParsedDiff, SkipReason
-from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
+from review_bot.findings import (
+    Category,
+    EvidenceSpan,
+    Finding,
+    ReviewedFinding,
+    RuleId,
+    Severity,
+    Source,
+)
 from review_bot.policy import Decision
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
@@ -153,6 +161,8 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
                 "confidence": 0.876,
                 "triage": None,
                 "original_rationale": None,
+                "evidence": [],
+                "evidence_dropped": 0,
             }
         ],
         "counts": {
@@ -200,6 +210,23 @@ def test_render_json_with_an_untagged_ai_finding_writes_a_null_rule() -> None:
 
     assert finding["source"] == "ai"
     assert finding["rule"] is None
+
+
+def test_render_json_writes_a_findings_kept_evidence_in_order_and_its_dropped_count() -> None:
+    evidence = (
+        EvidenceSpan(file="billing/tax.py", start_line=10, end_line=14),
+        EvidenceSpan(file="a.py", start_line=3, end_line=3),
+    )
+    finding = make_finding().model_copy(update={"evidence": evidence})
+    result = pipeline_result(reported=(dataclasses.replace(reviewed(finding), evidence_dropped=2),))
+
+    [written] = json.loads(render(result))["findings"]
+
+    assert written["evidence"] == [
+        {"file": "billing/tax.py", "start_line": 10, "end_line": 14},
+        {"file": "a.py", "start_line": 3, "end_line": 3},
+    ]
+    assert written["evidence_dropped"] == 2
 
 
 def test_render_json_lists_only_reported_findings_and_counts_the_rest() -> None:

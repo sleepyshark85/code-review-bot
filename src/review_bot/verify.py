@@ -3,14 +3,17 @@
 A model finding is kept only if its ``file`` names a reviewable new path and its ``line`` is an
 added or context line in it. A near miss is dropped, never moved to a nearby line (ADR 0006). A
 finding that passes is a duplicate if it repeats a nearby rule finding at no higher severity, or
-an earlier model finding's file, rule part, line and rationale (ADR 0003).
+an earlier model finding's file, rule part, line and rationale (ADR 0003). Each finding's cited
+evidence is checked too: only the spans the model was shown are kept (``context.evidence``).
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from review_bot.context.evidence import EvidenceCheck, ShownLines, verify_evidence
+from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import Hunk, ParsedDiff
 from review_bot.findings import Finding, ReviewedFinding, RuleId, Source
 from review_bot.fingerprint import Fingerprinter
@@ -21,6 +24,7 @@ __all__ = ["DropReason", "ProposalCheck", "VerifyResult", "diff_path_named", "ve
 _PATH_PREFIXES: Final = ("./", "a/", "b/")
 # How many new-version lines apart a model finding and the rule finding it repeats may be.
 _NEARBY_LINES: Final = 3
+_NO_EVIDENCE: Final = EvidenceCheck(kept=(), dropped=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +54,10 @@ class ProposalCheck:
     """One proposed finding, and what verify decided about it.
 
     ``diff_path`` is the diff's new path that the finding's ``file`` names, or None if it names
-    none. Exactly one of the last three fields is set: ``drop_reason`` if its anchor isn't in the
-    diff, ``duplicate_of`` (the kept finding's fingerprint) if it repeats a kept finding, or else
-    ``fingerprint``, its own, as it was kept.
+    none. Exactly one of ``drop_reason``, ``duplicate_of`` and ``fingerprint`` is set:
+    ``drop_reason`` if its anchor isn't in the diff, ``duplicate_of`` (the kept finding's
+    fingerprint) if it repeats a kept finding, or else ``fingerprint``, its own, as it was kept.
+    ``evidence`` is the check of its cited spans, whatever the outcome.
     """
 
     proposed: Finding
@@ -60,6 +65,7 @@ class ProposalCheck:
     drop_reason: DropReason | None = None
     duplicate_of: str | None = None
     fingerprint: str | None = None
+    evidence: EvidenceCheck = _NO_EVIDENCE
 
     def __post_init__(self) -> None:
         """Raise ``ValueError`` unless exactly one outcome is set."""
@@ -75,7 +81,7 @@ class VerifyResult:
     """What verify kept, and its check of each proposed finding, in the order proposed.
 
     ``kept`` holds the rule findings in the order given, then the kept model findings in the order
-    proposed, each with ``file`` set to the diff path it names.
+    proposed, each with ``file`` set to the diff path it names and ``evidence`` to its kept spans.
     """
 
     kept: tuple[ReviewedFinding, ...]
@@ -101,7 +107,12 @@ class VerifyResult:
 
 
 def verify_findings(
-    proposed: Sequence[Finding], rule_findings: Sequence[ReviewedFinding], parsed: ParsedDiff
+    proposed: Sequence[Finding],
+    rule_findings: Sequence[ReviewedFinding],
+    parsed: ParsedDiff,
+    *,
+    ledger: Iterable[ToolCall] = (),
+    is_diff_head: bool = False,
 ) -> VerifyResult:
     """Check every proposed finding's file and line against ``parsed``, then dedupe the rest.
 
@@ -110,19 +121,27 @@ def verify_findings(
         rule_findings: Findings from the rules, which anchor only to lines in the diff. They are
             kept first, in the order given, which ``run_rules`` makes file then line.
         parsed: The diff the findings are about.
+        ledger: The tool calls of a context review, whose returned lines evidence may cite.
+        is_diff_head: Whether the tools read the commit the diff ends at, so their lines count
+            in the files the diff changes too (``context.evidence.ShownLines``).
     """
     anchor_lines = _anchor_lines(parsed)
     skipped_paths = {
         file.path for file in parsed.files if file.path is not None and file.skip_reason is not None
     }
     known_paths = anchor_lines.keys() | skipped_paths
-    checks = _check_all(proposed, rule_findings, anchor_lines, known_paths)
+    diff_lines = {path: anchor_lines.get(path, {}).keys() for path in known_paths}
+    shown = ShownLines(diff_lines, ledger, is_diff_head=is_diff_head)
+    checks = _check_all(proposed, rule_findings, anchor_lines, known_paths, shown)
     kept_ai = tuple(
         ReviewedFinding(
-            check.proposed.model_copy(update={"file": check.diff_path}),
+            check.proposed.model_copy(
+                update={"file": check.diff_path, "evidence": check.evidence.kept}
+            ),
             Source.AI,
             check.proposed.rule,
             check.fingerprint,
+            evidence_dropped=check.evidence.dropped,
         )
         for check in checks
         if check.fingerprint is not None
@@ -179,13 +198,15 @@ def _check_all(
     rule_findings: Sequence[ReviewedFinding],
     anchor_lines: _AnchorLines,
     known_paths: Collection[str],
+    shown: ShownLines,
 ) -> tuple[ProposalCheck, ...]:
     """Drop each finding whose anchor misses; mark a repeat a duplicate; fingerprint the rest.
 
     A finding is compared first with the rule findings (``_repeated_rule_finding``), then with the
     model findings kept before it: two are alike when their path, rule part, line and rationale
     are all the same, whatever their ordinals. Ordinals count on from the rule findings', so a
-    model finding never takes a rule finding's fingerprint.
+    model finding never takes a rule finding's fingerprint. Every finding's evidence is checked
+    against ``shown``.
     """
     fingerprinter = Fingerprinter(taken=(reviewed.fingerprint for reviewed in rule_findings))
     rule_findings_by_line = _rule_findings_by_line(rule_findings)
@@ -194,9 +215,10 @@ def _check_all(
     for finding in proposed:
         diff_path = diff_path_named(finding.file, known_paths)
         reason = _drop_reason(finding, diff_path, anchor_lines)
+        evidence = verify_evidence(finding.evidence, shown)
         # ``diff_path is None`` always has a reason; it is tested only so mypy narrows the type.
         if reason is not None or diff_path is None:
-            checks.append(ProposalCheck(finding, diff_path, drop_reason=reason))
+            checks.append(ProposalCheck(finding, diff_path, drop_reason=reason, evidence=evidence))
             continue
         lines = anchor_lines[diff_path]
         rule_part = finding.rule or f"ai:{finding.category}"
@@ -205,13 +227,15 @@ def _check_all(
         if duplicate_of is None:
             duplicate_of = kept_fingerprints.get(alike)
         if duplicate_of is not None:
-            checks.append(ProposalCheck(finding, diff_path, duplicate_of=duplicate_of))
+            checks.append(
+                ProposalCheck(finding, diff_path, duplicate_of=duplicate_of, evidence=evidence)
+            )
             continue
         fingerprint = fingerprinter.fingerprint(
             file=diff_path, rule=rule_part, anchor_text=lines[finding.line].text
         )
         kept_fingerprints[alike] = fingerprint
-        checks.append(ProposalCheck(finding, diff_path, fingerprint=fingerprint))
+        checks.append(ProposalCheck(finding, diff_path, fingerprint=fingerprint, evidence=evidence))
     return tuple(checks)
 
 

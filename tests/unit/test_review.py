@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -20,7 +21,7 @@ from review_bot.errors import (
     ProviderError,
     SecretDetectedError,
 )
-from review_bot.findings import Category, Finding, Severity, Source
+from review_bot.findings import Category, EvidenceSpan, Finding, Severity, Source
 from review_bot.fingerprint import fingerprint_for
 from review_bot.git import GitRepo
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
@@ -479,6 +480,8 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
         "reason": None,
         "duplicate_of": None,
         "rationale_sha256": sha256("Why."),
+        "evidence_kept": 0,
+        "evidence_dropped": 0,
     }
     assert records[0] == kept
     assert records[1] == {
@@ -491,6 +494,8 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
         "reason": "unknown_file",
         "duplicate_of": None,
         "rationale_sha256": sha256("Why."),
+        "evidence_kept": 0,
+        "evidence_dropped": 0,
     }
     assert records[2] == kept | {
         "fingerprint": fingerprint_for(file="app.py", rule="ai:logic", anchor_text="x", ordinal=1),
@@ -659,7 +664,9 @@ def test_run_pipeline_with_context_names_the_commit_and_records_the_prompt_versi
     result = run_with_context(tmp_path, MockProvider(findings=[]), context)
 
     assert result.context_commit == context.repo.commit
-    assert data_of(tmp_path / "audit.jsonl", "run.start")["prompt_version"] == "p3-v1"
+    assert (
+        data_of(tmp_path / "audit.jsonl", "run.start")["prompt_version"] == CONTEXT_PROMPT_VERSION
+    )
 
 
 def test_run_pipeline_with_context_caps_tool_calls_from_the_settings(tmp_path: Path) -> None:
@@ -729,3 +736,44 @@ def test_run_pipeline_without_context_sends_no_tools(tmp_path: Path) -> None:
     assert result.context_commit is None
     assert result.ledger == ()
     assert result.prompt_version == PROMPT_VERSION
+
+
+def citing(*spans: tuple[str, int, int]) -> Finding:
+    evidence = tuple(EvidenceSpan(file=file, start_line=a, end_line=b) for file, a, b in spans)
+    return make_finding().model_copy(update={"evidence": evidence})
+
+
+def test_run_pipeline_with_context_keeps_cited_lines_a_tool_returned_and_counts_the_rest(
+    tmp_path: Path,
+) -> None:
+    finding = citing(("a.py", 1, 1), ("a.py", 2, 2))
+    provider = MockProvider(findings=[finding], tool_calls=[("read", {"path": "a.py"})])
+
+    result = run_with_context(tmp_path, provider, context_repo(tmp_path))
+
+    [kept] = result.decision.reported
+    assert kept.finding.evidence == (EvidenceSpan(file="a.py", start_line=1, end_line=1),)
+    assert kept.evidence_dropped == 1
+    checked = data_of(tmp_path / "audit.jsonl", "verify.checked")
+    assert (checked["evidence_kept"], checked["evidence_dropped"]) == (1, 1)
+    assert "a.py" not in json.dumps(checked)
+
+
+def head_context(tmp_path: Path, *, is_diff_head: bool) -> ReviewContext:
+    """A commit holding `app.py` with three lines, of which `MINIMAL_DIFF` shows only line 1."""
+    repo = init_repo(tmp_path / "repo")
+    sha = commit(repo, {"app.py": "x\ny\nz\n"})
+    git_repo = GitRepo(repo, timeout_s=60)
+    return ReviewContext(repo=RepoRef(git=git_repo, commit=sha), is_diff_head=is_diff_head)
+
+
+@pytest.mark.parametrize(("is_diff_head", "dropped"), [(True, 0), (False, 1)])
+def test_run_pipeline_counts_tool_lines_of_a_changed_file_only_at_the_diffs_head(
+    tmp_path: Path, is_diff_head: bool, dropped: int
+) -> None:
+    finding = citing(("app.py", 1, 1), ("app.py", 2, 3))
+    provider = MockProvider(findings=[finding], tool_calls=[("read", {"path": "app.py"})])
+
+    result = run_with_context(tmp_path, provider, head_context(tmp_path, is_diff_head=is_diff_head))
+
+    assert result.decision.reported[0].evidence_dropped == dropped

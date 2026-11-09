@@ -2,14 +2,15 @@
 
 from dataclasses import dataclass
 from enum import StrEnum, auto
-from typing import Final
+from typing import Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from review_bot.errors import ErrorCategory, ProviderError
 
 __all__ = [
     "Category",
+    "EvidenceSpan",
     "Finding",
     "ReviewedFinding",
     "RuleId",
@@ -17,6 +18,9 @@ __all__ = [
     "Source",
     "parse_findings",
 ]
+
+# How many spans of context one finding may cite (P3-S4 Limits).
+_MAX_EVIDENCE_SPANS: Final = 5
 
 # Fixed, because pydantic's own message quotes the input and model text must never reach stderr.
 _INVALID_OUTPUT_MESSAGE: Final = (
@@ -56,10 +60,28 @@ class RuleId(StrEnum):
     OPEN_WITHOUT_ENCODING = "open-without-encoding"
 
 
+class EvidenceSpan(BaseModel):
+    """Lines ``start_line`` to ``end_line`` of ``file``, both included, that a finding relies on."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    file: str = Field(min_length=1)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _check_order(self) -> Self:
+        if self.start_line > self.end_line:
+            raise ValueError("start_line must not be after end_line")
+        return self
+
+
 class Finding(BaseModel):
     """One problem reported against one line of a diff.
 
     ``rule`` is the model's tag, naming the rule that would catch the same problem, or None.
+    ``evidence`` is the context the finding relies on, as the model cites it; once verified, only
+    the spans the model was shown (``context.evidence``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -71,6 +93,7 @@ class Finding(BaseModel):
     rationale: str = Field(pattern=r"\S")
     confidence: float = Field(ge=0.0, le=1.0)
     rule: RuleId | None = None
+    evidence: tuple[EvidenceSpan, ...] = Field(default=(), max_length=_MAX_EVIDENCE_SPANS)
 
 
 class Source(StrEnum):
@@ -86,12 +109,14 @@ class ReviewedFinding:
 
     ``rule`` is the rule that found it, or a model finding's tag (``Finding.rule``).
     ``fingerprint`` is its stable identity (``fingerprint.fingerprint_for``).
+    ``evidence_dropped`` counts the cited spans verify dropped from ``finding.evidence``.
     """
 
     finding: Finding
     source: Source
     rule: RuleId | None
     fingerprint: str
+    evidence_dropped: int = 0
 
     @property
     def rule_part(self) -> str:

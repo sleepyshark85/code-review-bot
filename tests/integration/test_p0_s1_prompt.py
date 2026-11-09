@@ -13,6 +13,10 @@ pytestmark = pytest.mark.integration
 FINDING_FIELDS = ("file", "line", "severity", "category", "rationale", "confidence", "rule")
 SEVERITY_VALUES = ("low", "medium", "high", "critical")
 CATEGORY_VALUES = ("logic", "security", "reliability", "maintainability", "testing")
+# P3-S4 AC9: only the context prompt asks for `evidence`; the diff-mode prompt is unchanged byte
+# for byte, so it doesn't label it. test_p3_s4_ac9_context_prompt_asks_for_evidence checks the
+# context prompt labels it.
+CONTEXT_ONLY_FIELDS = ("evidence",)
 
 ANY_DIFF = {
     "lf_terminated": "diff --git a/x.py b/x.py\n+unique-diff-marker = 1\n",
@@ -225,7 +229,7 @@ def test_p0_s1_ac15_system_prompt_names_each_enum_value(bot, write_diff, value):
 
 def test_p0_s1_ac15_system_prompt_covers_everything_in_the_real_schema(bot, write_diff):
     # Guards the literal lists above against the schema growing without the prompt following it.
-    fields = list(Finding.model_fields)
+    fields = [field for field in Finding.model_fields if field not in CONTEXT_ONLY_FIELDS]
     values = [member.value for member in (*Severity, *Category)]
 
     system_prompt = bot.request_for(write_diff(MINIMAL_DIFF)).system_prompt
@@ -233,3 +237,4 @@ def test_p0_s1_ac15_system_prompt_covers_everything_in_the_real_schema(bot, writ
     assert [field for field in fields if not labels_field(system_prompt, field)] == []
     assert [value for value in values if not names_value(system_prompt, value)] == []
     assert {*fields, *values} == {*FINDING_FIELDS, *SEVERITY_VALUES, *CATEGORY_VALUES}
+    assert set(CONTEXT_ONLY_FIELDS) <= set(Finding.model_fields), "a context-only field is stale"

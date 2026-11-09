@@ -15,7 +15,7 @@ from typing import Final
 
 from review_bot.context.codeowners import NO_CODEOWNERS, CodeOwners, owners_for
 from review_bot.errors import ErrorCategory
-from review_bot.findings import Category, RuleId, Severity
+from review_bot.findings import Category, EvidenceSpan, RuleId, Severity
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import CommentPlan, PlannedComment
 from review_bot.render import escape_markdown, markdown_path
@@ -75,8 +75,8 @@ def comment_body(comment: PlannedComment) -> str:
     """Return the comment's body; its last line is its marker (ADR 0009).
 
     The body shows the finding's severity, category, source, rule if any, confidence and
-    rationale, then asks for a reaction. A rationale over 2,000 characters shows its first 2,000
-    and ``(cut)``.
+    rationale, then its evidence spans if it has any, then asks for a reaction. A rationale over
+    2,000 characters shows its first 2,000 and ``(cut)``.
     """
     reviewed = comment.reviewed
     finding = reviewed.finding
@@ -89,8 +89,23 @@ def comment_body(comment: PlannedComment) -> str:
         f"<!-- review-bot:v1 fingerprint={reviewed.fingerprint} rule={reviewed.rule_part} "
         f"anchor={comment.anchor} -->"
     )
-    paragraphs = (heading, _shown_rationale(finding.rationale), _REACTION_REQUEST, marker)
+    paragraphs = [heading, _shown_rationale(finding.rationale)]
+    if finding.evidence:
+        paragraphs.append(_evidence_line(finding.evidence))
+    paragraphs += [_REACTION_REQUEST, marker]
     return _NEW_PARAGRAPH.join(paragraphs)
+
+
+def _evidence_line(evidence: Sequence[EvidenceSpan]) -> str:
+    """``Context:`` and each span as a code span, ``path:12`` or ``path:10-14``."""
+    spans = [markdown_path(span.file, suffix=f":{_line_range(span)}") for span in evidence]
+    return f"Context: {', '.join(spans)}"
+
+
+def _line_range(span: EvidenceSpan) -> str:
+    if span.start_line == span.end_line:
+        return str(span.start_line)
+    return f"{span.start_line}-{span.end_line}"
 
 
 def read_marker(body: str) -> Marker | None:

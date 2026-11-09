@@ -3,11 +3,11 @@
 import json
 import re
 import string
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Final
 
 from review_bot.context.ledger import ToolOutcome, merged_spans_by_file
-from review_bot.findings import Finding, ReviewedFinding, Severity
+from review_bot.findings import EvidenceSpan, Finding, ReviewedFinding, Severity
 from review_bot.report import (
     PipelineResult,
     TriageDecision,
@@ -21,6 +21,7 @@ from review_bot.settings import Settings
 __all__ = [
     "escape_markdown",
     "escape_unprintable",
+    "evidence_json",
     "markdown_path",
     "render_findings",
     "render_json",
@@ -196,7 +197,21 @@ def _finding_json(
         "confidence": finding.confidence,
         "triage": decision,
         "original_rationale": original_rationale,
+        "evidence": evidence_json(finding.evidence),
+        "evidence_dropped": reviewed.evidence_dropped,
     }
+
+
+def evidence_json(evidence: Iterable[EvidenceSpan]) -> list[dict[str, object]]:
+    """Each evidence span as ``{file, start_line, end_line}``, its path as ``files_read`` has it."""
+    return [
+        {
+            "file": path_fields(span.file)["file"],
+            "start_line": span.start_line,
+            "end_line": span.end_line,
+        }
+        for span in evidence
+    ]
 
 
 def render_markdown(
