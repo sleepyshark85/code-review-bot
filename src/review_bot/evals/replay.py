@@ -23,6 +23,7 @@ from review_bot.diff_parser import parse_diff
 from review_bot.errors import ConfigFileError, GitError, InputError
 from review_bot.evals.fixture_repo import FixtureRepo, build_fixture_repo
 from review_bot.evals.formats import (
+    MODES,
     EvalInputError,
     EvalMode,
     LoadedCase,
@@ -32,7 +33,13 @@ from review_bot.evals.formats import (
     load_case,
     load_recording,
 )
-from review_bot.evals.score import CaseEvidence, CaseResult, RunFindings, score_case
+from review_bot.evals.score import (
+    CaseEvidence,
+    CaseReplays,
+    CaseResult,
+    RunFindings,
+    score_case,
+)
 from review_bot.findings import Finding, Source
 from review_bot.pr.config import CONFIG_PATH, parse_config_file
 from review_bot.prompt import (
@@ -52,12 +59,12 @@ from review_bot.verify import VerifyResult, verify_findings
 __all__ = [
     "check_sendable",
     "freshness_fields",
+    "replay_both_modes",
     "replay_cases",
     "require_live",
     "score_recording",
 ]
 
-_MODES: Final[tuple[EvalMode, ...]] = ("diff", "context")
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
 # ``live`` records diff mode only; P3-S6 adds recording context mode.
 _LIVE_CONTEXT_ADVICE: Final = (
@@ -173,6 +180,31 @@ async def replay_cases(
     ]
 
 
+async def replay_both_modes(cases_dir: Path) -> list[CaseReplays]:
+    """Score every case under ``cases_dir`` on its live recording of each mode, where it has one.
+
+    A stale recording isn't scored: its result says why (``score_recording``).
+
+    Raises:
+        EvalInputError: If a case or a live recording is invalid, a recording sits under the
+            wrong mode's directory, or in context mode a case's repository can't be built.
+    """
+    cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
+    recordings = [_live_recordings(loaded) for loaded in cases]
+    replays = []
+    for loaded, live in zip(cases, recordings, strict=True):
+        diff = await _score_if_recorded(loaded, live["diff"], mode="diff")
+        context = await _score_if_recorded(loaded, live["context"], mode="context")
+        replays.append(CaseReplays(loaded.case, diff, context))
+    return replays
+
+
+async def _score_if_recorded(
+    loaded: LoadedCase, recording: Recording | None, *, mode: EvalMode
+) -> CaseResult | None:
+    return None if recording is None else await score_recording(loaded, recording, mode=mode)
+
+
 def require_live(result: CaseResult, default_model: str, *, mode: EvalMode) -> CaseResult:
     """``result``, failed too unless it was scored on a live recording of ``default_model``.
 
@@ -282,7 +314,7 @@ def _live_recordings(loaded: LoadedCase) -> dict[EvalMode, Recording | None]:
     Raises:
         EvalInputError: If one is invalid, synthetic, of another case or of the other mode.
     """
-    return {mode: _live_recording(loaded, mode) for mode in _MODES}
+    return {mode: _live_recording(loaded, mode) for mode in MODES}
 
 
 def _live_recording(loaded: LoadedCase, mode: EvalMode) -> Recording | None:

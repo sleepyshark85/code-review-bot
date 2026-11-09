@@ -34,6 +34,7 @@ __all__ = [
     "INTERNAL_ERROR",
     "MAX_REPO_BYTES",
     "MAX_REPO_FILES",
+    "MODES",
     "Bug",
     "EvalCase",
     "EvalInputError",
@@ -68,6 +69,7 @@ type LineWindow = tuple[PositiveInt, PositiveInt]
 type RecordingKind = Literal["live", "synthetic"]
 # How a recording's runs reviewed: one turn on the diff, or with the repository tools (Phase 3).
 type EvalMode = Literal["diff", "context"]
+MODES: Final[tuple[EvalMode, ...]] = ("diff", "context")
 # A failed run's category: a provider's, or ``internal`` for an unexpected exception in its call.
 type RunErrorCategory = ErrorCategory | Literal["internal"]
 

@@ -19,14 +19,12 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
 import argparse
 import contextlib
 import os
-import re
 import sys
 import tempfile
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
@@ -88,6 +86,7 @@ from review_bot.pr.shadow import (
     render_shadow_markdown,
 )
 from review_bot.pr.units import ShadowFile
+from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
@@ -125,8 +124,6 @@ _BASELINE_WITHOUT_CREDENTIAL: Final = (
 )
 # The escaped-defect proxy's issue label (Phase 2 design, Q8).
 _BUG_LABEL: Final = "bug"
-# A price flag's value: digits, with an optional fraction.
-_PRICE: Final = re.compile(r"[0-9]+(\.[0-9]+)?")
 _NO_TERMINAL_FOR_LABEL: Final = (
     "label needs a terminal: stdin and stderr must both be attached to one. Run it from an "
     "interactive shell."
@@ -519,12 +516,7 @@ def _add_metrics_command(add_parser: Callable[..., RaisingArgumentParser]) -> No
     )
     metrics.add_argument("--since", type=_iso_date, help="the window's first day, as YYYY-MM-DD")
     metrics.add_argument("--until", type=_iso_date, help="the window's last day, as YYYY-MM-DD")
-    metrics.add_argument(
-        "--price-input-usd-per-mtok", type=_price, help="USD per million input tokens"
-    )
-    metrics.add_argument(
-        "--price-output-usd-per-mtok", type=_price, help="USD per million output tokens"
-    )
+    add_price_arguments(metrics)
     metrics.add_argument(
         "--format", choices=["text", "json"], default="text", help="text (default) or json"
     )
@@ -544,36 +536,11 @@ def _metrics_command(flags: Mapping[str, Any]) -> _MetricsCommand:
         labels_paths=tuple(flags["labels"]),
         since=since,
         until=until,
-        prices=_prices(flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]),
+        prices=prices_from_flags(
+            flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]
+        ),
         as_json=flags["format"] == "json",
     )
-
-
-def _prices(input_price: Decimal | None, output_price: Decimal | None) -> Prices | None:
-    """Both prices, or None for neither.
-
-    Raises:
-        ConfigError: Naming the missing flag if only one is given.
-    """
-    if input_price is None and output_price is None:
-        return None
-    if input_price is None or output_price is None:
-        missing = "input" if input_price is None else "output"
-        raise ConfigError(
-            f"--price-{missing}-usd-per-mtok is missing. Pass both prices to show the cost, or "
-            "neither. Run with --help for usage."
-        )
-    return Prices(input_price, output_price)
-
-
-def _price(text: str) -> Decimal:
-    # Digits only, so a sign, an exponent, nan or inf is refused.
-    if not _PRICE.fullmatch(text):
-        raise argparse.ArgumentTypeError(
-            f"{text!r} isn't a price: pass USD per million tokens as a number of 0 or more, such "
-            "as 15 or 0.25"
-        )
-    return Decimal(text)
 
 
 def _iso_date(text: str) -> date:

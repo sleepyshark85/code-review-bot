@@ -22,6 +22,7 @@ from review_bot.verify import diff_path_named
 __all__ = [
     "BugScore",
     "CaseEvidence",
+    "CaseReplays",
     "CaseResult",
     "CaseScore",
     "Credit",
@@ -196,6 +197,15 @@ class CaseResult:
     def passed(self) -> bool:
         """Whether nothing fails the case."""
         return not self.all_problems
+
+
+@dataclass(frozen=True, slots=True)
+class CaseReplays:
+    """A case, and its result on its live recording of each mode, or None where it has none."""
+
+    case: EvalCase
+    diff: CaseResult | None
+    context: CaseResult | None
 
 
 def score_case(case: EvalCase, evidence: CaseEvidence) -> CaseScore:

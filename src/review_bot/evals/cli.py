@@ -1,4 +1,4 @@
-"""Command line for the evals: ``python -m review_bot.evals replay|live ...``.
+"""Command line for the evals: ``python -m review_bot.evals replay|live|compare ...``.
 
 Its exit codes are its own (Phase 1 design, Exit codes): 0 pass, 1 fail, 2 usage.
 """
@@ -11,11 +11,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn, override
 
 from review_bot.console import keep_library_logs_off_stderr, write_diagnostic, write_output
+from review_bot.errors import ConfigError
+from review_bot.evals.compare import compare_cases
+from review_bot.evals.compare_render import render_compare_json, render_compare_text
 from review_bot.evals.formats import EvalInputError
 from review_bot.evals.live import record_live
 from review_bot.evals.render import render_live, render_replay
-from review_bot.evals.replay import replay_cases, require_live
+from review_bot.evals.replay import replay_both_modes, replay_cases, require_live
 from review_bot.evals.score import CaseResult
+from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, take_github_token
 
@@ -43,20 +47,22 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None) -> int:
-    """Replay or record every case under ``--cases``; return 0 pass, 1 fail, 2 usage.
+    """Replay, record or compare every case under ``--cases``; return 0 pass, 1 fail, 2 usage.
+
+    ``compare`` passes when every case with a ``repo`` or a context recording is paired.
 
     Args:
         argv: The arguments; None means the process's own.
         sdk_call: Replaces the real SDK call for ``live``, so tests stay offline. ``replay``
-            never calls a model, so it never uses it.
+            and ``compare`` never call a model, so they never use it.
     """
     keep_library_logs_off_stderr()
     # Before any provider is built, so the Claude CLI never inherits it.
     take_github_token()
     try:
         args = _parse_args(argv)
-        results = asyncio.run(_run(args, sdk_call))
-    except EvalInputError as exc:
+        output, exit_code = asyncio.run(_run(args, sdk_call))
+    except (EvalInputError, ConfigError) as exc:
         # Paths come from the command line and case files; redact them like the review's errors.
         write_diagnostic(f"review-bot evals: error: {redact(str(exc))}")
         return _USAGE
@@ -64,24 +70,48 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     except Exception:  # noqa: BLE001 - see above
         write_diagnostic(_INTERNAL_ERROR_MESSAGE)
         return _USAGE
-    if args.command == "replay" and args.require_live:
+    write_output(output)
+    return exit_code
+
+
+async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> tuple[str, int]:
+    """The command's report and exit code."""
+    if args.command == "compare":
+        return await _compare(args)
+    if args.command == "live":
+        results = await _record(args, sdk_call)
+        return render_live(results), _exit_code(results)
+    return await _replay(args)
+
+
+async def _replay(args: argparse.Namespace) -> tuple[str, int]:
+    results = await replay_cases(args.cases, args.recording, mode=args.mode)
+    if args.require_live:
         default_model = Settings().model
         results = [require_live(result, default_model, mode=args.mode) for result in results]
-    write_output(render_live(results) if args.command == "live" else render_replay(results))
+    return render_replay(results), _exit_code(results)
+
+
+async def _compare(args: argparse.Namespace) -> tuple[str, int]:
+    prices = prices_from_flags(args.price_input_usd_per_mtok, args.price_output_usd_per_mtok)
+    comparison = compare_cases(await replay_both_modes(args.cases), prices)
+    render = render_compare_json if args.format == "json" else render_compare_text
+    return render(comparison), _PASS if comparison.passed else _FAIL
+
+
+def _exit_code(results: Sequence[CaseResult]) -> int:
     return _PASS if all(result.passed for result in results) else _FAIL
 
 
-async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> list[CaseResult]:
-    if args.command == "live":
-        return await record_live(
-            args.cases,
-            runs=args.runs,
-            max_calls=args.max_calls,
-            environ=os.environ,
-            allow_dispatch=args.allow_dispatch,
-            sdk_call=sdk_call,
-        )
-    return await replay_cases(args.cases, args.recording, mode=args.mode)
+async def _record(args: argparse.Namespace, sdk_call: "SdkCall | None") -> list[CaseResult]:
+    return await record_live(
+        args.cases,
+        runs=args.runs,
+        max_calls=args.max_calls,
+        environ=os.environ,
+        allow_dispatch=args.allow_dispatch,
+        sdk_call=sdk_call,
+    )
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -127,6 +157,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="in CI, run only if started by workflow_dispatch; any other CI run still refuses",
     )
+    _add_compare_command(commands)
     args = parser.parse_args(argv)
     if args.command == "replay" and args.recording is not None and args.require_live:
         raise EvalInputError(
@@ -140,3 +171,16 @@ def _positive_int(text: str) -> int:
     if not (text.isascii() and text.isdigit() and int(text) >= 1):
         raise argparse.ArgumentTypeError(f"{text!r} isn't a whole number of at least 1")
     return int(text)
+
+
+def _add_compare_command(commands: "argparse._SubParsersAction[_ArgumentParser]") -> None:
+    compare = commands.add_parser(
+        "compare",
+        help="compare diff mode with context mode on each case's live recordings, offline",
+        allow_abbrev=False,
+    )
+    compare.add_argument("--cases", type=Path, required=True, help="the eval cases directory")
+    add_price_arguments(compare)
+    compare.add_argument(
+        "--format", choices=("text", "json"), default="text", help="text (default) or json"
+    )
