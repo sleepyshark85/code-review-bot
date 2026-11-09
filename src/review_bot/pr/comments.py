@@ -2,9 +2,10 @@
 
 Model and diff text reaches these bodies only through ``render.escape_markdown`` and
 ``render.markdown_path``, so it can't mention, link, reference or hide anything (Phase 2 design,
-Safety on the PR path). A code owner from CODEOWNERS goes in a code span, which its syntax
-keeps whole. ``read_marker``, ``is_summary`` and ``read_reviewed_sha`` read posted
-bodies back.
+Safety on the PR path). The one exception is a verified suggestion, which goes whole in a fenced
+block it can't close (``suggestion.fenced_block``). A code owner from CODEOWNERS goes in a code
+span, which its syntax keeps whole. ``read_marker``, ``is_summary`` and ``read_reviewed_sha``
+read posted bodies back.
 """
 
 import re
@@ -20,6 +21,7 @@ from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import CommentPlan, PlannedComment
 from review_bot.render import escape_markdown, markdown_path
 from review_bot.secret_scan import SecretHit
+from review_bot.suggestion import fenced_block
 
 __all__ = [
     "Marker",
@@ -75,8 +77,9 @@ def comment_body(comment: PlannedComment) -> str:
     """Return the comment's body; its last line is its marker (ADR 0009).
 
     The body shows the finding's severity, category, source, rule if any, confidence and
-    rationale, then its evidence spans if it has any, then asks for a reaction. A rationale over
-    2,000 characters shows its first 2,000 and ``(cut)``.
+    rationale, then its evidence spans if it has any, then its suggestion if it has one, as a
+    GitHub suggestion block, then asks for a reaction. A rationale over 2,000 characters shows its
+    first 2,000 and ``(cut)``.
     """
     reviewed = comment.reviewed
     finding = reviewed.finding
@@ -92,6 +95,8 @@ def comment_body(comment: PlannedComment) -> str:
     paragraphs = [heading, _shown_rationale(finding.rationale)]
     if finding.evidence:
         paragraphs.append(_evidence_line(finding.evidence))
+    if finding.suggestion is not None:
+        paragraphs.append(fenced_block(finding.suggestion, info="suggestion"))
     paragraphs += [_REACTION_REQUEST, marker]
     return _NEW_PARAGRAPH.join(paragraphs)
 

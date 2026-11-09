@@ -4,19 +4,22 @@ A model finding is kept only if its ``file`` names a reviewable new path and its
 added or context line in it. A near miss is dropped, never moved to a nearby line (ADR 0006). A
 finding that passes is a duplicate if it repeats a nearby rule finding at no higher severity, or
 an earlier model finding's file, rule part, line and rationale (ADR 0003). Each finding's cited
-evidence is checked too: only the spans the model was shown are kept (``context.evidence``).
+evidence is checked too: only the spans the model was shown are kept (``context.evidence``). A
+kept finding's suggestion is kept only if one was asked for and it may replace the anchored line
+(``suggestion``).
 """
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Final
 
 from review_bot.context.evidence import EvidenceCheck, ShownLines, verify_evidence
 from review_bot.context.ledger import ToolCall
-from review_bot.diff_parser import Hunk, ParsedDiff
+from review_bot.diff_parser import DiffLine, Hunk, ParsedDiff
 from review_bot.findings import Finding, ReviewedFinding, RuleId, Source
 from review_bot.fingerprint import Fingerprinter
+from review_bot.suggestion import SuggestionDropReason, suggestion_drop_reason
 
 __all__ = ["DropReason", "ProposalCheck", "VerifyResult", "diff_path_named", "verify_findings"]
 
@@ -29,9 +32,9 @@ _NO_EVIDENCE: Final = EvidenceCheck(kept=(), dropped=0)
 
 @dataclass(frozen=True, slots=True)
 class _AnchorLine:
-    """An added or context line's text, and the hunk showing it."""
+    """An added or context line, and the hunk showing it."""
 
-    text: str
+    line: DiffLine
     hunk: Hunk
 
 
@@ -57,7 +60,9 @@ class ProposalCheck:
     none. Exactly one of ``drop_reason``, ``duplicate_of`` and ``fingerprint`` is set:
     ``drop_reason`` if its anchor isn't in the diff, ``duplicate_of`` (the kept finding's
     fingerprint) if it repeats a kept finding, or else ``fingerprint``, its own, as it was kept.
-    ``evidence`` is the check of its cited spans, whatever the outcome.
+    ``evidence`` is the check of its cited spans, whatever the outcome. ``suggestion_dropped``
+    is why its suggestion was dropped; it is set only for a kept finding, the only kind whose
+    suggestion is checked.
     """
 
     proposed: Finding
@@ -66,6 +71,7 @@ class ProposalCheck:
     duplicate_of: str | None = None
     fingerprint: str | None = None
     evidence: EvidenceCheck = _NO_EVIDENCE
+    suggestion_dropped: SuggestionDropReason | None = None
 
     def __post_init__(self) -> None:
         """Raise ``ValueError`` unless exactly one outcome is set."""
@@ -81,7 +87,8 @@ class VerifyResult:
     """What verify kept, and its check of each proposed finding, in the order proposed.
 
     ``kept`` holds the rule findings in the order given, then the kept model findings in the order
-    proposed, each with ``file`` set to the diff path it names and ``evidence`` to its kept spans.
+    proposed, each with ``file`` set to the diff path it names, ``evidence`` to its kept spans and
+    ``suggestion`` to None if verify dropped it.
     """
 
     kept: tuple[ReviewedFinding, ...]
@@ -106,13 +113,14 @@ class VerifyResult:
         return tuple(check for check in self.checks if check.duplicate_of is not None)
 
 
-def verify_findings(
+def verify_findings(  # noqa: PLR0913 - ledger and the two flags are keyword-only
     proposed: Sequence[Finding],
     rule_findings: Sequence[ReviewedFinding],
     parsed: ParsedDiff,
     *,
     ledger: Iterable[ToolCall] = (),
     is_diff_head: bool = False,
+    suggestions_requested: bool = False,
 ) -> VerifyResult:
     """Check every proposed finding's file and line against ``parsed``, then dedupe the rest.
 
@@ -124,6 +132,8 @@ def verify_findings(
         ledger: The tool calls of a context review, whose returned lines evidence may cite.
         is_diff_head: Whether the tools read the commit the diff ends at, so their lines count
             in the files the diff changes too (``context.evidence.ShownLines``).
+        suggestions_requested: Whether the prompt asked for suggestions, as the context prompt
+            does; if not, every suggestion is dropped ``not_requested``.
     """
     anchor_lines = _anchor_lines(parsed)
     skipped_paths = {
@@ -132,21 +142,49 @@ def verify_findings(
     known_paths = anchor_lines.keys() | skipped_paths
     diff_lines = {path: anchor_lines.get(path, {}).keys() for path in known_paths}
     shown = ShownLines(diff_lines, ledger, is_diff_head=is_diff_head)
-    checks = _check_all(proposed, rule_findings, anchor_lines, known_paths, shown)
+    checks = tuple(
+        _check_suggestion(check, anchor_lines, suggestions_requested=suggestions_requested)
+        for check in _check_all(proposed, rule_findings, anchor_lines, known_paths, shown)
+    )
     kept_ai = tuple(
-        ReviewedFinding(
-            check.proposed.model_copy(
-                update={"file": check.diff_path, "evidence": check.evidence.kept}
-            ),
-            Source.AI,
-            check.proposed.rule,
-            check.fingerprint,
-            evidence_dropped=check.evidence.dropped,
-        )
-        for check in checks
-        if check.fingerprint is not None
+        _kept_finding(check, check.fingerprint) for check in checks if check.fingerprint is not None
     )
     return VerifyResult(kept=(*rule_findings, *kept_ai), checks=checks)
+
+
+def _check_suggestion(
+    check: ProposalCheck, anchor_lines: _AnchorLines, *, suggestions_requested: bool
+) -> ProposalCheck:
+    """``check`` with ``suggestion_dropped`` set, if it kept a finding with a suggestion."""
+    suggestion = check.proposed.suggestion
+    # A kept check always names a diff path; it is tested only so mypy narrows the type.
+    if suggestion is None or check.fingerprint is None or check.diff_path is None:
+        return check
+    if not suggestions_requested:
+        return replace(check, suggestion_dropped=SuggestionDropReason.NOT_REQUESTED)
+    anchored = anchor_lines[check.diff_path][check.proposed.line].line
+    return replace(check, suggestion_dropped=suggestion_drop_reason(suggestion, anchored))
+
+
+def _kept_finding(check: ProposalCheck, fingerprint: str) -> ReviewedFinding:
+    """The finding ``check`` kept, with its diff path, kept evidence and checked suggestion."""
+    proposed = check.proposed
+    dropped = check.suggestion_dropped
+    finding = proposed.model_copy(
+        update={
+            "file": check.diff_path,
+            "evidence": check.evidence.kept,
+            "suggestion": proposed.suggestion if dropped is None else None,
+        }
+    )
+    return ReviewedFinding(
+        finding,
+        Source.AI,
+        proposed.rule,
+        fingerprint,
+        evidence_dropped=check.evidence.dropped,
+        suggestion_dropped=dropped,
+    )
 
 
 def _anchor_lines(parsed: ParsedDiff) -> dict[str, dict[int, _AnchorLine]]:
@@ -163,7 +201,7 @@ def _anchor_lines(parsed: ParsedDiff) -> dict[str, dict[int, _AnchorLine]]:
         for hunk in file.hunks:
             for line in hunk.lines:
                 if line.new_line is not None:
-                    numbered.setdefault(line.new_line, _AnchorLine(line.text, hunk))
+                    numbered.setdefault(line.new_line, _AnchorLine(line, hunk))
     return anchors
 
 
@@ -232,7 +270,7 @@ def _check_all(
             )
             continue
         fingerprint = fingerprinter.fingerprint(
-            file=diff_path, rule=rule_part, anchor_text=lines[finding.line].text
+            file=diff_path, rule=rule_part, anchor_text=lines[finding.line].line.text
         )
         kept_fingerprints[alike] = fingerprint
         checks.append(ProposalCheck(finding, diff_path, fingerprint=fingerprint, evidence=evidence))

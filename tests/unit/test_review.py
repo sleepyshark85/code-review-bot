@@ -482,6 +482,7 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
         "rationale_sha256": sha256("Why."),
         "evidence_kept": 0,
         "evidence_dropped": 0,
+        "suggestion_dropped": None,
     }
     assert records[0] == kept
     assert records[1] == {
@@ -496,6 +497,7 @@ def test_run_pipeline_records_each_proposal_then_each_kept_findings_outcome(
         "rationale_sha256": sha256("Why."),
         "evidence_kept": 0,
         "evidence_dropped": 0,
+        "suggestion_dropped": None,
     }
     assert records[2] == kept | {
         "fingerprint": fingerprint_for(file="app.py", rule="ai:logic", anchor_text="x", ordinal=1),
@@ -777,3 +779,37 @@ def test_run_pipeline_counts_tool_lines_of_a_changed_file_only_at_the_diffs_head
     result = run_with_context(tmp_path, provider, head_context(tmp_path, is_diff_head=is_diff_head))
 
     assert result.decision.reported[0].evidence_dropped == dropped
+
+
+def test_run_pipeline_with_context_keeps_a_suggestion_for_the_added_line(tmp_path: Path) -> None:
+    finding = make_finding().model_copy(update={"suggestion": "x = 1"})
+
+    result = run_with_context(tmp_path, MockProvider(findings=[finding]), context_repo(tmp_path))
+
+    [kept] = result.decision.reported
+    assert (kept.finding.suggestion, kept.suggestion_dropped) == ("x = 1", None)
+
+
+def test_run_pipeline_without_context_drops_a_suggestion_as_not_requested(tmp_path: Path) -> None:
+    finding = make_finding().model_copy(update={"suggestion": "x = 1"})
+    provider = MockProvider(findings=[finding])
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), tmp_path / "audit.jsonl", provider)
+
+    [kept] = result.decision.reported
+    assert (kept.finding.suggestion, kept.suggestion_dropped) == (None, "not_requested")
+
+
+@pytest.mark.parametrize(
+    ("suggestion", "dropped"), [("x = 1", None), ("x\u202e = 1", "control_characters")]
+)
+def test_run_pipeline_records_why_a_suggestion_was_dropped_and_never_its_text(
+    tmp_path: Path, suggestion: str, dropped: str | None
+) -> None:
+    finding = make_finding().model_copy(update={"suggestion": suggestion})
+
+    run_with_context(tmp_path, MockProvider(findings=[finding]), context_repo(tmp_path))
+
+    checked = data_of(tmp_path / "audit.jsonl", "verify.checked")
+    assert checked["suggestion_dropped"] == dropped
+    assert suggestion not in json.dumps(checked, ensure_ascii=False)

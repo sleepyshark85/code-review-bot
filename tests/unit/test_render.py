@@ -30,6 +30,7 @@ from review_bot.render import (
 )
 from review_bot.report import PipelineResult, TriageDecision, TriagedFinding
 from review_bot.settings import Settings
+from review_bot.suggestion import SuggestionDropReason
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult
 
 # Assembled, so no key marker is written literally.
@@ -163,6 +164,8 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
                 "original_rationale": None,
                 "evidence": [],
                 "evidence_dropped": 0,
+                "suggestion": None,
+                "suggestion_dropped": None,
             }
         ],
         "counts": {
@@ -227,6 +230,23 @@ def test_render_json_writes_a_findings_kept_evidence_in_order_and_its_dropped_co
         {"file": "a.py", "start_line": 3, "end_line": 3},
     ]
     assert written["evidence_dropped"] == 2
+
+
+@pytest.mark.parametrize(
+    ("suggestion", "dropped"),
+    [("x = 2", None), ("", None), (None, SuggestionDropReason.TOO_LONG)],
+)
+def test_render_json_writes_a_findings_kept_suggestion_or_why_it_was_dropped(
+    suggestion: str | None, dropped: SuggestionDropReason | None
+) -> None:
+    finding = make_finding().model_copy(update={"suggestion": suggestion})
+    result = pipeline_result(
+        reported=(dataclasses.replace(reviewed(finding), suggestion_dropped=dropped),)
+    )
+
+    [written] = json.loads(render(result))["findings"]
+
+    assert (written["suggestion"], written["suggestion_dropped"]) == (suggestion, dropped)
 
 
 def test_render_json_lists_only_reported_findings_and_counts_the_rest() -> None:
@@ -726,3 +746,20 @@ def test_render_json_lists_at_most_200_files_read() -> None:
     files_read = json.loads(render(result))["context"]["files_read"]
 
     assert [entry["path"] for entry in files_read] == [f"f{n:03}.py" for n in range(200)]
+
+
+def test_render_markdown_shows_a_suggestion_as_a_plain_code_block_in_its_list_item() -> None:
+    finding = make_finding().model_copy(update={"suggestion": "    x = 2\n```\n@user #12"})
+    result = pipeline_result(reported=(reviewed(finding), reviewed(make_finding())))
+
+    rendered = render_markdown(result, Severity.LOW)
+
+    assert "\n  ````\n      x = 2\n  ```\n  @user #12\n  ````\n- **high**" in rendered
+    fences = [token for token in markdown_tokens(rendered) if token.type == "fence"]
+    assert [(fence.info, fence.content) for fence in fences] == [
+        ("", "    x = 2\n```\n@user #12\n")
+    ]
+    assert "suggestion" not in rendered
+    assert (
+        len([token for token in markdown_tokens(rendered) if token.type == "list_item_open"]) == 2
+    )

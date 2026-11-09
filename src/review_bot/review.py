@@ -113,7 +113,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
 
     The rules' findings come first. A model finding is reported only if its file and line are in
     the diff and it repeats no earlier one, and any finding only if its severity meets the
-    threshold. A kept model finding keeps only the evidence spans the model was shown. Each
+    threshold. A kept model finding keeps only the evidence spans the model was shown, and its
+    suggestion only in context mode, whose prompt asks for one, if it may replace the line. Each
     stage's decision goes to ``audit``; the run's end is the caller's to record. The provider's
     warnings go to stderr too, before the caller writes the review.
 
@@ -184,6 +185,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         parsed,
         ledger=ledger,
         is_diff_head=context is not None and context.is_diff_head,
+        suggestions_requested=context is not None,
     )
     _record_verification(verification, audit)
     decision = decide(verification.kept, settings.threshold)
@@ -395,7 +397,8 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
 
     A ``file`` that names no diff path is the model's own text, so only its hash and length are
     kept. ``fingerprint`` is set for a kept finding, and ``duplicate_of`` for a duplicate. Its
-    evidence is only counted, so no span the model wrote is recorded.
+    evidence is only counted, so no span the model wrote is recorded, and of its suggestion only
+    the reason it was dropped is.
     """
     finding = check.proposed
     if check.diff_path is None:
@@ -416,6 +419,7 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
         "rationale_sha256": _sha256(finding.rationale),
         "evidence_kept": len(check.evidence.kept),
         "evidence_dropped": check.evidence.dropped,
+        "suggestion_dropped": check.suggestion_dropped,
     }
 
 

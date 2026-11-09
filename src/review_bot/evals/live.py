@@ -217,8 +217,13 @@ def _unwritable_audit_log(settings: Settings) -> EvalInputError:
 
 
 def _scrubbed_finding(finding: Finding) -> Finding:
+    suggestion = None if finding.suggestion is None else _scrubbed(finding.suggestion)
     return finding.model_copy(
-        update={"file": _scrubbed(finding.file), "rationale": _scrubbed(finding.rationale)}
+        update={
+            "file": _scrubbed(finding.file),
+            "rationale": _scrubbed(finding.rationale),
+            "suggestion": suggestion,
+        }
     )
 
 

@@ -17,11 +17,13 @@ from review_bot.report import (
     section_path,
 )
 from review_bot.settings import Settings
+from review_bot.suggestion import fenced_block
 
 __all__ = [
     "escape_markdown",
     "escape_unprintable",
     "evidence_json",
+    "indented_in_list_item",
     "markdown_path",
     "render_findings",
     "render_json",
@@ -199,6 +201,8 @@ def _finding_json(
         "original_rationale": original_rationale,
         "evidence": evidence_json(finding.evidence),
         "evidence_dropped": reviewed.evidence_dropped,
+        "suggestion": finding.suggestion,
+        "suggestion_dropped": reviewed.suggestion_dropped,
     }
 
 
@@ -223,7 +227,8 @@ def render_markdown(
     """Render the review as GitHub-flavoured Markdown, with no trailing newline.
 
     A ``## Review`` heading, then the counts unless all are zero, then one list item per reported
-    finding (or the no-findings line), then a ``### Skipped files`` section if any were skipped.
+    finding (or the no-findings line), with its suggestion, if any, as a plain fenced code block
+    inside it, then a ``### Skipped files`` section if any were skipped.
     With ``triaged``, the reported findings' triage decisions, rejected findings are left out of
     both the list and the counts.
 
@@ -240,8 +245,8 @@ def render_markdown(
     stays visibly code. Every ASCII punctuation character in the other words is
     backslash-escaped: no heading, HTML, link, image, mention, emphasis, table or code span can
     start inside it. A path is shown as ``report.path_fields`` writes it, then
-    unprintable-escaped, in a code span. A code span's backtick fence is longer than any backtick
-    run in its text, so nothing inside it is interpreted.
+    unprintable-escaped, in a code span. A code span's or code block's backtick fence is longer
+    than any backtick run in its text, so nothing inside it is interpreted.
     """
     reported = result.decision.reported
     if triaged is not None:
@@ -282,11 +287,19 @@ def _markdown_counts(result: PipelineResult, reported_count: int) -> str:
 def _markdown_finding(reviewed: ReviewedFinding) -> str:
     finding = reviewed.finding
     location = markdown_path(finding.file, suffix=f":{finding.line}")
-    return (
+    item = (
         f"- **{finding.severity}** {finding.category} at {location}: "
         f"{escape_markdown(finding.rationale)} "
         f"(confidence {finding.confidence:.2f}, source: {reviewed.source})"
     )
+    if finding.suggestion is None:
+        return item
+    return f"{item}\n{indented_in_list_item(fenced_block(finding.suggestion))}"
+
+
+def indented_in_list_item(text: str) -> str:
+    """``text`` with each non-empty line indented two spaces, so it stays inside a ``- `` item."""
+    return "\n".join(f"  {line}" if line else "" for line in text.split("\n"))
 
 
 def escape_markdown(text: str) -> str:
