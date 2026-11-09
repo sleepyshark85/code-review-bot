@@ -419,27 +419,29 @@ All green, on the developer's AC7 code and the main session's `live.yml`:
 | AC7 | **evals live:** `ac7_evals_live_runs_in_ci_for_a_dispatch_with_the_flag` ×3 (`CI` `true`, empty, `false`). `ac7_evals_live_with_the_flag_refuses_any_other_ci_event` ×12. `ac7_evals_live_for_a_dispatch_without_the_flag_refuses` ×3. `ac7_evals_live_without_ci_runs_whatever_the_flag_and_event` ×8. `ac7_evals_live_without_ci_the_flag_changes_no_result`. **pr backfill:** `ac7_backfill_runs_in_ci_for_a_dispatch_with_the_flag`. `ac7_backfill_with_ci_set_to_any_value_and_the_flag_runs_for_a_dispatch` ×3. `ac7_backfill_with_the_flag_refuses_any_other_ci_event` ×12 (no `--out` created). `ac7_backfill_for_a_dispatch_without_the_flag_refuses` ×3. `ac7_backfill_without_ci_runs_whatever_the_flag_and_event` ×8. The 12 refused events: the spec's `pull_request`, `push`, `schedule` and unset, plus empty, `pull_request_target`, `repository_dispatch`, `workflow_call`, `WORKFLOW_DISPATCH`, a leading space, a trailing newline and `workflow_dispatch_x`. Each refusal: exit 2, no call, no recording or report, and the message names CI | pass (54) |
 | Limits | `limits_dispatched_evals_live_still_refuses_over_its_budget`. `limits_dispatched_backfill_still_refuses_over_its_budget` (the dispatch passes the CI guard only) | pass (2) |
 | Interfaces | `interfaces_replay_has_no_allow_dispatch`. `interfaces_pr_run_rejects_allow_dispatch` (exit 2) | pass (2) |
-| AC8 | Recorded after merge (below) | pending dispatch |
-| AC9 | Recorded after merge (below) | pending dispatch |
+| AC8 | Recorded after merge (below) | pass (2 runs) |
+| AC9 | Recorded after merge (below) | pass (1 dispatch) |
 
 Mutation check of the workflow tests: each of these one-line changes to `live.yml` turns at least one test red: `cancel-in-progress: true`, `--max-cost-usd 0.31`, `persist-credentials: true`, `${{ inputs.step }}` in a `run:`, a third loop pass, dropping the stderr redirect, dropping the `github.ref` check, `timeout-minutes: 90`, `retention-days: 30`, a second option, the size check removed or raised to `-ge 200000`, a second pathspec (`-- src tests`), and a workflow-level `live` group.
 
-### AC8: the smoke's runs (pending dispatch)
+### AC8: the smoke's runs
 
 Filled in from each `smoke` run's artifact once the slice has merged. **Stop rule:** if any run's init tool list holds a built-in tool or is missing any of `mcp__repo__read`, `mcp__repo__grep` and `mcp__repo__glob`, S6 and S8 pause and S3 goes back to design.
 
 | Run (URL) | Review | SDK version | Init tool list (audit `agent_tools`) | Tool calls and outcomes | Reported cost (USD) | Findings | Exit | Stop rule |
 |---|---|---|---|---|---|---|---|---|
-| pending | 1 | | | | | | | |
-| pending | 2 | | | | | | | |
+| [https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609](https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609) | 1 | 0.2.178 | `mcp__repo__glob`, `mcp__repo__grep`, `mcp__repo__read` | 3: grep ok (4,808 B), grep truncated (5,696 B), read ok (419 B) | 0.1035202 | 1 (medium, `src/review_bot/render.py:165`) | 1 | pass |
+| [https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609](https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609) | 2 | 0.2.178 | `mcp__repo__glob`, `mcp__repo__grep`, `mcp__repo__read` | 3: grep ok (4,808 B), grep truncated (5,696 B), grep ok (52 B) | 0.044025 | 0 | 0 | pass |
 
-### AC9: every dispatch of `live.yml` (pending dispatch)
+**Stop rule: passed.** Both runs' init tool lists hold exactly the three MCP tools and no built-in tool, so S6 and S8 go ahead. **Caps check:** the larger review cost $0.1035, under the $0.30 per-call cap of `evals-context` and the $0.60 of `backfill`, so the [design's table](design.md#spend-and-caps) stands. Dispatched by the main session on the user's go-ahead.
+
+### AC9: every dispatch of `live.yml`
 
 Every run, re-runs and failures included. S6, S8 and S15 add their runs here.
 
 | Date | Run (URL, attempt) | Step | Outcome | Reported spend (USD) | Step total / step cap | Phase 3 total / $20.00 |
 |---|---|---|---|---|---|---|
-| pending | | `smoke` | | | / 0.60 | / 20.00 |
+| 2026-11-09 (UTC) | [https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609](https://github.com/sleepyshark85/code-review-bot/actions/runs/42668517609), attempt 1 | `smoke` | success | 0.1475252 | 0.1475252 / 0.60 | 0.1475252 / 20.00 |
 
 ### Failures
 
