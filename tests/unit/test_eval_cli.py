@@ -17,6 +17,7 @@ from eval_cases import (
     write_case,
     write_json,
     write_live,
+    write_live_context,
     write_repo,
 )
 
@@ -323,3 +324,89 @@ def test_main_exits_2_on_an_unknown_mode(
 
     assert exit_code == 2
     assert "--mode: invalid choice: 'repo'" in err
+
+
+# --- P3-S7: compare -----------------------------------------------------------------------------
+
+
+def compare(capsys: pytest.CaptureFixture[str], *args: str | Path) -> tuple[int, str, str]:
+    exit_code = main(["compare", *map(str, args)])
+    captured = capsys.readouterr()
+    return exit_code, captured.out, captured.err
+
+
+def write_paired_case(cases_dir: Path) -> Path:
+    """A case with a repo, and a fresh live recording of each mode."""
+    case_file = write_case(cases_dir, repo="repo")
+    write_repo(case_file, {"app/calc.py": "def total(items):\n    return sum(items)\n"})
+    priced_run = run_of(finding()) | {"usage": {"input_tokens": 1000, "output_tokens": 100}}
+    write_live(case_file, recording(case_file, [priced_run, failed_run()], kind="live"))
+    write_live_context(
+        case_file, context_recording(case_file, [run_of(finding())] * 2, kind="live")
+    )
+    return case_file
+
+
+def test_main_compare_with_every_repo_case_paired_exits_0_with_both_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_paired_case(tmp_path)
+
+    exit_code, out, err = compare(capsys, "--cases", tmp_path)
+
+    assert exit_code == 0
+    assert "case calc: paired, diff fail, context pass\n" in out
+    assert "  float-sum: diff 1/2 not met, context 2/2 met\n" in out
+    assert err == ""
+
+
+def test_main_compare_with_a_repo_case_unpaired_exits_1_and_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    write_repo(case_file, {"app/calc.py": "x = 1\n"})
+
+    exit_code, out, _ = compare(capsys, "--cases", tmp_path)
+
+    assert exit_code == 1
+    assert "case calc: unpaired: diff: no live recording; context: no live recording" in out
+
+
+@pytest.mark.parametrize(("given", "missing"), [("input", "output"), ("output", "input")])
+def test_main_compare_with_one_price_exits_2_naming_the_missing_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], given: str, missing: str
+) -> None:
+    write_paired_case(tmp_path)
+
+    exit_code, out, err = compare(capsys, "--cases", tmp_path, f"--price-{given}-usd-per-mtok", "3")
+
+    assert exit_code == 2
+    assert out == ""
+    assert f"--price-{missing}-usd-per-mtok is missing" in err
+
+
+def test_main_compare_estimates_a_missing_cost_at_both_prices(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_paired_case(tmp_path)
+    prices = ("--price-input-usd-per-mtok", "3", "--price-output-usd-per-mtok", "15")
+
+    exit_code, out, _ = compare(capsys, "--cases", tmp_path, *prices)
+
+    assert exit_code == 0
+    # 1,000 tokens at $3 and 100 at $15 per million, over 2 runs; the mean rounds half-even.
+    assert "  cost: total $0.0045, mean $0.0022 per run (estimated)\n" in out
+
+
+@pytest.mark.parametrize("price", ["-1", "+1", "1e3", "nan", "inf", "3.", "three"])
+def test_main_compare_exits_2_naming_a_flag_whose_price_isnt_a_plain_number(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], price: str
+) -> None:
+    write_paired_case(tmp_path)
+
+    exit_code, out, err = compare(capsys, "--cases", tmp_path, "--price-output-usd-per-mtok", price)
+
+    assert exit_code == 2
+    assert out == ""
+    assert "--price-output-usd-per-mtok" in err
+    assert "isn't a price" in err
