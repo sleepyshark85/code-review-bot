@@ -1,0 +1,17 @@
+diff --git a/billing/payouts.py b/billing/payouts.py
+new file mode 100644
+index 0000000..6d1e2f3
+--- /dev/null
++++ b/billing/payouts.py
+@@ -0,0 +1,11 @@
++"""Merchant payouts, net of the platform fee."""
++
++from decimal import Decimal
++
++from billing.fees import platform_fee
++
++
++def payout(gross: Decimal) -> Decimal:
++    """What the merchant receives: the gross amount less the platform fee."""
++    fee = platform_fee(gross)
++    return gross + fee

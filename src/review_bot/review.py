@@ -40,7 +40,7 @@ from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
-__all__ = ["ReviewContext", "review_diff", "run_pipeline"]
+__all__ = ["ReviewContext", "review_diff", "run_pipeline", "tool_caps"]
 
 _MAX_NAMED_SECRETS: Final = 5
 # Caps each list in the parse record and each tool call's spans, so no record grows with the
@@ -167,7 +167,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         )
 
     _stop_if_too_large_to_review(parsed, settings, name, audit)
-    tools = None if context is None else RepoTools(context.repo, caps=_tool_caps(settings))
+    tools = None if context is None else RepoTools(context.repo, caps=tool_caps(settings))
     if tools is None:
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
@@ -205,7 +205,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
     )
 
 
-def _tool_caps(settings: Settings) -> ToolCaps:
+def tool_caps(settings: Settings) -> ToolCaps:
+    """The tool caps a context review runs with, from ``settings``."""
     return ToolCaps(
         max_calls=settings.max_tool_calls,
         max_result_bytes=settings.max_tool_result_bytes,

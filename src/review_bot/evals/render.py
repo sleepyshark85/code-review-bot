@@ -8,9 +8,23 @@ from collections.abc import Mapping, Sequence
 from typing import Final
 
 from review_bot.errors import ErrorCategory
-from review_bot.evals.formats import INTERNAL_ERROR, Recording, RunErrorCategory
+from review_bot.evals.formats import (
+    INTERNAL_ERROR,
+    RecordedRun,
+    RecordedToolCall,
+    Recording,
+    RunErrorCategory,
+)
 from review_bot.evals.metrics import LiveMetrics, live_metrics
-from review_bot.evals.score import BugScore, CaseResult, CaseScore, Credit, RunOutcome, RunScore
+from review_bot.evals.score import (
+    BugScore,
+    CaseResult,
+    CaseScore,
+    Credit,
+    RunFindings,
+    RunOutcome,
+    RunScore,
+)
 from review_bot.findings import Source
 from review_bot.render import escape_unprintable
 
@@ -68,6 +82,7 @@ def _case_lines(result: CaseResult, figures: Sequence[str] = ()) -> list[str]:
     if result.score is not None:
         lines += _score_lines(result.score, result.recording)
         lines += _unmeasured_lines(result.score, result.recording)
+        lines += _context_run_lines(result.score, result.recording)
     lines += figures
     lines += [f"  FAIL: {problem}" for problem in result.all_problems]
     return lines
@@ -136,10 +151,57 @@ def _tokens(input_tokens: int, output_tokens: int) -> str:
 def _recording_summary(recording: Recording | None) -> str:
     if recording is None:
         return "no recording, so the model's findings are not measured"
+    kind = recording.kind if recording.mode == "diff" else f"{recording.kind} context"
     return (
-        f"{recording.kind} recording of {recording.model}, recorded "
+        f"{kind} recording of {recording.model}, recorded "
         f"{recording.recorded_at.date().isoformat()}, {len(recording.runs)} runs"
     )
+
+
+def _context_run_lines(score: CaseScore, recording: Recording | None) -> list[str]:
+    """For a context recording, each run's tool calls, cost, cap and evidence, run by run."""
+    if recording is None or recording.mode != "context":
+        return []
+    lines = ["  context runs:"]
+    for number, (recorded, replayed) in enumerate(
+        zip(recording.runs, score.evidence.runs, strict=True), start=1
+    ):
+        lines.append(f"    run {number}: {_context_run_summary(recorded, replayed)}")
+        lines += [f"      {_tool_call_text(call)}" for call in recorded.tool_calls]
+    return lines
+
+
+def _context_run_summary(recorded: RecordedRun, replayed: RunFindings) -> str:
+    """A run's tool call count, its cost and cap if recorded, and its evidence spans' check."""
+    parts = [count_noun(len(recorded.tool_calls), "tool call")]
+    if recorded.cost_usd is not None:
+        parts.append(f"cost ${recorded.cost_usd}")
+    if recorded.cap is not None:
+        parts.append(f"cap-hit ({recorded.cap}), a miss for every bug")
+    parts += [
+        f"evidence kept: {replayed.evidence_kept}",
+        f"evidence dropped: {replayed.evidence_dropped}",
+    ]
+    return ", ".join(parts)
+
+
+def _tool_call_text(call: RecordedToolCall) -> str:
+    """What one tool call returned: its spans, or how many paths it listed, and its size."""
+    text = f"{call.tool or 'unknown tool'} {call.outcome}"
+    if call.reason is not None:
+        text += f" ({call.reason})"
+    if call.spans:
+        spans = (_span_text(span.path, span.first_line, span.last_line) for span in call.spans)
+        text += f": {', '.join(spans)}"
+    if call.listed:
+        text += f": {count_noun(len(call.listed), 'path')} listed"
+    return f"{text}, {count_noun(call.result_bytes, 'byte')}"
+
+
+def _span_text(path: str, first_line: int, last_line: int) -> str:
+    """``path:12`` for one line, or ``path:10-14``, the path escaped as recorded text."""
+    lines = str(first_line) if first_line == last_line else f"{first_line}-{last_line}"
+    return f"{escape_unprintable(path)}:{lines}"
 
 
 def _score_lines(score: CaseScore, recording: Recording | None) -> list[str]:
