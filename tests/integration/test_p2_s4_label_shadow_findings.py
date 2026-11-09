@@ -68,6 +68,9 @@ RECORD_KEYS = frozenset(
 # "10 MB" read both ways: at most 10,000,000 bytes is always read; over 10 MiB is always too big.
 TEN_MB = 10_000_000
 TEN_MIB = 10 * 1024 * 1024
+# A built report stays this far under the cap, so entries growing a little don't trip the size
+# precondition.
+HEADROOM = 0.9
 NO_TERMINAL_BOUND_S = 5.0
 # Generous: it catches a hang or quadratic work, not a slow CI machine.
 BOUND_S = 60.0
@@ -895,12 +898,22 @@ def test_p2_s4_ac13_limits_a_tampered_path_shows_no_raw_control_characters(repor
 # Limits: a report is read in time linear in its size.
 
 
+def shortened(comment: dict[str, Any]) -> dict[str, Any]:
+    """`comment` with its body's middle paragraphs cut: heading, rationale and marker stay.
+
+    20,000 real entries are about 10.5 MB since P3-S4 added `evidence`; this keeps them under
+    the cap with headroom, so the limit tested stays the entry count, not the bytes.
+    """
+    paragraphs = comment["body"].split("\n\n")
+    return {**comment, "body": "\n\n".join([*paragraphs[:2], paragraphs[-1]])}
+
+
 def test_p2_s4_limits_twenty_thousand_entries_for_one_key_are_read_within_the_bound(
     reports, labeller
 ):
     report = reports.run(keys("K1", tag="r1"), "one")
-    rewrite(report, lambda d: d.update(comments=d["comments"] * 20_000))
-    assert report.stat().st_size <= TEN_MB, "precondition: the report is under the cap"
+    rewrite(report, lambda d: d.update(comments=[shortened(d["comments"][0])] * 20_000))
+    assert report.stat().st_size <= HEADROOM * TEN_MB, "precondition: the report is under the cap"
 
     started = time.monotonic()
     run = labeller.label([EOF])

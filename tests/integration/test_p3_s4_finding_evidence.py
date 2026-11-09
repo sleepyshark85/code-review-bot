@@ -29,6 +29,7 @@ CommonMark and taking its code spans, so a separator between spans isn't assumed
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -905,11 +906,12 @@ def test_p3_s4_ac8_no_span_text_or_unseen_path_reaches_the_log(harness, repo):
 def test_p3_s4_ac9_context_prompt_asks_for_evidence(harness, repo):
     review = harness.context(repo, [], None)
 
+    # The system prompt alone: the user prompt holds the untrusted diff. Checked as labels, the way
+    # P0-S1 checks each field, so a mention in prose doesn't pass.
     (request,) = review.provider.requests
-    prompt = f"{request.system_prompt}\n{request.user_prompt}"
-    assert "evidence" in prompt
-    for name in ("start_line", "end_line"):
-        assert name in prompt, f"the prompt doesn't name {name}"
+    assert re.search(r"\bevidence\b\s*:", request.system_prompt), "`evidence` isn't labelled"
+    for key in ("file", "start_line", "end_line"):
+        assert re.search(rf'"{key}"\s*:', request.system_prompt), f"the span's {key!r} isn't shown"
 
 
 def test_p3_s4_ac9_context_prompt_version_is_the_next_free_number(harness, repo):
