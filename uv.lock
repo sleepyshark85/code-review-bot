@@ -1138,6 +1138,7 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
+    { name = "mcp" },
     { name = "pydantic" },
 ]
 
@@ -1156,6 +1157,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.2.178" },
+    { name = "mcp", specifier = ">=2.3,<3" },
     { name = "pydantic", specifier = ">=2.14.2" },
 ]
 

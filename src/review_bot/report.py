@@ -6,6 +6,7 @@ redacts them first.
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from typing import Final
 
@@ -39,7 +40,7 @@ class PipelineResult:
     ``warnings``. ``warnings`` are the provider's, already written to stderr and the audit log.
     ``prompt_version`` is the version of the prompt the review used. ``context_commit`` is the
     commit the tools read in context mode, and None in diff mode; ``ledger`` holds each tool
-    call, in order.
+    call, in order. ``cost_usd`` is the call's cost as the provider reported it, or None.
     """
 
     verification: VerifyResult
@@ -52,6 +53,7 @@ class PipelineResult:
     warnings: tuple[str, ...] = ()
     context_commit: str | None = None
     ledger: tuple[ToolCall, ...] = ()
+    cost_usd: Decimal | None = None
 
 
 class TriageDecision(StrEnum):

@@ -1,10 +1,11 @@
-"""The Claude provider: the only module that imports the Claude Agent SDK (ADR 0001)."""
+"""The Claude provider, which with ``claude_tools`` is the only SDK user (ADR 0001)."""
 
 import asyncio
 import dataclasses
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import aclosing
+from decimal import ROUND_DOWN, Decimal
 from typing import Final, cast
 
 from claude_agent_sdk import (
@@ -19,9 +20,10 @@ from claude_agent_sdk import (
     query,
 )
 
-from review_bot.errors import ErrorCategory, ProviderError
+from review_bot.errors import ErrorCategory, ProviderCap, ProviderError
 from review_bot.findings import parse_findings
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
+from review_bot.providers.claude_tools import ToolListCheck, open_to_tools
 from review_bot.settings import Settings
 
 __all__ = ["ClaudeAgentProvider", "SdkCall"]
@@ -85,6 +87,27 @@ _BILLING_MESSAGE: Final = "Claude reported a billing problem. Check the account'
 _NO_RESULT_MESSAGE: Final = (
     "The Claude stream ended without a result. Check that the Claude Code CLI runs, then try again."
 )
+# The caps a result subtype can name, each with its fixed text, like the messages above (ADR
+# 0015). Diff mode's turn cap is Phase 0's one turn, not a cap a user sets, so its
+# ``error_max_turns`` stays Phase 0's generic error; context mode's is ``--max-tool-calls`` plus 2.
+type _CapErrors = Mapping[str, tuple[ProviderCap, str]]
+_DIFF_CAP_ERRORS: Final[_CapErrors] = {
+    "error_max_budget_usd": (
+        "cost",
+        "Claude reached the review's cost cap before it finished the review. Raise "
+        "--max-cost-usd, or review a smaller diff.",
+    ),
+}
+_CONTEXT_CAP_ERRORS: Final[_CapErrors] = {
+    **_DIFF_CAP_ERRORS,
+    "error_max_turns": (
+        "turns",
+        "Claude ran out of turns before it finished the review: its turn cap is --max-tool-calls "
+        "plus 2. Raise --max-tool-calls, or review a smaller diff.",
+    ),
+}
+# The CLI's budget is the cost cap rounded down to this, so it is never above the cap.
+_CENT: Final = Decimal("0.01")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -96,14 +119,17 @@ class _Signal:
 
 
 class ClaudeAgentProvider:
-    """Reviews with a locked-down Claude: one turn, no tools, no settings, no MCP servers."""
+    """Reviews with a locked-down Claude: no settings, no built-in tools, no outside MCP servers.
+
+    Diff mode is one turn with no tools at all; context mode offers the request's tools only.
+    """
 
     def __init__(self, settings: Settings, *, sdk_call: SdkCall | None = None) -> None:
         """Prepare the provider; nothing starts until ``review``.
 
         Args:
-            settings: Supplies the CLI's retry, timeout and output token limits, and the overall
-                deadline.
+            settings: Supplies the CLI's retry, timeout, output token, tool call and cost limits,
+                and the overall deadline.
             sdk_call: Replaces the real SDK call, so tests stay offline.
         """
         self._settings = settings
@@ -113,14 +139,16 @@ class ClaudeAgentProvider:
         """Make one call, leaving retries to the CLI, and return its validated findings.
 
         Reading stops at the first successful result, which outranks anything else in the stream.
-        Without one, the earliest signal decides, then whatever ended the stream.
+        Without one, the earliest signal decides, then whatever ended the stream. In context mode,
+        an init message listing tools other than the request's ends the call at once.
 
         Raises:
             ProviderError: For every failure of a known kind, with the tail of the CLI's stderr
                 as its diagnostics.
         """
         cli_stderr: deque[str] = deque(maxlen=_MAX_HELD_STDERR_LINES)
-        options = _build_options(request, self._settings, on_stderr=cli_stderr.append)
+        options, tool_check = _build_options(request, self._settings, on_stderr=cli_stderr.append)
+        caps = _DIFF_CAP_ERRORS if tool_check is None else _CONTEXT_CAP_ERRORS
         stream = self._sdk_call(request.user_prompt, options)
         response: ReviewResponse | None = None
         signal: _Signal | None = None
@@ -128,7 +156,9 @@ class ClaudeAgentProvider:
         try:
             async with asyncio.timeout(self._settings.deadline_s), aclosing(stream):
                 async for message in stream:
-                    outcome = _read_message(message)
+                    if tool_check is not None:
+                        tool_check.check(message)
+                    outcome = _read_message(message, caps)
                     if isinstance(outcome, ReviewResponse):
                         response = outcome
                         break
@@ -138,17 +168,21 @@ class ClaudeAgentProvider:
         except Exception as exc:  # noqa: BLE001 - see above
             raised = exc
         try:
-            return _settle(response, signal, raised)
+            response = _settle(response, signal, raised, caps)
         except ProviderError as exc:
             # Only on failure: a successful call's CLI text is never kept (P1-S5).
             exc.diagnostics = tuple(cli_stderr)
             raise
+        if tool_check is None:
+            return response
+        return dataclasses.replace(response, offered_tools=tool_check.listed)
 
 
 def _build_options(
     request: ReviewRequest, settings: Settings, *, on_stderr: Callable[[str], None]
-) -> ClaudeAgentOptions:
-    return ClaudeAgentOptions(
+) -> tuple[ClaudeAgentOptions, ToolListCheck | None]:
+    """The call's options, and in context mode the check of the CLI's tool list."""
+    options = ClaudeAgentOptions(
         system_prompt=request.system_prompt,
         model=request.model,
         tools=[],
@@ -159,11 +193,26 @@ def _build_options(
         hooks=None,
         agents=None,
         max_turns=1,
+        max_budget_usd=_budget_usd(settings.max_cost_usd),
         env=_cli_env(settings),
         # Held as diagnostics, never written: it is untrusted, and only our own lines may reach
         # the user.
         stderr=on_stderr,
     )
+    if request.tools is None:
+        return options, None
+    return open_to_tools(options, request.tools, max_tool_calls=settings.max_tool_calls)
+
+
+def _budget_usd(max_cost_usd: Decimal | None) -> float | None:
+    """The CLI's query budget: the cap rounded down to the cent, so never above it (ADR 0015).
+
+    The settings keep the cap at most $1,000, so the float's shortest form, which the SDK passes
+    to the CLI, is exactly those cents.
+    """
+    if max_cost_usd is None:
+        return None
+    return float(max_cost_usd.quantize(_CENT, rounding=ROUND_DOWN))
 
 
 def _cli_env(settings: Settings) -> dict[str, str]:
@@ -177,11 +226,11 @@ def _cli_env(settings: Settings) -> dict[str, str]:
     return env
 
 
-def _read_message(message: object) -> ReviewResponse | _Signal | None:
+def _read_message(message: object, caps: _CapErrors) -> ReviewResponse | _Signal | None:
     if isinstance(message, AssistantMessage) and message.error is not None:
         return _read_assistant_error(message.error)
     if isinstance(message, ResultMessage):
-        return _read_result(message)
+        return _read_result(message, caps)
     return None
 
 
@@ -198,7 +247,10 @@ def _read_assistant_error(error: object) -> _Signal:
     return _Signal(name, _category_error(category))
 
 
-def _read_result(result: ResultMessage) -> ReviewResponse | _Signal:
+def _read_result(result: ResultMessage, caps: _CapErrors) -> ReviewResponse | _Signal:
+    cap_error = _cap_error(result.subtype, caps)
+    if cap_error is not None:
+        return _Signal(str(result.subtype), cap_error)
     if result.stop_reason == "refusal":
         return _Signal(ErrorCategory.REFUSAL, _category_error(ErrorCategory.REFUSAL))
     # Judged on ``is_error`` because a failed call's subtype can still be "success".
@@ -209,11 +261,28 @@ def _read_result(result: ResultMessage) -> ReviewResponse | _Signal:
         findings = parse_findings(result.result or "")
     except ProviderError as exc:
         return _Signal(exc.category, exc)
-    return ReviewResponse(findings=findings, usage=_token_usage(result.usage))
+    return ReviewResponse(
+        findings=findings,
+        usage=_token_usage(result.usage),
+        cost_usd=_cost_usd(result.total_cost_usd),
+    )
+
+
+def _cap_error(subtype: object, caps: _CapErrors) -> ProviderError | None:
+    """The error for a result that ended at one of ``caps``, or None for any other."""
+    # ``str``, because the SDK passes this field through unchecked, as with assistant errors.
+    cap_and_message = caps.get(str(subtype))
+    if cap_and_message is None:
+        return None
+    cap, message = cap_and_message
+    return ProviderError(ErrorCategory.PERMANENT, message, cap=cap)
 
 
 def _settle(
-    response: ReviewResponse | None, signal: _Signal | None, raised: Exception | None
+    response: ReviewResponse | None,
+    signal: _Signal | None,
+    raised: Exception | None,
+    caps: _CapErrors,
 ) -> ReviewResponse:
     if response is not None:
         if signal is None:
@@ -223,6 +292,9 @@ def _settle(
             "result followed, so that result stands."
         )
         return dataclasses.replace(response, warnings=(warning,))
+    # Only the tool list check raises one mid-stream: a lockdown breach outranks any signal.
+    if isinstance(raised, ProviderError):
+        raise raised
     if signal is not None:
         raise signal.error from raised
     if raised is None:
@@ -230,11 +302,11 @@ def _settle(
     if isinstance(raised, TimeoutError):
         raise ProviderError(ErrorCategory.TRANSIENT, _DEADLINE_MESSAGE) from raised
     if isinstance(raised, ClaudeSDKError):
-        raise _translate_sdk_error(raised) from raised
+        raise _translate_sdk_error(raised, caps) from raised
     raise raised
 
 
-def _translate_sdk_error(error: ClaudeSDKError) -> ProviderError:
+def _translate_sdk_error(error: ClaudeSDKError, caps: _CapErrors) -> ProviderError:
     # Subclasses first: CLINotFoundError is a CLIConnectionError, ResultError a ProcessError.
     if isinstance(error, CLINotFoundError):
         return _category_error(ErrorCategory.UNAVAILABLE)
@@ -244,6 +316,9 @@ def _translate_sdk_error(error: ClaudeSDKError) -> ProviderError:
         message = f"{_CONNECTION_MESSAGE} The SDK said: {error}"
         return ProviderError(ErrorCategory.TRANSIENT, message)
     if isinstance(error, ResultError):
+        cap_error = _cap_error(error.subtype, caps)
+        if cap_error is not None:
+            return cap_error
         return _category_error(_category_from_status(error.api_error_status, error.terminal_reason))
     return _category_error(ErrorCategory.PERMANENT)
 
@@ -273,6 +348,16 @@ def _token_count(usage: Mapping[str, object], field: str) -> int:
     count = usage.get(field)
     # ``type``, not ``isinstance``, because a bool is an int.
     return count if type(count) is int and count >= 0 else 0
+
+
+def _cost_usd(cost: object) -> Decimal | None:
+    """Read the CLI's untrusted cost. A bad one is unknown: it never costs a valid review."""
+    # ``type``, not ``isinstance``, because a bool is an int.
+    if type(cost) not in (int, float):
+        return None
+    # Through ``str``, a float's shortest form, so 0.1234 stays 0.1234.
+    value = Decimal(str(cost))
+    return value if value.is_finite() and value >= 0 else None
 
 
 async def _call_sdk(prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:

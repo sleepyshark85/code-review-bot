@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "claude-agent-sdk==0.2.178",
+    # Imported directly for the in-process tool server (P3-S3); its 2.x server API.
+    "mcp>=2.3,<3",
     "pydantic>=2.14.2",
 ]
 

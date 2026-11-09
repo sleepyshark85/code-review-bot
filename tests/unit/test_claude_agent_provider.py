@@ -1,7 +1,10 @@
 import asyncio
+import dataclasses
 import json
+import math
 import sys
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,8 +20,9 @@ from claude_agent_sdk import (
 from diff_samples import MINIMAL_DIFF
 
 from review_bot.cli import main
+from review_bot.context.tool_args import TOOL_DEFINITIONS
 from review_bot.errors import ErrorCategory, ProviderError
-from review_bot.providers.base import ReviewRequest, TokenUsage
+from review_bot.providers.base import ReviewRequest, TokenUsage, ToolDefinition
 from review_bot.providers.claude_agent import ClaudeAgentProvider, SdkCall
 from review_bot.settings import Settings
 
@@ -392,3 +396,137 @@ async def test_review_with_usage_that_is_not_a_mapping_keeps_the_findings_and_co
 
     assert len(response.findings) == 1
     assert response.usage == TokenUsage(0, 0)
+
+
+def costed_result(cost: object) -> ResultMessage:
+    message = result_message(result=VALID_RESULT)
+    message.total_cost_usd = cast(float | None, cost)
+    return message
+
+
+@pytest.mark.parametrize(
+    ("cost", "cost_usd"),
+    [(0.1234, Decimal("0.1234")), (0, Decimal(0)), (2, Decimal(2)), (1e-07, Decimal("1E-7"))],
+)
+async def test_review_reads_the_cost_exactly_as_the_cli_wrote_it(
+    cost: object, cost_usd: Decimal
+) -> None:
+    sdk_call = scripted(costed_result(cost))
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert response.cost_usd == cost_usd
+    assert str(response.cost_usd) == str(cost_usd)
+
+
+@pytest.mark.parametrize(
+    "cost", [-0.01, -1, math.inf, -math.inf, math.nan, True, False, "0.1", [0.1], None]
+)
+async def test_review_with_bad_cost_keeps_the_findings_and_reports_none(cost: object) -> None:
+    sdk_call = scripted(costed_result(cost))
+
+    response = await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(REQUEST)
+
+    assert len(response.findings) == 1
+    assert response.cost_usd is None
+
+
+SENTINEL = "CLI-TEXT-SENTINEL"
+PHASE_0_PERMANENT = (
+    "The Claude call failed, and trying again is unlikely to help. Check --model and that the "
+    "Claude Code CLI runs."
+)
+
+
+class NoTools:
+    """A ``ToolExecutor`` the tests never call: it puts the request in context mode."""
+
+    @property
+    def definitions(self) -> tuple[ToolDefinition, ...]:
+        return TOOL_DEFINITIONS
+
+    async def call(self, name: str, arguments: Mapping[str, object]) -> str:
+        raise AssertionError("no tool call expected")
+
+
+CONTEXT_REQUEST = dataclasses.replace(REQUEST, tools=NoTools())
+CAPS = [
+    pytest.param(REQUEST, "error_max_budget_usd", "cost", "--max-cost-usd", id="diff-cost"),
+    pytest.param(CONTEXT_REQUEST, "error_max_budget_usd", "cost", "--max-cost-usd", id="ctx-cost"),
+    pytest.param(CONTEXT_REQUEST, "error_max_turns", "turns", "--max-tool-calls", id="ctx-turns"),
+]
+
+
+def capped_result(subtype: object, *, is_error: bool) -> ResultMessage:
+    message = result_message(result=f"{SENTINEL} model text")
+    message.subtype = cast(str, subtype)
+    message.is_error = is_error
+    return message
+
+
+def capped_result_error(subtype: str) -> ResultError:
+    data = {"subtype": subtype, "is_error": True, "result": SENTINEL}
+    return ResultError(f"Claude Code returned an error result: {SENTINEL}", data=data)
+
+
+@pytest.mark.parametrize(("request_", "subtype", "cap", "flag"), CAPS)
+@pytest.mark.parametrize("is_error", [True, False])
+async def test_review_ended_by_a_cap_fails_permanent_naming_the_cap_and_its_flag(
+    request_: ReviewRequest, subtype: str, cap: str, flag: str, is_error: bool
+) -> None:
+    sdk_call = scripted(capped_result(subtype, is_error=is_error))
+
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(request_)
+
+    assert caught.value.category is ErrorCategory.PERMANENT
+    assert caught.value.cap == cap
+    assert flag in str(caught.value)
+    assert SENTINEL not in str(caught.value)
+
+
+@pytest.mark.parametrize(("request_", "subtype", "cap", "flag"), CAPS)
+async def test_review_raising_a_cap_result_error_fails_naming_the_cap(
+    request_: ReviewRequest, subtype: str, cap: str, flag: str
+) -> None:
+    sdk_call = scripted(capped_result_error(subtype))
+
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(request_)
+
+    assert (caught.value.category, caught.value.cap) == (ErrorCategory.PERMANENT, cap)
+    assert flag in str(caught.value)
+    assert SENTINEL not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [(capped_result("error_max_turns", is_error=True),), (capped_result_error("error_max_turns"),)],
+    ids=["result", "result_error"],
+)
+async def test_diff_review_out_of_turns_is_phase_0s_permanent_error_with_no_cap(
+    script: tuple[object],
+) -> None:
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=scripted(*script)).review(REQUEST)
+
+    assert (caught.value.category, caught.value.cap) == (ErrorCategory.PERMANENT, None)
+    assert str(caught.value) == PHASE_0_PERMANENT
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        (failed_result(status=500),),
+        (capped_result("error_during_execution", is_error=True),),
+        (capped_result(["error_max_turns"], is_error=True),),
+        (raised_result_error(429, "api_error"),),
+        (assistant_error("rate_limit"),),
+    ],
+    ids=["failed_result", "other_subtype", "unhashable_subtype", "result_error", "signal"],
+)
+async def test_review_failing_for_any_other_reason_names_no_cap(script: tuple[object]) -> None:
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=scripted(*script)).review(REQUEST)
+
+    assert caught.value.cap is None

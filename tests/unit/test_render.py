@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from decimal import Decimal
 
 import pytest
 from markdown_it import MarkdownIt
@@ -163,7 +164,7 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
             "undecided": 0,
         },
         "skipped_files": [],
-        "usage": {"input_tokens": 12, "output_tokens": 3},
+        "usage": {"input_tokens": 12, "output_tokens": 3, "cost_usd": None},
         "mode": "diff",
         "context": None,
     }
@@ -181,6 +182,17 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "mode",
         "context",
     ]
+
+
+@pytest.mark.parametrize(
+    ("cost_usd", "written"), [(Decimal("0.1234"), "0.1234"), (Decimal(2), "2"), (None, None)]
+)
+def test_render_json_writes_the_cost_as_a_decimal_string_or_null(
+    cost_usd: Decimal | None, written: str | None
+) -> None:
+    result = dataclasses.replace(pipeline_result(), cost_usd=cost_usd)
+
+    assert json.loads(render(result))["usage"]["cost_usd"] == written
 
 
 def test_render_json_with_an_untagged_ai_finding_writes_a_null_rule() -> None:

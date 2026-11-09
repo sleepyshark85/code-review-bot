@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from review_bot.findings import Category, Finding, Severity, Source
 from review_bot.fingerprint import fingerprint_for
 from review_bot.git import GitRepo
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
+from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, run_pipeline
@@ -33,7 +35,7 @@ UNIQUE_TEXT = "unique-text-4f1c"
 
 
 def run(
-    diff_path: Path, log_path: Path, provider: MockProvider, threshold: Severity = Severity.LOW
+    diff_path: Path, log_path: Path, provider: LLMProvider, threshold: Severity = Severity.LOW
 ) -> PipelineResult:
     audit = AuditLog(log_path, clock=lambda: datetime(2026, 11, 6, tzinfo=UTC))
     settings = Settings(provider="mock", threshold=threshold)
@@ -197,8 +199,57 @@ def test_run_pipeline_with_a_provider_error_records_its_category(tmp_path: Path)
         run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
 
     assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.failed"]
-    assert data_of(log, "agent.failed") == {"category": "rate_limit", "diagnostics": []}
+    assert data_of(log, "agent.failed") == {
+        "category": "rate_limit",
+        "cap": None,
+        "diagnostics": [],
+    }
     assert "SENTINEL" not in log.read_text(encoding="ascii")
+
+
+def test_run_pipeline_with_a_cap_error_records_the_cap(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+    provider = MockProvider(error=ProviderError(ErrorCategory.PERMANENT, "Capped.", cap="cost"))
+
+    with pytest.raises(ProviderError):
+        run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
+
+    assert data_of(log, "agent.failed")["cap"] == "cost"
+
+
+class ReportingProvider:
+    """Answers with no findings, reporting a cost and the tools its runtime offered."""
+
+    async def review(self, _request: ReviewRequest) -> ReviewResponse:
+        return ReviewResponse(
+            findings=(),
+            usage=TokenUsage(0, 0),
+            cost_usd=Decimal("0.1234"),
+            offered_tools=("mcp__repo__read", "mcp__repo__grep"),
+        )
+
+
+def test_run_pipeline_returns_and_records_the_reported_cost_and_offered_tools(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, ReportingProvider())
+
+    assert result.cost_usd == Decimal("0.1234")
+    assert events(log)[-2:] == ["agent.called", "agent.tools"]
+    assert data_of(log, "agent.called")["cost_usd"] == "0.1234"
+    assert data_of(log, "agent.tools") == {"tools": ["mcp__repo__read", "mcp__repo__grep"]}
+
+
+def test_run_pipeline_without_a_reported_cost_records_null_and_no_tools(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider(findings=[]))
+
+    assert result.cost_usd is None
+    assert data_of(log, "agent.called")["cost_usd"] is None
+    assert "agent.tools" not in events(log)
 
 
 def test_run_pipeline_writes_a_path_that_is_not_utf8_in_gits_quoted_form(tmp_path: Path) -> None:
@@ -371,6 +422,7 @@ def test_run_pipeline_with_provider_diagnostics_records_them_scrubbed_and_shows_
 
     assert data_of(log, "agent.failed") == {
         "category": "auth",
+        "cap": None,
         "diagnostics": ["d", "auth failed for [REDACTED]", "[removed: quotes the diff]"],
     }
     assert capsys.readouterr() == ("", "")

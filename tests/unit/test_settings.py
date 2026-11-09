@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,10 @@ def test_load_settings_with_valid_flag_ignores_invalid_environment(
         ("max_tool_total_bytes", "0", "--max-tool-total-bytes"),
         ("max_tool_total_bytes", "400001", "--max-tool-total-bytes"),
         ("context_rev", "", "--context-rev"),
+        *[
+            ("max_cost_usd", value, "--max-cost-usd")
+            for value in ("0", "0.009", "-1", "abc", "1000.01", "nan", "NaN", "inf", "Infinity")
+        ],
     ],
 )
 def test_load_settings_with_invalid_flag_names_the_flag(field: str, value: str, flag: str) -> None:
@@ -212,6 +217,33 @@ def test_load_settings_reads_both_new_caps_from_the_environment(
     settings = load_settings({})
 
     assert (settings.max_review_bytes, settings.max_output_tokens) == (120_000, 16_000)
+
+
+def test_load_settings_with_no_cost_cap_leaves_it_off() -> None:
+    assert load_settings({}).max_cost_usd is None
+
+
+@pytest.mark.parametrize("value", ["0.01", "0.309", "1000"])
+def test_load_settings_keeps_a_cost_cap_from_a_cent_to_1000_exactly(value: str) -> None:
+    assert load_settings({"max_cost_usd": value}).max_cost_usd == Decimal(value)
+
+
+def test_load_settings_reads_the_cost_cap_from_the_environment_unless_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_MAX_COST_USD", "0.60")
+
+    assert load_settings({}).max_cost_usd == Decimal("0.60")
+    assert load_settings({"max_cost_usd": "0.30"}).max_cost_usd == Decimal("0.30")
+
+
+def test_load_settings_with_an_invalid_cost_cap_variable_names_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_MAX_COST_USD", "0")
+
+    with pytest.raises(ConfigError, match="REVIEW_BOT_MAX_COST_USD"):
+        load_settings({})
 
 
 @pytest.mark.parametrize(

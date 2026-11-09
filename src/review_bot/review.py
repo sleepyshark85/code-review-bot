@@ -187,6 +187,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         prompt_version=prompt_version,
         context_commit=context_commit,
         ledger=ledger,
+        cost_usd=response.cost_usd,
     )
 
 
@@ -201,7 +202,7 @@ def _tool_caps(settings: Settings) -> ToolCaps:
 async def _call_provider(
     provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog
 ) -> ReviewResponse:
-    """Send ``request``, record the call, and write and record its warnings.
+    """Send ``request``, record the call and any tools offered, and write and record warnings.
 
     Raises:
         ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
@@ -212,7 +213,8 @@ async def _call_provider(
         response = await provider.review(request)
     except ProviderError as exc:
         diagnostics = _scrubbed(exc.diagnostics, diff)
-        audit.record(Stage.AGENT, "failed", {"category": exc.category, "diagnostics": diagnostics})
+        failure = {"category": exc.category, "cap": exc.cap, "diagnostics": diagnostics}
+        audit.record(Stage.AGENT, "failed", failure)
         raise
     audit.record(
         Stage.AGENT,
@@ -220,9 +222,12 @@ async def _call_provider(
         {
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
+            "cost_usd": None if response.cost_usd is None else str(response.cost_usd),
             "duration_s": round(time.perf_counter() - started, 3),
         },
     )
+    if response.offered_tools is not None:
+        audit.record(Stage.AGENT, "tools", {"tools": list(response.offered_tools)})
     for warning in response.warnings:
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})

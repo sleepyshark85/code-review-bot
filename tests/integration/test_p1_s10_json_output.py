@@ -487,7 +487,7 @@ def test_p1_s10_ac4_called_provider_usage_is_reported(review_json, write_diff):
 
     assert run.exit_code == 0, run.stderr
     assert len(provider.requests) == 1
-    assert report(run)["usage"] == {"input_tokens": 1234, "output_tokens": 567}
+    assert report(run)["usage"] == {"input_tokens": 1234, "output_tokens": 567, "cost_usd": None}
 
 
 def test_p1_s10_ac4_all_files_skipped_gives_a_complete_document_with_usage_zeros(
@@ -506,7 +506,7 @@ def test_p1_s10_ac4_all_files_skipped_gives_a_complete_document_with_usage_zeros
         {"file": "README.md", "reason": "docs"},
         {"file": "uv.lock", "reason": "lock"},
     ]
-    assert document["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert document["usage"] == {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
 
 # AC5: hostile text in a rationale and in a path stays one ASCII line and round-trips.
