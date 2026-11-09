@@ -154,6 +154,13 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
     parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
     parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
+    parser.add_argument(
+        "--max-cost-usd",
+        help=(
+            "the most a review may cost, in USD, from 0.01 to 1000; the Claude CLI stops past it "
+            "(default: no cap)"
+        ),
+    )
 
 
 def parse_args(argv: Sequence[str]) -> tuple[Path, Settings]:
@@ -208,7 +215,7 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _open_context(settings: Settings, provider: LLMProvider | None) -> ReviewContext | None:
+def _open_context(settings: Settings) -> ReviewContext | None:
     """Resolve ``--context-repo`` and ``--context-rev`` to the commit the tools read.
 
     Returns:
@@ -216,8 +223,7 @@ def _open_context(settings: Settings, provider: LLMProvider | None) -> ReviewCon
 
     Raises:
         ConfigError: If ``--context-rev`` is given without ``--context-repo``, the directory
-            isn't in a git repository, the revision names no commit, or the run would build the
-            Claude provider, which can't drive the tools yet (P3-S3).
+            isn't in a git repository, or the revision names no commit.
         GitError: If git fails, times out or can't start.
     """
     if settings.context_repo is None:
@@ -227,11 +233,6 @@ def _open_context(settings: Settings, provider: LLMProvider | None) -> ReviewCon
                 "repository too, or leave out the revision."
             )
         return None
-    if uses_own_claude(settings, provider):
-        raise ConfigError(
-            "--context-repo needs --provider mock for now: the Claude provider can't drive the "
-            "repository tools yet. Leave out --context-repo to review the diff alone."
-        )
     shown_repo = redact(str(settings.context_repo))
     directory = GitRepo(settings.context_repo, timeout_s=GIT_TIMEOUT_S, flag=_CONTEXT_FLAG)
     top_level = directory.top_level()
@@ -281,7 +282,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Before the audit log, like any other bad argument: no provider is called.
-        context = _open_context(settings, provider)
+        context = _open_context(settings)
         # Opened before the diff is read, so an untraceable run never reaches a provider.
         audit = AuditLog(settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code

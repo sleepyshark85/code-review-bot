@@ -1,9 +1,11 @@
 """`provider_factory`, one per provider: the only provider-specific code in this directory."""
 
+from collections.abc import Callable
 from typing import Literal
 
 import pytest
 from claude_agent_sdk import CLINotFoundError
+from fake_mcp import CHECKOUT, ToolCallLog, init_message, tool_call
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -16,28 +18,38 @@ from fake_sdk import (
 
 from review_bot import cli
 from review_bot.errors import ErrorCategory, ProviderError
+from review_bot.findings import Finding
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
 
-type Scenario = Literal["valid", "empty", "invalid", "warned", "diagnosed"] | ErrorCategory
+type Scenario = (
+    Literal["valid", "empty", "invalid", "warned", "diagnosed", "tool_loop"] | ErrorCategory
+)
 
 # P1-S5: "warned" succeeds with one warning; "diagnosed" fails with `auth` and one CLI line.
 DIAGNOSTIC_LINE = "conformance diagnostic line"
+# P3-S3 AC7: "tool_loop" makes this one read through the request's tools, then returns
+# `HIGH_FINDING`.
+TOOL_LOOP_CALL = ("read", {"path": CHECKOUT})
+
+
+# Built per call, so no test shares an error or finding object with another.
+MOCK_SCRIPTS: dict[str, Callable[[], dict[str, object]]] = {
+    "valid": lambda: {},
+    "empty": lambda: {"findings": []},
+    "invalid": lambda: {"raw_output": "not json"},
+    "warned": lambda: {"warnings": ("conformance warning",)},
+    "diagnosed": lambda: {
+        "error": ProviderError(ErrorCategory.AUTH, "detail", diagnostics=(DIAGNOSTIC_LINE,))
+    },
+    "tool_loop": lambda: {"tool_calls": [TOOL_LOOP_CALL], "findings": [Finding(**HIGH_FINDING)]},
+}
 
 
 def mock_provider(scenario: Scenario) -> LLMProvider:
-    if scenario == "valid":
-        return MockProvider()
-    if scenario == "empty":
-        return MockProvider(findings=[])
-    if scenario == "invalid":
-        return MockProvider(raw_output="not json")
-    if scenario == "warned":
-        return MockProvider(warnings=("conformance warning",))
-    if scenario == "diagnosed":
-        error = ProviderError(ErrorCategory.AUTH, "detail", diagnostics=(DIAGNOSTIC_LINE,))
-        return MockProvider(error=error)
+    if scenario in MOCK_SCRIPTS:
+        return MockProvider(**MOCK_SCRIPTS[scenario]())
     return MockProvider(error=ProviderError(scenario, "detail"))
 
 
@@ -60,7 +72,16 @@ CLAUDE_SCRIPTS = {
 
 def claude_provider(scenario: Scenario) -> LLMProvider:
     _, settings = cli.parse_args(["change.diff", "--provider", "claude"])
-    return ClaudeAgentProvider(settings, sdk_call=FakeSdk(*CLAUDE_SCRIPTS[scenario]))
+    if scenario == "tool_loop":
+        name, arguments = TOOL_LOOP_CALL
+        script: tuple[object, ...] = (
+            init_message(),
+            tool_call(name, arguments, ToolCallLog()),
+            result_message(findings_json(HIGH_FINDING), usage=USAGE),
+        )
+    else:
+        script = CLAUDE_SCRIPTS[scenario]
+    return ClaudeAgentProvider(settings, sdk_call=FakeSdk(*script))
 
 
 PROVIDER_FACTORIES = {"mock": mock_provider, "claude": claude_provider}

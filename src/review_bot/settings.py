@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal
 
@@ -49,6 +50,9 @@ class Settings(BaseModel):
     max_tool_calls: int = Field(default=12, ge=1, le=30)
     max_tool_result_bytes: int = Field(default=16_000, ge=1_000, le=64_000)
     max_tool_total_bytes: int = Field(default=96_000, gt=0, le=400_000)
+    # None means no cap: the CLI's budget for one review (ADR 0015). At least a cent, so rounding
+    # it down to the cent never gives 0; at most $1,000, so that rounding is exact.
+    max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0.01"), le=Decimal(1000))
 
 
 def in_ci(environ: Mapping[str, str]) -> bool:

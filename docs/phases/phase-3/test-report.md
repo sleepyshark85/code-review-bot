@@ -232,6 +232,75 @@ None. The AC15 failure seen during the developer's work, a `path_glob` naming a 
 
 Not measured by the tester, who ran only this file. For coverage of `context.paths`, `context.tools` and `git`, see the main session's `pytest --cov`.
 
+## P3-S3: Let Claude drive the tools, locked down and cost-capped
+
+Tests are in `tests/integration/test_p3_s3_claude_drives_tools.py` and `tests/conformance/test_p3_s3_tool_loop_conformance.py`, with helpers in `tests/fake_mcp.py`. They were written from the spec, design.md's "Tool safety", "Spend and caps" and "Interfaces", and ADR 0015, before the provider's code was read. They were then updated to the designer's amendments of 2026-11-09 (AC5, AC6, AC8, AC10, Limits, Interfaces) and to reviewer round 1. AC9 moved to P3-S16 and isn't tested here.
+
+### Gate
+
+All green:
+- `ruff format --check`, `ruff check` and `mypy`.
+- `pytest --cov`: 6,103 passed, 2 skipped, after the round-1 fixes.
+- Total coverage 99.38%.
+- The last test added, `limits_huge_unexpected_tool_names_give_a_bounded_message`, was written while that run was going. It passed when this slice's files were re-run alone (259 passed).
+
+### Seam and set-up (assumed)
+
+- `ClaudeAgentProvider` runs over `fake_sdk.FakeSdk`, so no CLI is launched. In context mode, each script starts with the CLI's init `SystemMessage`, which lists exactly the three tools unless the test is about that list.
+- **The tools are driven the CLI's way.** `fake_mcp.tool_call` sends `initialize`, then `tools/call`, to the `repo` server named in `options.mcp_servers`, through the SDK's own `SdkMcpBridge`. `list_server_tools` sends `tools/list` the same way.
+- **The hook is called the CLI's way.** It gets a `PreToolUse` input carrying `tool_name`. A deny means `hookSpecificOutput.permissionDecision == "deny"` with a reason. The matcher must be empty or `*`, so the hook runs for every name.
+- **Executors.** The real `RepoTools` runs over a one-commit repository holding `billing/checkout.py`. `RecordingTools` records what reaches it.
+- **Through `main`.** These tests use `--provider claude`, with `--context-repo <repo>` in context mode, and the provider injected. They read the report with `--format json` and the audit log with `--audit-log`.
+
+### Criteria
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_system_prompt_is_the_context_prompt` (and not diff mode's). `ac1_builtin_tools_are_off`. `ac1_allowed_tools_are_exactly_the_three_full_names`. `ac1_only_the_in_process_repo_server_is_configured`. `ac1_repo_server_offers_exactly_read_grep_and_glob` (`tools/list` through the bridge). `ac1_strict_mcp_config_no_settings_no_agents_dont_ask`. `ac1_max_turns_is_max_tool_calls_plus_2` ×3 (default, 12, and 5 giving 7). `ac1_hooks_hold_only_one_pre_tool_use_hook` (one matcher for every name, one callback). `ac1_env_is_the_same_as_diff_mode` ×2. `ac1_env_stays_exact_with_a_key_in_the_environment`. `ac1_stderr_is_still_held_by_the_provider` | pass (14) |
+| AC2 | `ac2_diff_mode_options_are_phase_0s_exactly`: every `ClaudeAgentOptions` field is Phase 0's or the SDK default. `ac2_budget_is_the_cap_rounded_down_to_the_cent` ×16 (8 values in each mode: `0.309`→`0.30`, `0.01`, `0.019999`→`0.01`, `0.999`→`0.99`, `0.60`, `1`, `2.5`, `999.999`→`999.99`; the value is a `float` and never above the cap). `ac2_no_budget_without_the_flag` ×2. `ac2_variable_sets_the_budget` ×2. `ac2_diff_mode_with_a_budget_changes_nothing_else`. `ac2_diff_mode_through_main_stays_locked_down`. `test_p0_s2_lockdown.py` passes unchanged | pass (23) |
+| AC3 | `ac3_read_is_recorded_in_the_executors_ledger`. `ac3_fake_receives_the_executors_text` (equal to a fresh `RepoTools`' text for the same call). `ac3_findings_of_the_final_result_are_returned`. `ac3_arguments_reach_the_executor_unchanged` ×5 (read, grep, glob, a `..` path, an unknown key). `ac3_refusal_text_is_passed_back_as_the_result`. `ac3_several_calls_are_recorded_in_order`. `ac3_review_through_main_reads_and_reports` (one `context.tool_call` record) | pass (11) |
+| AC4 | `ac4_hook_denies_other_tools_naming_the_allowed_ones` ×9 (the spec's names; the reason holds all three full names). `ac4_hook_denies_lookalikes_of_the_allowed_names` ×14 (bare `read`, `grep` and `glob`; changes of case, spacing or suffix; `mcp__repo__write`; `mcp__repox__read`; an empty name). `ac4_hook_does_not_deny_the_three` ×3 | pass (26) |
+| AC5 | `ac5_cap_hit_is_permanent_naming_its_flag_and_cap` ×8 (context mode; turns and cost; the result alone, with `is_error` false, holding valid findings, and followed by the SDK's `ResultError`). `ac5_cost_cap_hit_in_diff_mode_is_the_same_error`. `ac5_turn_cap_hit_in_diff_mode_is_phase_0s_permanent_error`: cap None, no `--max-tool-calls`, the same text as Phase 0's permanent error, and no planted text. `ac5_message_holds_no_cli_or_model_text` ×2. `ac5_cap_hit_through_main_exits_permanent_naming_the_flag` ×2 (exit 12; neither stream holds the planted text). `ac5_audit_failed_record_carries_the_cap` ×2. `ac5_audit_failed_record_has_a_null_cap_for_other_errors`. `ac5_audit_failed_record_has_a_null_cap_for_diff_mode_turns`. `ac5_every_other_error_has_no_cap` ×7. `ac5_a_provider_error_has_no_cap_by_default` | pass (26) |
+| AC6 | `ac6_cost_is_the_exact_decimal_of_the_reported_value` (`Decimal("0.1234")`, not the binary expansion). `ac6_cost_is_read_in_diff_mode_too`. `ac6_report_usage_cost_is_the_string`. `ac6_report_usage_cost_in_context_mode`. `ac6_report_usage_cost_is_null_in_context_mode_when_unknown`. `ac6_audit_called_record_has_the_cost_in_diff_mode` ×3 and `…_in_context_mode` ×3 (the string, or a present null). `ac6_unusable_cost_is_none_and_the_review_succeeds` ×12 (negative, −1, NaN, ±infinity, `true`, `false`, text, numeric text `"0.1234"`, a list, a mapping, `None`). `ac6_absent_cost_is_none`. `ac6_unusable_cost_is_null_in_the_report` ×12 (the key present). `ac6_mock_provider_reports_a_null_cost` | pass (37) |
+| AC7 | `ac7_tool_loop_returns_the_scripted_findings` ×2 (mock, claude). `ac7_tool_loop_leaves_one_read_in_the_ledger` ×2 (one `ok` `read` with a span on `billing/checkout.py`). The suite's new `tool_loop` scenario is in `tests/conformance/conftest.py` | pass (4) |
+| AC8 | `ac8_bad_max_cost_exits_2_naming_the_flag` ×15 (the spec's `0`, `0.009`, `-1`, `1000.01`, `nan` and `abc`, plus `1000.001`, `1e4`, `0.0099999`, `-0.01`, `inf`, `-inf`, empty, `0.00`, and 10^40; each a `review-bot: error:` line that isn't argparse's). `ac8_bad_variable_exits_2_naming_it` ×6. `ac8_bad_max_cost_reaches_no_provider`. `ac8_bounds_are_accepted` ×3 (`0.01`, `1000`, `1000.00`). `ac8_unset_by_default`. `ac8_bounds_run_with_that_budget` ×2 (`0.01`, `1000.0`) | pass (28) |
+| AC10 | `ac10_unexpected_tool_list_fails_permanent_naming_them` ×6 (with `Bash`, without `mcp__repo__grep`, with `mcp__other__read`, with `ToolSearch`, the built-ins only, empty). `ac10_no_tool_handler_runs_after_a_bad_list` ×6. `ac10_tool_call_after_a_wrong_list_is_refused_without_running` (the server is called after the review failed; the executor isn't). `ac10_second_init_listing_bash_after_a_good_one_fails`: a read runs after the first, good init; the second init lists `Bash` and fails `permanent`; a later server call doesn't reach the executor. `ac10_exactly_the_three_in_any_order_proceed`. `ac10_bad_list_through_main_exits_permanent`. `ac10_tool_list_is_kept_in_the_agent_tools_record`. `ac10_context_stream_without_init_message_proceeds`. `ac10_no_init_message_has_no_agent_tools_record`. `ac10_diff_mode_neither_checks_nor_records_the_list` ×3 (with `Bash`, built-ins, the three). Missing or non-list init lists are under Limits | pass (22) |
+| Limits | `limits_hook_denies_a_tool_name_that_isnt_text` ×4 (`None`, a number, a list, a mapping). `limits_init_tool_list_that_isnt_a_list_fails_permanent` ×3 (missing, text, a mapping). `limits_invalid_arguments_reach_the_executor_and_its_ledger` ×4 (an unknown key, `path` 5, `line_count` 401, no `path`: each gets the executor's own delimited refusal and its ledger entry). `limits_malformed_calls_count_towards_max_tool_calls` (two malformed calls under a cap of 2, then a valid `read` refused `call_limit`). `limits_huge_unexpected_tool_names_give_a_bounded_message`: a 100,000-character name and 1,000 other names; no more than 100 characters of the long name appear | pass (13) |
+
+### Failures
+
+None. One failure found during the run is now fixed:
+- **What it was:** the first build used the SDK's `create_sdk_mcp_server`, which checks arguments against the schema before the handler runs. A malformed call got the SDK's undelimited `Input validation error: …`, never reached the executor, and was missing from the ledger and the audit log (`limits_invalid_arguments_reach_the_executor_and_its_ledger`, 4 red).
+- **The fix:** the developer replaced it with a hand-built `mcp` server.
+- **The spec:** the designer folded the fix into Limits.
+
+### Earlier suites changed
+
+- **`tests/integration/test_p1_s10_json_output.py`:** two exact `usage` assertions now also expect `"cost_usd": None`, as AC6 makes the key always present. Their providers (a usage-only stub, and a run with every file skipped) report no cost. The assertions stay exact.
+- **`tests/conformance/conftest.py`:** a `tool_loop` scenario was added to both factories, for AC7. `mock_provider` is now driven by `MOCK_SCRIPTS`, as `claude_provider` is by `CLAUDE_SCRIPTS`, so `tool_loop` is one more entry rather than a seventh early return (reviewer round 1). The existing scenarios build the same providers.
+
+### Readings for the designer
+
+1. **AC5, a diff-mode `error_max_turns` result whose `is_error` is false.** It gets Phase 0's reading of the result text: `invalid_output`, or success if the text is valid findings. It doesn't get the permanent error. The test covers only `is_error` true, which is how the SDK documents a capped run. In context mode, the same shape fails with cap `turns`, as tested.
+2. **AC2's "never above the cap"** is checked at the float's shortest decimal form (`repr`). No binary float equals 0.01 exactly, so a check on the exact binary value would fail the spec's own accepted `0.01`.
+3. **AC4's "naming the allowed tools"** is read as naming all three full names (`mcp__repo__read` and the others).
+4. **Strictness beyond the spec, flagged for review:**
+   - A hook `tool_name` that isn't text must be denied, not raise.
+   - The hook's matcher must cover every name.
+   - A long unexpected tool name is shown cut to 100 characters (the developer's round-1 fix).
+   - A context-mode cap-hit result whose `is_error` is false, or which holds valid findings, still fails with its cap.
+   - `1e4` and 10^40 must exit 2.
+5. **Not tested:**
+   - The real CLI building its init tool list from `tools=[]` plus the MCP server, and honouring `max_budget_usd`. Both are S16's live smoke.
+   - Whether the real CLI itself checks arguments against the advertised schema before calling the server. If it does, a malformed call would never reach our server; only S16 can show it.
+   - `main` building its own Claude provider with `--context-repo`. That would reach the real SDK, which the suite's guard stops.
+
+### Coverage
+
+From the full `pytest --cov` run:
+- `providers/claude_tools.py`, `providers/claude_agent.py`, `settings.py`, `report.py`, `render.py` and `review.py`: 100% (omitted by `skip_covered`). The branch `claude_tools.py` 53->55, missed in the first run, has been covered since the round-1 change to the init check.
+- Total: 99.38%.
+
 ## P3-S4: See the context behind every finding
 
 Spec: [p3-s4-finding-evidence.md](slices/p3-s4-finding-evidence.md). Tests: [`tests/integration/test_p3_s4_finding_evidence.py`](../../../tests/integration/test_p3_s4_finding_evidence.py), 104 cases. They were written from the spec's criteria, Limits and Interfaces, and design.md ("Interfaces", "Prompt versions", "Report keys, appended only"), while the developer built the slice and before any of its code was read.

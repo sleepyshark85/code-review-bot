@@ -5,13 +5,15 @@ import logging
 import os
 import runpy
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TextIO, cast, override
 
 import pytest
 from audit_records import data_of, events, read_records
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIFF, section
 from git_samples import commit, git, init_repo
 
@@ -21,6 +23,7 @@ from review_bot.findings import Finding, Severity
 from review_bot.git import GitRepo
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
+from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
 
@@ -59,6 +62,21 @@ def failing_stream() -> TextIO:
 def test_parse_args_rejects_abbreviated_flags() -> None:
     with pytest.raises(ConfigError, match="--thresh"):
         parse_args(["some.diff", "--thresh", "high"])
+
+
+def test_parse_args_takes_the_cost_cap_from_its_flag() -> None:
+    _, settings = parse_args(["change.diff", "--max-cost-usd", "0.30"])
+
+    assert settings.max_cost_usd == Decimal("0.30")
+
+
+@pytest.mark.parametrize("value", ["0.009", "1000.01", "nan"])
+def test_main_with_a_cost_cap_out_of_range_exits_2_naming_the_flag(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["change.diff", "--max-cost-usd", value]) == 2
+
+    assert "--max-cost-usd" in capsys.readouterr().err
 
 
 def test_parse_args_with_help_prints_usage_and_exits_zero(
@@ -977,16 +995,31 @@ def test_main_with_context_rev_records_its_commit(
     assert "1\tx" in provider.tool_results[0]
 
 
-def test_main_in_context_mode_with_the_claude_provider_exits_2_before_any_call(
-    diff_path: Path,
-    context_repo: Path,
-    audit_log_in_tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+def test_main_in_context_mode_lets_claude_read_the_repository_through_its_tools(
+    diff_path: Path, context_repo: Path
 ) -> None:
-    assert main([str(diff_path), "--context-repo", str(context_repo)]) == 2
+    results: list[str] = []
 
-    assert "--context-repo needs --provider mock" in capsys.readouterr().err
-    assert not audit_log_in_tmp_path.exists()
+    async def sdk_call(_prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+        server = options.mcp_servers["repo"]["instance"]
+        entry = server.get_request_handler("tools/call")
+        params = entry.params_type(name="read", arguments={"path": "pkg/a.py"})
+        results.append((await entry.handler(None, params)).content[0].text)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=2,
+            session_id="session",
+            result='{"findings": []}',
+        )
+
+    provider = ClaudeAgentProvider(Settings(), sdk_call=sdk_call)
+
+    assert main([str(diff_path), "--context-repo", str(context_repo)], provider=provider) == 0
+
+    assert "1\tx" in results[0]
 
 
 @pytest.mark.parametrize(

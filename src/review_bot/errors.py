@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from enum import StrEnum, auto
+from typing import Literal
 
 from review_bot.secret_scan import SecretHit
 
@@ -22,6 +23,7 @@ __all__ = [
     "InputError",
     "ListingTooLargeError",
     "NotARegularFileError",
+    "ProviderCap",
     "ProviderError",
     "RepoConfigError",
     "ReviewBotError",
@@ -129,18 +131,27 @@ class ErrorCategory(StrEnum):
     INVALID_OUTPUT = auto()
 
 
+type ProviderCap = Literal["cost", "turns"]
+
+
 class ProviderError(ReviewBotError):
     """A provider failed in a known way.
 
     ``diagnostics`` are raw, untrusted text, such as the CLI's stderr: only ``scrub_diagnostics``
     may turn them into output (ADR 0004). The message is shown to the user, so they never go in
-    it.
+    it. ``cap`` names the review's cap the call hit, if that is why it failed (ADR 0015).
     """
 
     def __init__(
-        self, category: ErrorCategory, message: str, *, diagnostics: Sequence[str] = ()
+        self,
+        category: ErrorCategory,
+        message: str,
+        *,
+        diagnostics: Sequence[str] = (),
+        cap: ProviderCap | None = None,
     ) -> None:
-        """Record the failure's category and diagnostics alongside its message."""
+        """Record the failure's category, diagnostics and any cap alongside its message."""
         super().__init__(message)
         self.category = category
         self.diagnostics = tuple(diagnostics)
+        self.cap = cap

@@ -126,6 +126,7 @@ def report_document(
         "usage": {
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
+            "cost_usd": None if result.cost_usd is None else str(result.cost_usd),
         },
         "mode": "diff" if result.context_commit is None else "context",
         "context": _context_json(result),

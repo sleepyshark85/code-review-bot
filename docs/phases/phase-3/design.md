@@ -43,7 +43,7 @@ New or changed modules under `src/review_bot/`. `context.paths`, `context.ledger
 | `context.codeowners` | Parse CODEOWNERS; owners of a path | `parse_codeowners`, `owners_for` | S11 |
 | `providers.base` (changed) | The request may carry a tool executor; the response may carry a cost | `ToolExecutor`, `ToolDefinition` | S1, S3 |
 | `providers.mock` (changed) | Scripted tool calls before its answer | `MockProvider(tool_calls=...)` | S1 |
-| `providers.claude_agent` (changed) | Drives the tools through an in-process MCP server, locked down | `ClaudeAgentProvider` | S3 |
+| `providers.claude_agent` (changed), `providers.claude_tools` (split in build, S3) | The Claude provider ([ADR 0001](../../adr/0001-claude-agent-sdk-runtime.md)), the only modules importing the SDK or `mcp`: drives the tools through an in-process MCP server, locked down; `claude_tools` holds the server, the hook and the init check | `ClaudeAgentProvider` | S3 |
 | `prompt` (changed) | The context prompt, its version, and the untrusted framing of tool results and issues | `build_context_request`, `CONTEXT_PROMPT_VERSION` | S1, grows in S4, S9, S10, S12 |
 | `findings` (changed) | `evidence` and `suggestion` on `Finding`; `decimal-money` in `RuleId` | | S4, S10, S12 |
 | `rules` (changed) | Domain checks switched on per path | `DomainRule` | S10 |
@@ -111,6 +111,11 @@ class ReviewRequest:  # adds:
 @dataclass(frozen=True, slots=True)
 class ReviewResponse:  # adds:
     cost_usd: Decimal | None = None  # as the provider reports it (S3); None if unknown
+    offered_tools: tuple[str, ...] | None = None  # the runtime's tool list (S3); None if unstated
+
+
+class ProviderError(Exception):  # adds:
+    cap: Literal["cost", "turns"] | None  # which cap ended the call (S3); None otherwise
 
 
 # context/
@@ -185,7 +190,7 @@ class IssueReader(Protocol):
 
 **Prompt versions.** `PROMPT_VERSION` stays `p1-v1` for diff mode, and its text and framing don't change, so Phase 1's recordings stay fresh. Context mode records `CONTEXT_PROMPT_VERSION`, starting at `p3-v1` (S1). Every slice that changes the context prompt or its framing bumps it to the next free number, whatever order slices merge in, and refreshes the freshness fields of synthetic context recordings. Live context recordings are made only in S15, once the prompt has settled.
 
-**Report keys, appended only.** `report/v1` adds `mode`, `context` (`commit`, `tool_calls`, `refused`, `result_bytes`, `files_read`: each path with its line spans, at most 200), `usage.cost_usd`, and per finding `evidence` (S4) and `suggestion` (S12). `shadow/v1` adds the same `context`, the tool and cost caps under `caps`, `issues` (S9), `codeowners` (S11) and per entry `owners` (S11). A new audit stage, `context`, has one `tool_call` event per call: tool, outcome, reason, spans (at most 50), bytes and the input's SHA-256, never the model's arguments as text ([ADR 0005](../../adr/0005-audit-log.md)).
+**Report keys, appended only.** `report/v1` adds `mode`, `context` (`commit`, `tool_calls`, `refused`, `result_bytes`, `files_read`: each path with its line spans, at most 200), `usage.cost_usd`, and per finding `evidence` (S4) and `suggestion` (S12). `shadow/v1` adds the same `context`, the tool and cost caps under `caps`, `issues` (S9), `codeowners` (S11) and per entry `owners` (S11). A new audit stage, `context`, has one `tool_call` event per call: tool, outcome, reason, spans (at most 50), bytes and the input's SHA-256, never the model's arguments as text ([ADR 0005](../../adr/0005-audit-log.md)). The `agent` stage's `called` record adds `cost_usd` (as in the report) and `failed` adds `cap`, both always present and null when absent; a new `agent` `tools` record lists the tools the CLI's init offered, in context mode only (S3).
 
 ### The tools
 
@@ -197,7 +202,8 @@ Decision: [ADR 0013](../../adr/0013-read-only-repo-tools-over-a-commit.md); the 
 
 ### Tool safety
 
-- **Read-only by construction.** Every tool reads git objects of one commit: no working tree, no checkout, no filter, textconv or hook runs, and no write, shell, network or web tool exists. In context mode the Claude CLI's built-in tools are off (`tools=[]`), the only allowed tools are the three by full name, a `PreToolUse` hook denies any other name, `permission_mode` is `dontAsk`, and `setting_sources=[]`, no agents and strict MCP config stay as in Phase 0. The provider also reads the CLI's init message's tool list and fails `permanent` before any tool runs if it holds anything but the three (S3). Lockdown is asserted in tests for both modes; diff mode's assertions don't change.
+- **Read-only by construction.** Every tool reads git objects of one commit: no working tree, no checkout, no filter, textconv or hook runs, and no write, shell, network or web tool exists. In context mode the Claude CLI's built-in tools are off (`tools=[]`), the only allowed tools are the three by full name, a `PreToolUse` hook denies any other name, `permission_mode` is `dontAsk`, and `setting_sources=[]`, no agents and strict MCP config stay as in Phase 0. The provider also reads the CLI's init message's tool list and fails `permanent` before any tool runs if it holds anything but the three (S3); a stream without one isn't failed, since the hook and allowlist still hold, and S16's smoke checks the real CLI sends it. Lockdown is asserted in tests for both modes; diff mode's assertions don't change.
+- **Every call reaches the executor.** The in-process server is our own server from the `mcp` library (a direct dependency, in step with the SDK's), handed to the SDK as an in-process MCP config. The SDK's `create_sdk_mcp_server` isn't used: it validates arguments against the schema before the handler, so a malformed call would never be recorded or count towards `max_tool_calls` ([ADR 0014](../../adr/0014-tools-as-a-provider-neutral-executor.md)). The executor alone validates (S3 Limits).
 - **No git option or pathspec from the model.** The literal always follows `-e`, and the commit is followed by `--` with no pathspec after it, so `-O`, `--open-files-in-pager`, `-f` or `--no-index` are searched as text. `grep`'s `path_glob` is matched in our code with P2-S9's matcher; a pattern starting with `:` is refused. A `read` returns only a tree entry whose path equals the requested path.
 - **Confined to the commit.** A path must be relative, `/`-separated, at most 1,000 characters, with no empty, `.` or `..` segment, no backslash, NUL or control character. `.git` internals aren't in a commit; any path segment named `.git` is refused anyway. Symbolic links and submodules are refused, never followed. **Secrets files** are refused and left out of `grep` and `glob` results: `.env` and `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ppk`, `*.kdbx`, `*.tfstate`, `*.tfvars`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and their non-`.pub` variants, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.htpasswd`, `.pgpass`, `credentials` and `credentials.*`. Matching is case-insensitive on the last segment.
 - **No secret reaches the model.** The Phase 1 secret scan runs on each whole blob, once per file and commit, giving the line span of each hit. A `read` window that overlaps a hit's span is refused (`possible_secret`), so a PEM block can't be read in slices; a `grep` line inside a hit's span is dropped and counted. A **path** in which the scan finds anything is never shown: it's left out of `glob` and `grep` results like a denied file, a `read` of it is refused `possible_secret` without echoing the path, and it's in no report or audit record (P3-S2 AC14, amended 2026-11-09).
@@ -215,7 +221,7 @@ Decision: [ADR 0015](../../adr/0015-per-call-cost-cap-and-step-allowances.md). C
 | `max_tool_result_bytes` | 16,000 (1,000 to 64,000) | 16,000 | |
 | `max_tool_total_bytes` | 96,000 (at most 400,000) | 96,000 | |
 | `grep` candidate files per call | 100, fixed (not a setting) | 100 | P3-S2 AC15 |
-| `max_cost_usd` | unset; required by every live command in context mode | 0.60, set only when `REVIEW_BOT_CONTEXT=repo`, so diff-mode runs are unchanged | Decimal, at least 0.01 |
+| `max_cost_usd` | unset; required by every live command in context mode | 0.60, set only when `REVIEW_BOT_CONTEXT=repo`, so diff-mode runs are unchanged | Decimal, 0.01 to 1,000, so the cents are exact as a float |
 | `deadline_s` | 300 | 300 in context mode, 240 otherwise | Job timeout stays 10 min |
 
 **Live commands** (`evals live`, `pr backfill`) take `--max-usd`. Before any call they refuse unless planned calls × `max_cost_usd` ≤ `--max-usd`, and during the run they start no call once the reported spend plus `max_cost_usd` would exceed it. Retries stay 0. A failure to report cost counts as `max_cost_usd`.
@@ -300,7 +306,7 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 
 | Risk | Handling |
 |---|---|
-| SDK behaviour unproven: built-ins off with `tools=[]` while MCP tools stay on, `max_budget_usd` stopping a query, `total_cost_usd` in the result | S3's fakes test our side; the init tool-list check and the hook stop any built-in that slips through; S16's smoke checks the CLI's side, under the stop rule above |
+| SDK behaviour unproven: built-ins off with `tools=[]` while MCP tools stay on, `max_budget_usd` stopping a query, `total_cost_usd` in the result | S3's fakes test our side; the init tool-list check and the hook stop any built-in that slips through; S16's smoke checks the CLI's side, under the stop rule above. An SDK upgrade also re-checks that the SDK still accepts our `mcp` server, and moves the `mcp` pin with it |
 | A live step run from CI spends the key unattended | `live.yml` runs only on manual dispatch from `main`, with literal amounts and no cancel (S16) |
 | Context reviews cost several times a diff review | Caps above; context off in CI until the owner decides |
 | A repository file or issue carries an injection the model follows | Delimiters, the eval cases, and the model never triggering an action; a finding can still be wrong, which people judge |

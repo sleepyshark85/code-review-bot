@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Protocol
 
 from review_bot.findings import Finding
@@ -67,12 +68,16 @@ class ReviewResponse:
     """A provider's validated answer.
 
     ``warnings`` are whole stderr lines for the orchestrator to show and record, since providers
-    write to no stream themselves (ADR 0004).
+    write to no stream themselves (ADR 0004). ``cost_usd`` is the call's cost as the provider
+    reports it, None if unknown. ``offered_tools`` are the tools the provider's runtime said the
+    model was offered, for the audit log; None if it said nothing.
     """
 
     findings: tuple[Finding, ...]
     usage: TokenUsage
     warnings: tuple[str, ...] = ()
+    cost_usd: Decimal | None = None
+    offered_tools: tuple[str, ...] | None = None
 
 
 class LLMProvider(Protocol):
