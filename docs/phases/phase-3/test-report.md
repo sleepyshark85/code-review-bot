@@ -576,3 +576,79 @@ From the full `pytest --cov` run (total 99%):
 - `evals/render.py` 99% (branch 67->71).
 - `evals/live.py` 98% (lines 185 and 187).
 - `evals/__main__.py` 0%: the `python -m` entry, which the in-process tests don't run.
+
+## P3-S7: Compare diff mode and context mode on the same eval cases
+
+Spec: [p3-s7-compare-eval-modes.md](slices/p3-s7-compare-eval-modes.md), as amended twice by the designer (AC2, AC4, AC5 and AC7). Tests: [`tests/evals/test_p3_s7_compare_eval_modes.py`](../../../tests/evals/test_p3_s7_compare_eval_modes.py), 112 cases. They were written from the spec's criteria, Limits and Interfaces, design.md's Q3 and "How the gate is evidenced", ADR 0016 and P3-S5's recording format, while the developer built the slice and before any of its code was read.
+
+**Status: every criterion of the amended spec passes. All 112 cases pass on the developer's uncommitted working tree** (base `68a6555`).
+
+**On the way:**
+- Before the code, the 4 self-checks and the 7 invalid-input cases passed. The invalid-input cases passed only because `compare` was an unknown command. Every usage-error check now also requires the evals' `error:` line, and rejects argparse's `invalid choice: 'compare'`.
+- First run on the developer's code: 19 failed. 16 were reader names (the JSON's inner keys, read in one place), and 1 was a test bug: the per-mode pass or fail sits on the case's own block, not on every line naming the case. No assertion was weakened.
+- 2 failed on a reading of AC4. With only one price, the developer exited 2 ("Pass both prices ... or neither"), and the tests expected `not recorded` ("Otherwise cost shows `not recorded`"). The developer first followed the tests, and the designer then amended AC4 to P2-S10 AC5's rule: a lone, negative or non-numeric price exits 2 naming the flag. The two `not recorded` cases for a lone price were replaced by exit-2 cases. These are the only existing tests the amendment contradicted.
+- **After the amendment**, the file went from 81 to 99 cases, with 24 added and 6 removed. The 6 removed are the two lone-price `not recorded` cases and the four price cases of `ac7_invalid_flags_exit_2`, which moved into AC4's exit-2 test and now also check that the flag is named. The 24 added cover:
+  - AC2: "caught" means "meets `min_runs_caught`";
+  - AC4: price errors, money to 4 places rounded half-even, and `not recorded` only without prices;
+  - AC5: `not measured`;
+  - AC7: a case without `repo` that has a context recording.
+
+  All 24 passed on the developer's code the first time they ran.
+- **After the second amendment**, 13 cases were added (99 to 112):
+  - `not measured` for findings per run without a noise-budget case;
+  - `not measured` for injection runs and the injection verdict without an injection case;
+  - a lone or invalid price exits 2 even when every run is costed.
+
+  Before the developer's change, the 3 `not measured` tests failed: the code showed `0/0 (n/a)` and `no injection runs`. All pass now. The "estimated from every run's tokens, recorded costs not mixed in" clause was already covered by `ac4_missing_costs_with_both_prices_are_estimated_from_tokens`. There, one diff run records $9.99, and the estimate is still exactly 0.9 from the tokens of all three runs.
+
+### Gate
+
+On the settled tree, after the second amendment:
+- `ruff format --check`, `ruff check` and `mypy`: clean (304 files formatted, 75 source files type-checked).
+- `pytest --cov`: 7,003 passed, 0 failed, 2 skipped. Total coverage 99%.
+
+Runs made while the developer was still editing aren't counted.
+
+### Seam and set-up (assumed, then read from the developer's output)
+
+- **The command** runs in process: `review_bot.evals.main(["compare", "--cases", DIR, ...])`. Each test works on a temporary copy of the cases it needs, without their recordings. It writes `recordings/live/recording.json` (diff) and `recordings/live-context/recording.json` (context), with `kind` `live` and today's fields from `freshness_fields(case_file, mode=...)`.
+- **Findings** are built so that each credits exactly one bug. A self-check confirms this with an independent matcher. The sample's six AI bugs anchor on `billing/invoice.py` lines 13, 14, 34, 38, 40 and 41. Noise findings are on lines 33 and 36 of the sample and lines 3 and 4 of `billing/refunds.py`. The payout bug is on `billing/payouts.py:11`.
+- **`eval-compare/v1`**, as the spec names it: `schema`, `cases[*]` (`id`, `paired`, `reason`, `modes.diff` and `modes.context`), and `totals` per mode and `verdict`. Read from the developer's output, in the readers only:
+  - each mode has `passed` and a `bugs` list of `{id, caught_runs, runs, met}`;
+  - the totals are `ai_bugs`, `credited_runs`, `precision`, `findings_per_run` and `injection_runs`. Each holds two counts and a share. The rest are `cost` (`basis`, `total_usd`, `mean_usd`), `tokens` (`mean_input`, `mean_output`), `tool_calls` (`mean`, `max`, `null` for diff), `failed_runs` (by category) and `cap_hits` (`case`, `run`, `cap`);
+  - `verdict` holds `precision`, `smaller_share` (a list of `{case, bug}`) and `context_injection_passed`.
+- **Text:** a bug's row is `<bug>: diff N/M met|not met, context N/M met|not met` under `case <id>: ...`. Each mode has a block of totals, and a closing `verdict:` block follows them.
+
+### Criteria
+
+Test names drop the `test_p3_s7_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_text_shows_runs_caught_per_mode` (`diff 1/5`, `context 3/3`). `ac1_json_shows_runs_caught_and_met_per_mode`. `ac1_met_is_min_runs_caught_exactly` (2 of 5 meets 2; 1 of 3 doesn't). `ac1_each_case_shows_pass_or_fail_per_mode`. `ac1_counts_agree_with_replay_of_the_same_recording` ×2 (each mode's counts and pass/fail equal `replay --mode` on the same files). `ac1_compare_calls_no_model` (no `ClaudeAgentProvider` built, on top of the suite's offline guard) | pass (7) |
+| AC2 | `ac2_each_mode_shows_its_totals` ×10: three paired cases (sample, clean, tool-result) give diff 1/7, 5/21, 5/6, 2/3 and 2/3, and context 7/7, 21/21, 21/22, 1/3 and 3/3. `ac2_counts_are_shown_unreduced`. `ac2_text_shows_the_counts`. `ac2_precision_counts_only_final_ai_findings`: a repeated finding is deduped, an off-diff anchor is dropped, and rule findings aren't counted, giving 1/2. `ac2_precision_leaves_out_cases_without_bugs`. `ac2_findings_per_run_counts_only_noise_budget_cases`. `ac2_injection_runs_count_every_injection_case` (4/6 over two cases). **Amended:** `ac2_a_bug_counts_as_caught_only_when_it_meets_min_runs_caught` (1 of 3 runs isn't caught, 2 of 3 is, against a threshold of 2). **Second amendment:** `ac2_no_noise_budget_case_shows_findings_per_run_not_measured` and `ac2_no_injection_case_shows_injection_runs_not_measured`: both modes, JSON null, `not measured` in each mode's text block, and no `n/a` or `no injection runs`. `ac2_measured_rates_stay_measured_beside_not_measured_ones` (clean-context alone: findings per run 0, measured; injection runs null) | pass (20) |
+| AC3 | `ac3_rates_use_each_modes_own_runs`: diff 5 runs and context 3. Per bug 2/5 against 2/3; credited runs 6/35 against 5/21; findings per run 1/5 against 3/3; injection 4/5 against 3/3 | pass (1) |
+| AC4 | `ac4_recorded_costs_give_total_and_mean_exactly` (0.1 + 0.2 + 0.3 = 0.6 exactly; no float artefact in text or JSON). `ac4_recorded_cost_ignores_prices`. `ac4_missing_costs_with_both_prices_are_estimated_from_tokens`: at $0.1 and $0.2 per Mtok, 0.9 total and 0.3 mean, marked `estimated`, also when one run had a cost ($9.99 isn't mixed in, as the second amendment states). `ac4_missing_costs_without_prices_are_not_recorded`. `ac4_not_recorded_isnt_shown_when_every_run_has_a_cost`. `ac4_tokens_and_tool_calls_are_always_shown` (mean input and output tokens; context tool calls mean 2 and largest 4, a failed run included). **Amended:** `ac4_lone_or_invalid_price_exits_2_naming_the_flag` ×9 (each flag alone; `=-1`, `=-0.01`, `abc`, empty, `nan`, `Infinity` and `1e999999999`; each names the offending flag and writes nothing to stdout). **Second amendment:** `ac4_lone_or_invalid_price_exits_2_even_if_every_run_is_costed` ×9, the same cases with every run costed. `ac4_money_is_shown_to_4_places_rounded_half_even`: totals 0.00005 and 0.00015 show `0.0000` and `0.0002` (half-up would give `0.0001` for the first), and means 0.000025 and 0.000075 show `0.0000` and `0.0001`, in the text and as JSON strings. `ac4_estimated_money_is_shown_to_4_places` (0.000054 shows `0.0001`, 0.000018 shows `0.0000`) | pass (26) |
+| AC5 | `ac5_verdict_states_precision_higher_same_or_lower` ×3. `ac5_smaller_share_is_listed_by_id_even_with_more_runs_caught` (diff 2/3 against context 3/5). `ac5_fewer_runs_caught_but_a_larger_share_isnt_listed` (diff 3/5 against context 2/3, `none`). `ac5_equal_shares_of_different_counts_arent_listed` (2/6 against 1/3). `ac5_verdict_states_whether_every_context_injection_run_passed` ×2. `ac5_diff_injection_failures_dont_change_the_context_injection_verdict`. **Amended:** `ac5_mode_without_final_ai_findings_has_precision_not_measured` ×6: either mode with no findings, only off-diff findings (dropped), or only failed runs. The rule findings remain. The mode's precision is JSON `null` and its text block says `not measured`, the verdict's precision is `null`, and the closing block says `not measured` with no `higher`, `same` or `lower`. `ac5_both_modes_without_findings_are_not_measured`. `ac5_findings_crediting_nothing_are_measured_as_zero` (0/3 is measured, `lower`). **Second amendment:** `ac5_no_injection_case_gives_an_injection_verdict_not_measured` (JSON `context_injection_passed` null; the closing block says `not measured`, without `yes` or `no`) | pass (18) |
+| AC6 | `ac6_failed_run_counts_as_a_run_with_no_findings`. `ac6_each_mode_lists_failed_runs_by_error_category` (transient under diff only; refusal under context only). `ac6_cap_hit_runs_are_listed_by_case_and_run_and_miss_every_bug` ×2 (cost, turns: `sample-context` run 2, every bug 2/3). `ac6_cap_hit_in_a_diff_recording_is_listed_under_diff`. `ac6_cap_hit_counts_as_a_failed_injection_run` | pass (6) |
+| AC7 | `ac7_case_with_repo_missing_a_recording_is_unpaired_and_exits_1` ×2 (the reason names the missing mode; the text says `unpaired`). `ac7_case_with_neither_recording_is_unpaired`. `ac7_stale_context_recording_…` (`repo_tree`). `ac7_stale_diff_recording_…` (`prompt_sha256`). `ac7_synthetic_recordings_dont_pair_a_case`. `ac7_unpaired_case_is_left_out_of_every_aggregate`: totals and verdict equal those of the paired case alone. `ac7_case_without_repo_or_context_recording_is_left_out_silently` (`sample`, with a diff recording). `ac7_every_case_with_repo_paired_exits_0_even_if_a_mode_fails`. `ac7_committed_cases_have_no_live_context_recordings_so_exit_1`. **Amended, a case without `repo`:** `ac7_case_without_repo_with_only_a_context_recording_is_unpaired` (Phase 1's `sample`, exit 1, the reason names `diff`). `ac7_case_without_repo_with_a_stale_context_recording_is_unpaired` (`prompt_sha256`). `ac7_case_without_repo_with_both_recordings_is_paired` (exit 0, scored over the empty repository). Exit 2 with nothing on stdout: `ac7_invalid_flags_exit_2` ×3 (`--format xml`; replay's `--mode` and `--recording`; the price errors are under AC4), `ac7_missing_or_empty_cases_directory_exits_2`, `ac7_malformed_live_recording_exits_2_naming_it` ×2, `ac7_recording_of_the_wrong_mode_exits_2`, `ac7_invalid_case_file_exits_2` | pass (21) |
+| AC8 | `ac8_json_is_one_ascii_document_of_its_schema`. `ac8_json_holds_what_the_text_shows_per_case_and_mode` (every AI bug's `<mode> N/M` in the text equals the JSON's, and the same cases are in both). `ac8_non_ascii_case_id_stays_ascii_in_json` (`é` and U+202E in an unpaired case ID). `ac8_text_format_is_not_json` | pass (4) |
+| Limits | `limits_many_runs_and_findings_finish_in_bounded_time`: 200 runs per mode of 8 findings and 30 tool calls, within 120 s (a few seconds here), with exact counts and a cost of 2.00. `limits_hostile_rationale_text_never_reaches_the_output`: a scored rationale holding an escape sequence, U+202E, a forged `verdict:` line and a canary appears in neither format | pass (2) |
+| Other | `selfcheck_each_sample_finding_credits_only_its_bug` ×6, `selfcheck_noise_credits_nothing` | pass (7) |
+
+### Failures
+
+None.
+
+### Readings for the designer
+
+The two amendments settled every earlier reading: a lone price, undefined precision, a case without `repo` that has a context recording, partly costed modes, a price given when every run is costed, and empty rates. What the tests still read:
+- **"JSON `null`" for a rate:** the developer keeps the rate's counts (`0/0`) and makes its `share` (or `mean`) null. The verdict's `precision` and `context_injection_passed` are null themselves. The tests accept a null rate or a null share, and the text must say `not measured`. If the whole rate object should be null, say so, and the reader `is_not_measured` is the one place to tighten.
+- **AC5, smaller share by ID:** a bug is listed as `case/bug`, because bug IDs are unique only within a case.
+
+### Coverage
+
+From the full run above:
+- At 100%: `evals/compare.py`, `evals/compare_render.py`, `price_flags.py` (the shared price-flag parsing), `evals/cli.py` and `evals/replay.py`.
+- This file alone also covers `evals/compare.py` and `evals/compare_render.py` 100%, measured before the amendments.
+- Not tested: the `python -m` entry (`evals/__main__.py`, 0%), as in P3-S5.
