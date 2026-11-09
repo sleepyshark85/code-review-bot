@@ -75,12 +75,12 @@ SHADOW_KEYS = (
     # P3-S11.
     "codeowners",
 )
-# `applied` joined in P2-S5 and `owners` in P3-S11 (design.md, `shadow/v1`: later slices add keys,
-# never remove them).
+# `applied` joined in P2-S5, `owners` in P3-S11, and `evidence` and `evidence_dropped` in P3-S4
+# (design.md, `shadow/v1`: later slices add keys, never remove them).
 COMMENT_KEYS = frozenset(
     {
         "action", "fingerprint", "rule_part", "anchor", "source", "severity", "file", "line",
-        "body", "applied", "owners",
+        "body", "applied", "owners", "evidence", "evidence_dropped",
     }
 )  # fmt: skip
 WITHHELD_KEYS = frozenset({"fingerprint", "file", "line", "reason", "owners"})

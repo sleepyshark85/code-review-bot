@@ -231,3 +231,89 @@ None. The AC15 failure seen during the developer's work, a `path_glob` naming a 
 ### Coverage
 
 Not measured by the tester, who ran only this file. For coverage of `context.paths`, `context.tools` and `git`, see the main session's `pytest --cov`.
+
+## P3-S4: See the context behind every finding
+
+Spec: [p3-s4-finding-evidence.md](slices/p3-s4-finding-evidence.md). Tests: [`tests/integration/test_p3_s4_finding_evidence.py`](../../../tests/integration/test_p3_s4_finding_evidence.py), 104 cases. They were written from the spec's criteria, Limits and Interfaces, and design.md ("Interfaces", "Prompt versions", "Report keys, appended only"), while the developer built the slice and before any of its code was read.
+
+**Status: every criterion passes. All 104 cases pass, from this file alone, on the developer's uncommitted working tree** (base `6380d95`).
+
+**Before the code:** with only `src/review_bot/findings.py` changed (the schema accepts `evidence`), 27 passed and 77 failed, each on a missing feature: no `evidence` in the report or the shadow entries, no `evidence_kept` in the `verify` record, no `is_diff_head` on `ReviewContext`, no `Context:` line, `prompt_version` still `p3-v1`. The 27 were AC5's schema checks and controls, and checks that hold while nothing renders evidence. **On the developer's later tree:** 102 passed. The 2 failures were a test bug: `assert_context_after_rationale` looked for the raw rationale `The total is computed twice.`, but the body escapes Markdown punctuation (`twice\.`), as P2-S1 requires. The helper now matches the line's visible text, as parsed by P1-S11's parser. No assertion changed. Then all 104 passed.
+
+### Gate
+
+Only this file and the earlier suites it changes were run, as the coordinator asked. `ruff format --check` and `ruff check` are clean on all four changed test files. This file gives 104 passed. The changed earlier suites, `test_p1_s10_json_output.py`, `test_p2_s1_shadow_report_local.py` and `test_p3_s1_local_review_with_repo_tools.py`, give 295 passed and 2 skipped (no `/dev/full` on Windows). Before the developer's code, those three gave 30 failures, all on the keys and prompt version S4 adds. For the full gate, see the main session's run.
+
+### Seam and set-up (assumed)
+
+- **The CLI**, as P3-S1's suite drives it, reusing its `make_repo`, `unwrap`, `numbered` and `grep_lines`: `review_bot.cli.main([SAMPLE, "--provider", "mock", "--audit-log", LOG, "--format", "json", ("--context-repo", DIR,) *FLAGS], provider=MockProvider(tool_calls=[...], raw_output=JSON))`. The model's answer is raw JSON, so it goes through `parse_findings`. A real model's answer goes through the same strict parse, which is where AC5's schema lives. The finding anchors on the sample's added line `billing/invoice.py:14`.
+- **The model's span** is `{"file", "start_line", "end_line"}`, in each finding's optional `evidence` list (spec Interfaces). The report's finding entries and `shadow/v1`'s comment entries carry two keys. `evidence` is a list of those objects, with exactly those keys. `evidence_dropped` is an int.
+- **The sample diff's lines**, read with `parse_diff`: the diff changes only `billing/invoice.py`. Its new-side lines are 12 to 14 (context, context, added), then 30 to 41 (context at 30, 31 and 37, added otherwise). Lines 15 to 29, and 42 onwards, are outside the diff.
+- **P3-S1's repository** holds `billing/invoice.py` (50 lines) and `billing/checkout.py` (30 lines). Checkout's line 12, the spec's line, is `charged = invoice.total() * (1 + invoice.tax_rate)`, and grep finds it only there.
+- **PR mode** (AC4) runs through `review_diff` directly, as the spec's Interfaces say: `ReviewContext(repo=RepoRef(git=GitRepo(DIR, timeout_s=30), commit=C), is_diff_head=True)`, imported from `review_bot.review`, `review_bot.context.tools` and `review_bot.git`. Kept spans come from each reported model finding's `Finding.evidence` (`file`, `start_line`, `end_line`). The drop count comes from the run's `verify` `checked` record (AC8). "Otherwise" is checked three ways: with `is_diff_head=False`, with the field left out, and through the CLI.
+- **Comment bodies** (AC7) come from `review-bot-pr run` in shadow and comment mode, through P3-S11's `make_pr` and `run_pr` and P2-S5's fake GitHub.
+  - Until S8 puts PR runs in context mode, a PR run is a diff-mode run. So a span is kept if its lines are in the PR's diff (AC6).
+  - The head adds `billing/invoice.py` as a new 20-line file, so lines 1 to 20 are added lines.
+  - Findings with spans are built with `Finding.model_validate({..., "evidence": [...]})`.
+  - Shadow bodies are read from `shadow.json`'s `comments[].body`, and comment-mode bodies from the `post_review` call.
+- **The `Context:` line** is the one body line that starts `Context: `.
+  - It is parsed alone as CommonMark, with P1-S11's parser. Its `code_inline` contents, in order, must each be `path:N` or `path:A-B`.
+  - Only spaces, commas and semicolons may sit between the spans.
+  - It must come after the line holding the rationale and before the last line, which must be the marker.
+- **The `verify` record** is the audit log's record with `stage` `verify` and `event` `checked`. The model finding's record is the one with `file` `billing/invoice.py` and `line` 14.
+- **The prompt version** is pinned at `p3-v2`. Main holds `p3-v1` (P3-S1), and no merged slice has bumped it since. If another slice that bumps the context prompt merges first, the pin moves on by one (design.md, Prompt versions).
+
+### Criteria
+
+Test names drop the `test_p3_s4_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_span_inside_a_read_of_lines_1_to_30_is_kept`. `ac1_span_of_the_whole_read_is_kept`. `ac1_span_shown_by_two_adjoining_reads_is_kept` (lines 5 to 20, shown by reads of 1 to 10 and 11 to 30) | pass (3) |
+| AC2 | `ac2_grep_match_precondition_is_line_12_only`. `ac2_span_of_the_grep_matched_line_is_kept`. `ac2_span_beyond_the_grep_matched_line_is_dropped` ×5 (11 to 13, 11 to 12, 12 to 13, 11, 13). `ac2_kept_and_dropped_spans_in_one_finding` | pass (8) |
+| AC3 | `ac3_span_of_a_file_no_tool_returned_is_dropped`. `ac3_span_of_a_file_only_listed_by_glob_is_dropped`. `ac3_span_past_the_lines_returned_is_dropped` ×4 (around a read of 10 to 14). `ac3_span_past_the_end_of_the_file_is_dropped`. `ac3_span_of_a_refused_not_found_read_is_dropped`. `ac3_span_of_a_read_refused_over_the_call_limit_is_dropped` (a file that exists). `ac3_truncated_read_keeps_its_last_returned_line`. `ac3_truncated_read_counts_only_the_lines_it_returned` ×4: 400 lines of about 78 bytes, against the 16,000-byte default, with the last returned line read from the result. Each checks that the finding is kept and its `evidence_dropped` is 1 | pass (14) |
+| AC4 | Through the CLI, whose `--context-repo` isn't known to be the diff's head: `ac4_cli_context_repo_ignores_ledger_lines_of_a_changed_file`. `ac4_cli_context_repo_keeps_added_and_context_lines` ×4. `ac4_cli_context_repo_drops_a_span_leaving_the_diff_even_if_read` ×4. `ac4_cli_context_repo_ignores_ledger_lines_even_at_head` (`--context-rev HEAD`). Through `review_diff`: `ac4_pr_mode_counts_diff_lines_and_lines_a_tool_returned` ×5 (a span partly in the diff and partly read, the union 12 to 20, read lines only, a context line, diff lines only). `ac4_pr_mode_drops_lines_neither_in_the_diff_nor_returned` ×4. `ac4_otherwise_ledger_lines_of_a_changed_file_dont_count` ×2 (`is_diff_head` false, and left out). `ac4_pr_mode_leaves_ac1_to_ac3_unchanged_for_other_files` | pass (22) |
+| AC5 | `ac5_malformed_evidence_in_diff_mode_exits_13` ×11 (6 spans, start after end, start 0, end 0, a negative line, 4 good spans and 1 bad, an empty `file`, a missing `end_line`, an extra key, a line given as a string, `evidence` that isn't a list). `ac5_malformed_evidence_in_context_mode_exits_13` ×4. `ac5_one_bad_finding_rejects_the_good_ones_too`. `ac5_valid_evidence_is_accepted` ×4 (left out, `[]`, exactly 5 spans, line 1). Each rejection checks exit 13 and an empty stdout | pass (20) |
+| AC6 | `ac6_report_keeps_spans_in_the_models_order` (5 spans, unsorted, one dropped in the middle). `ac6_each_span_has_exactly_file_start_line_and_end_line`. `ac6_every_finding_has_evidence_and_evidence_dropped` (rule findings too: `[]` and 0). `ac6_diff_mode_checks_spans_against_the_diff_alone`. `ac6_diff_mode_evidence_is_empty_when_the_model_gives_none` ×2. `ac6_context_mode_evidence_is_empty_when_the_model_gives_none`. `ac6_text_output_is_unchanged_by_evidence` | pass (8) |
+| AC7 | `ac7_body_has_a_context_line_of_code_spans_after_the_rationale` ×2 (shadow and comment mode: `path:10-14`, then `path:12`). `ac7_body_without_kept_spans_has_no_context_line` ×2. `ac7_body_whose_spans_were_all_dropped_has_no_context_line`. `ac7_dropped_spans_are_left_out_of_the_context_line`. `ac7_path_with_a_backtick_stays_one_code_span` (a diff path holding a backtick) | pass (7) |
+| AC8 | `ac8_checked_record_counts_kept_and_dropped_spans` (2 kept, 2 dropped). `ac8_every_checked_record_has_both_counts` (rule findings' records too). `ac8_finding_citing_nothing_counts_zero`. `ac8_diff_mode_records_have_the_counts`. `ac8_no_span_text_or_unseen_path_reaches_the_log`: neither the cited lines' text nor the model's unseen path appears in the log, and the record holds no `evidence` list | pass (5) |
+| AC9 | `ac9_context_prompt_asks_for_evidence` (it names `evidence`, `start_line` and `end_line`). `ac9_context_prompt_version_is_the_next_free_number` (in the report and in the `run` `start` record). `ac9_diff_mode_prompt_is_byte_for_byte_phase_1s` (P3-S1's goldens) | pass (3) |
+| Interfaces | `interfaces_shadow_comment_entries_have_evidence` | pass (1) |
+| Limits | `limits_path_kept_only_if_it_equals_a_returned_path` ×9 (`./`, `//`, a case change, a backslash, a leading `/`, a leading space, a trailing space, `/./`, `lib/../`): each is dropped and not echoed. `limits_unseen_path_appears_in_no_output` (stdout, stderr and the log). `limits_huge_span_is_dropped_quickly_in_context_mode`, `..._in_diff_mode` and `..._in_pr_mode`: spans that end at line 10^12 must be dropped within 60 s, so a check that walks a span line by line fails. The context-mode case adds a ledger of 11 calls, 10 of them greps of 50 matches each | pass (13) |
+
+### Failures
+
+None. The two failures seen on the way were a test bug, described in Status.
+
+### Earlier suites changed
+
+S4 appends `evidence` and `evidence_dropped` to every `report/v1` finding and every `shadow/v1` comment entry, and bumps the context prompt's version. So these pins were updated. No assertion was weakened.
+
+- **`tests/integration/test_p1_s10_json_output.py`:** `FINDING_KEYS` adds `evidence` and `evidence_dropped`. Two expected entries add `"evidence": []` and `"evidence_dropped": 0`, since neither cites anything: `rule_entry`'s, and the untagged model finding's in `ac2_untagged_ai_finding_follows_the_rules_with_rule_null`.
+- **`tests/fixtures/p1_s10/sample_report.golden.json`:** both rule findings add `"evidence": []` and `"evidence_dropped": 0`.
+- **`tests/integration/test_p2_s1_shadow_report_local.py`:** `COMMENT_KEYS` adds `evidence` and `evidence_dropped`. `WITHHELD_KEYS` is unchanged, as the spec names comment entries only.
+- **`tests/integration/test_p3_s1_local_review_with_repo_tools.py`:** `CONTEXT_PROMPT_VERSION` moves from `p3-v1` to `p3-v2` (S4 AC9). That suite's AC10 test checks the report's `prompt_version` against it.
+- **No other pin was found:**
+  - P1-S11, P1-S12 and P1-S13 use P1-S10's `report()`, whose `REPORT_KEYS` don't change.
+  - P3-S11 reads `owners` by key.
+  - No other suite pins the keys of `verify` `checked` records exactly.
+
+### Readings for the designer
+
+1. **"Each finding" (AC6) is read as every finding, rule findings included,** with `evidence` `[]` and `evidence_dropped` 0. The Interfaces sentence ("`report/v1` and `shadow/v1` comment entries add …") could also be read as model findings only. If that is meant, rule findings must lose the keys in four places: `ac6_every_finding_has_evidence_and_evidence_dropped`, P1-S10's `FINDING_KEYS`, `rule_entry` and the golden file.
+2. **Lines count, not paths (AC3).** A span of a file that `glob` only listed is expected to be dropped. The model saw the path but not its lines (the spec's Value: "only lines the model was actually shown").
+3. **Lines shown by more than one call (AC1).** A span is expected to be kept when two different calls together showed all its lines. "Shown every line of it" doesn't say "by one call".
+4. **A refused call on a file that another call showed** isn't tested. AC3 says a span of a refused call's file is dropped. But a span that an `ok` read already showed should presumably still count, and the designer may want to say so.
+5. **AC5 beyond its examples.** These also exit 13, read from "as any schema violation is" and the `Finding` model's strictness: an empty `file`, a missing key, an extra key, a line given as a string, and `evidence` that isn't a list.
+6. **AC7's separator and position.** The spec gives no separator between spans, so spaces, commas and semicolons are all accepted. "After the rationale" is checked as after the rationale's line and before the marker. The tests don't pin where the line sits relative to the "React with a thumbs-up …" request.
+7. **AC8 pins counts only for kept model findings.** A finding dropped by its anchor, and a rule finding, must have both counts as ints, but their values aren't pinned. "No span text" is read as covering two things: the cited lines' text, and any model-written path that matched nothing. Neither may reach the log (the Limits: "no model-written path is shown").
+8. **AC9's "asks for `evidence`"** is read as the prompt naming `evidence`, `start_line` and `end_line`. A prompt that didn't name the fields would leave the model unable to comply.
+9. **Not tested:**
+   - That `pr.runner` sets `is_diff_head`: this lands in S8 (spec Interfaces), so PR mode is tested through `review_diff` only.
+   - The Limits' "linear in the ledger's spans": no public interface can measure it. It is checked as a bound instead: only a check that doesn't walk a span line by line can drop spans ending at line 10^12 in time.
+   - The `--format markdown` output: no criterion names it.
+   - Shadow's `shadow.md`: P2-S1 already checks that it holds the same bodies as `shadow.json`.
+
+### Coverage
+
+Not measured by the tester, who ran only this file and the changed suites. For coverage of `findings`, `context.evidence`, `prompt`, `review`, `report`, `render`, `pr.comments` and `pr.shadow`, see the main session's `pytest --cov`.

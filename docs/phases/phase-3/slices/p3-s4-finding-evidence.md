@@ -1,6 +1,6 @@
 # P3-S4: See the context behind every finding
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S1
 - **Touches:** `findings`, `context.evidence`, `prompt` (next context version), `review`, `report`, `render`, `pr.comments`, `pr.shadow`
 
@@ -33,3 +33,8 @@ Spans come from the model: at most 5 per finding, each checked against the ledge
 - Replaying evidence from recordings (S5); any change to anchoring, which stays on diff lines ([ADR 0006](../../../adr/0006-line-anchors-drop-never-snap.md)).
 
 ## Notes
+Changed in build:
+- `context.evidence` holds `ShownLines` (the diff's lines plus the ledger's, merged per path, built once per review) and `verify_evidence`. `verify_findings` takes keyword-only `ledger` and `is_diff_head`, checks every proposal's evidence whatever its anchor outcome, and stores the result on `ProposalCheck.evidence`. A kept finding carries its kept spans in `Finding.evidence` and the count in `ReviewedFinding.evidence_dropped`.
+- "A file the diff changes" is any new path in the diff, skipped files included: their diff lines never count (the model wasn't shown them), and their ledger lines count only when `is_diff_head`.
+- `shadow/v1` resolve entries carry `evidence: null` and `evidence_dropped: null`, as they do `source` and `body`: a comment read back from the PR holds no evidence.
+- The context prompt is `p3-v2`.

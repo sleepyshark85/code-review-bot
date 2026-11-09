@@ -45,7 +45,7 @@ from review_bot.pr.plan import (
     plan_comments,
 )
 from review_bot.providers.base import TokenUsage
-from review_bot.render import markdown_path, report_document
+from review_bot.render import evidence_json, markdown_path, report_document
 from review_bot.report import PipelineResult, path_fields
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings
@@ -467,11 +467,13 @@ def _comment_json(comment: ShadowComment, codeowners: CodeOwners) -> dict[str, o
         "body": comment.body,
         "applied": comment.applied,
         "owners": list(owners_for(codeowners, reviewed.finding.file)),
+        "evidence": evidence_json(reviewed.finding.evidence),
+        "evidence_dropped": reviewed.evidence_dropped,
     }
 
 
 def _resolve_json(resolve: ShadowResolve, codeowners: CodeOwners) -> dict[str, object]:
-    # The bot's comment, read back from the pull request, holds no source or body.
+    # The bot's comment, read back from the pull request, holds no source, body or evidence.
     comment = resolve.comment
     return {
         "action": Action.RESOLVE,
@@ -485,6 +487,8 @@ def _resolve_json(resolve: ShadowResolve, codeowners: CodeOwners) -> dict[str, o
         "body": None,
         "applied": resolve.applied,
         "owners": list(owners_for(codeowners, comment.path)),
+        "evidence": None,
+        "evidence_dropped": None,
     }
 
 
