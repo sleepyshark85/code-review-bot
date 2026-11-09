@@ -899,13 +899,14 @@ def test_p2_s4_ac13_limits_a_tampered_path_shows_no_raw_control_characters(repor
 
 
 def shortened(comment: dict[str, Any]) -> dict[str, Any]:
-    """`comment` with its body's middle paragraphs cut: heading, rationale and marker stay.
+    """`comment` with its body cut to its first and last paragraphs: heading and marker stay.
 
-    20,000 real entries are about 10.5 MB since P3-S4 added `evidence`; this keeps them under
-    the cap with headroom, so the limit tested stays the entry count, not the bytes.
+    20,000 real entries are over 10 MB since P3-S4 added `evidence` and P3-S12 `suggestion`;
+    this keeps them under the cap with headroom (about 8.6 MB), so the limit tested stays the
+    entry count, not the bytes.
     """
     paragraphs = comment["body"].split("\n\n")
-    return {**comment, "body": "\n\n".join([*paragraphs[:2], paragraphs[-1]])}
+    return {**comment, "body": "\n\n".join([paragraphs[0], paragraphs[-1]])}
 
 
 def test_p2_s4_limits_twenty_thousand_entries_for_one_key_are_read_within_the_bound(

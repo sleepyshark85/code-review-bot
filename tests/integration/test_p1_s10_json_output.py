@@ -95,6 +95,10 @@ FINDING_KEYS = frozenset(
         # finding, or a model finding citing none), and `evidence_dropped`.
         "evidence",
         "evidence_dropped",
+        # Appended by P3-S12 (AC6): the kept suggestion or null, and the reason it was dropped or
+        # null.
+        "suggestion",
+        "suggestion_dropped",
     }
 )
 ZERO_COUNTS = dict.fromkeys(COUNT_KEYS, 0)
@@ -209,6 +213,9 @@ def rule_entry(line: int) -> dict[str, Any]:
         # P3-S4 (AC6): a rule finding cites nothing.
         "evidence": [],
         "evidence_dropped": 0,
+        # P3-S12 (AC6): a rule finding suggests nothing.
+        "suggestion": None,
+        "suggestion_dropped": None,
     }
 
 
@@ -388,6 +395,9 @@ def test_p1_s10_ac2_untagged_ai_finding_follows_the_rules_with_rule_null(
             # P3-S4 (AC6): a model finding citing nothing.
             "evidence": [],
             "evidence_dropped": 0,
+            # P3-S12 (AC6): a model finding suggesting nothing.
+            "suggestion": None,
+            "suggestion_dropped": None,
         }
     ]
 

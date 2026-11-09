@@ -72,8 +72,9 @@ FINDINGS_EXIT = 1
 INVALID_OUTPUT_EXIT = 13
 MAX_SPANS = 5
 # AC9: main holds `p3-v1` (P3-S1); P3-S4 takes the next free number. If another slice that bumps
-# the context prompt merges first, this moves on by one (design.md, Prompt versions).
-CONTEXT_PROMPT_VERSION = "p3-v2"
+# the context prompt merges first, this moves on by one (design.md, Prompt versions). P3-S12
+# (AC9) took `p3-v3`.
+CONTEXT_PROMPT_VERSION = "p3-v3"
 # Generous: it catches a line-by-line walk of a hostile span, not a slow CI machine.
 BOUND_S = 60.0
 HUGE_LINE = 10**12

@@ -59,8 +59,9 @@ ERROR = "review-bot: error: "
 BOUND_S = 60.0
 
 TOOL_NAMES = ("glob", "grep", "read")
-# P3-S1 started at `p3-v1`; P3-S4 (AC9) changed the context prompt and took `p3-v2`.
-CONTEXT_PROMPT_VERSION = "p3-v2"
+# P3-S1 started at `p3-v1`; P3-S4 (AC9) changed the context prompt and took `p3-v2`, and P3-S12
+# (AC9) took `p3-v3`.
+CONTEXT_PROMPT_VERSION = "p3-v3"
 PHASE_1_PROMPT_VERSION = "p1-v1"
 CONTEXT_KEYS = frozenset({"commit", "tool_calls", "refused", "result_bytes", "files_read"})
 TOOL_CALL_KEYS = frozenset({"tool", "outcome", "reason", "spans", "result_bytes", "input_sha256"})

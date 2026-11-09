@@ -387,6 +387,93 @@ S4 appends `evidence` and `evidence_dropped` to every `report/v1` finding and ev
 
 Not measured by the tester, who ran only this file and the changed suites. For coverage of `findings`, `context.evidence`, `prompt`, `review`, `report`, `render`, `pr.comments` and `pr.shadow`, see the main session's `pytest --cov`.
 
+## P3-S12: Offer suggested fixes in comments
+
+Spec: [p3-s12-suggested-fixes.md](slices/p3-s12-suggested-fixes.md). Tests: [`tests/integration/test_p3_s12_suggested_fixes.py`](../../../tests/integration/test_p3_s12_suggested_fixes.py), 208 cases, and [`tests/evals/test_p3_s12_live_suggestion_scrub.py`](../../../tests/evals/test_p3_s12_live_suggestion_scrub.py), 3 cases (AC11). They were written from the spec's criteria, Limits and Interfaces, design.md (Q7, "Prompt versions", "Report keys, appended only"), P2-S1 AC11 and ADR 0005, while the developer built the slice and before any of its code was read.
+
+**Status: every criterion of the amended spec passes. All 211 cases pass, and the full gate is green, on the developer's uncommitted working tree** (base `7f3e9e0`).
+
+**Spec amended after the first round (2026-11-09):** the designer accepted the seven readings below, which are now in AC3, AC5, AC6 and AC8, and added AC10 and AC11. The tests added for them (84 cases) passed on the developer's tree when first run.
+
+**Review round 1:** the reviewer found that the anchored line plus `\r`, `\r\n` or U+2028 was classed `unchanged`. AC3 now says trailing whitespace is only spaces, tabs and line feeds. `ac3_only_spaces_tabs_and_line_feeds_are_trailing_whitespace` ×5 was added, and 4 of its cases failed on the tree before the fix: `cr`, `crlf`, `line_separator` and `paragraph_separator`. All 5 pass after the developer's fix. The designer then amended AC3 again: a suggestion holding a control character is never `unchanged`, even when the anchored line holds the same character. The developer moved the control-character check ahead of the `unchanged` check, and `ac3_suggestion_equal_to_a_line_ending_in_cr_is_control_characters` was added. It passed when first run, so the reorder had already landed.
+
+**Without the slice:** run against `main`'s `src/` (an exported copy, with the new file alone), 118 of the first round's 121 cases fail. Most fail on exit 13, `invalid_output`, because main's schema has no `suggestion`. The 3 that pass need no slice code: the check-of-the-check (`ac7_check_catches_a_mention_outside_the_fence`), a body with no suggestion has no block, and the diff-mode prompt doesn't mention `suggestion`.
+
+### Gate
+
+`uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest --cov`: 295 files formatted, ruff clean, mypy clean (71 source files), **6542 passed, 2 skipped** (both Windows-only), total coverage 99.39%, on the tree after review round 1.
+
+### Seam and set-up (assumed)
+
+- **The CLI**, through P3-S4's `Harness`: `review_bot.cli.main([SAMPLE, "--provider", "mock", "--audit-log", LOG, "--format", "json", ("--context-repo", DIR,) *FLAGS], provider=MockProvider(raw_output=JSON))`. The model's answer is raw JSON with a `suggestion` key, so it goes through the same strict parse a real model's answer does. Context mode is `--context-repo` over P3-S1's `make_repo`; without it the run is in diff mode. `--format markdown` and `--format text` are passed as flags after the harness's `json`.
+- **A context-mode comment body.** Until S8, `review-bot-pr` runs only in diff mode, where AC5 drops every suggestion. So the body is built the way S8's PR mode will build it:
+  1. `review_diff(..., context=ReviewContext(repo=RepoRef(...), is_diff_head=True))`.
+  2. `build_shadow_report` with the local `shadow` command's arguments (`Mode.SHADOW`, `Origin.LOCAL`, `DEFAULT_REPO_CONFIG`).
+  3. `render_shadow_json` and `render_shadow_markdown`.
+
+  A comment-mode run posts each `shadow/v1` comment entry's `body` (P2-S5), so that body is taken as the comment body.
+- **The diff-mode PR path** (AC5) is `python -m review_bot.pr shadow`, through P2-S1's `ShadowRunner`.
+- **The sample diff:** the finding anchors on `billing/invoice.py:14`, the added line `ANCHORS[14]`. Lines 13 and 31 are context lines.
+- **Finding a suggestion block:** the first body line matching `` `{3,}suggestion ``, up to the first later line that equals that fence. It is also parsed with P1-S11's `markdown-it-py` parser: there must be exactly one `fence` token, its info string must be `suggestion`, and its content must be the suggestion plus `\n` (`""` when the suggestion is empty).
+- **AC7's check** is P2-S1 AC11's, applied to all text outside fenced code:
+  - no `link_open` and no `html_inline` token;
+  - exactly one `html_block`, the real marker;
+  - no `@`, `://`, `www.`, `#digit`, `GH-digit`, `<!--` or 7-to-40-hex word in `outside_code`.
+- **AC11** uses P1-S16's seam: `python -m review_bot.evals live` in process, with a `ScriptedSdk` answering for a copy of the committed `sample` case.
+- **The `verify` record** (AC5, AC10) is the audit log's `verify` `checked` record whose `file` and `line` are the model finding's.
+- **The prompt version** is pinned at `p3-v3`. Main holds `p3-v2` (S4), and S3 didn't bump it.
+
+### Criteria
+
+Test names drop the `test_p3_s12_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_cli_context_mode_keeps_the_suggestion` (report: the text, `suggestion_dropped` null). `ac1_body_holds_a_suggestion_block_of_exactly_the_text` (a 3-backtick fence). `ac1_block_sits_after_the_rationale_and_before_the_reaction_request` (the last line is exactly the marker). `ac1_block_comes_after_the_context_line` (a kept evidence span). `ac1_marker_is_the_last_line_and_reads_back`. `ac1_body_without_a_suggestion_has_no_block`. `ac1_block_holds_each_kept_suggestion_exactly` ×4 (one line, three lines, a leading tab, non-ASCII) | pass (10) |
+| AC2 | `ac2_fence_is_longer_than_the_longest_backtick_run` ×8 (runs of 0, 1, 2, 3, 4 and 7; a suggestion that is only `` ``` ``; a middle line of `` ``` `` trying to close the fence). `ac2_three_backtick_run_gets_a_four_backtick_fence`. `ac2_tilde_fence_inside_cannot_close_the_block` | pass (10) |
+| AC3 | `ac3_dropped_suggestion_keeps_its_finding_with_the_reason` ×28 (CLI) and `ac3_dropped_suggestion_leaves_no_block_in_the_body` ×28 (the shadow body and `shadow.md`). The 28 cases: 11 lines, 10 lines and a trailing line feed, 1,001 characters, and 10 lines of 100 characters (`too_long`); the line itself, plus trailing spaces and plus a trailing tab (`unchanged`); NUL, ESC, CR, CRLF, BEL, DEL, C1 CSI, U+202A to U+202E, U+2066 to U+2069, U+200E, U+200F, U+2028 and U+2029 (`control_characters`); a GitHub token and an AWS key (`possible_secret`). `ac3_suggestion_on_a_context_line_is_dropped_not_added_line` ×2 (lines 13 and 31). `ac3_context_line_suggestion_leaves_no_block_in_the_body`. `ac3_suggestion_at_the_limits_or_differing_in_leading_space_is_kept` ×5 (exactly 10 lines, 9 lines and a trailing line feed, exactly 1,000 characters, and more or less leading space). `ac3_only_spaces_tabs_and_line_feeds_are_trailing_whitespace` ×5: the anchored line plus `\r`, `\r\n`, U+2028 or U+2029 gives `control_characters`, and plus ` \t` gives `unchanged`, in the report and in the `verify` record. `ac3_first_reason_in_order_wins` ×7 (`not_added_line` before `too_long`, control and secret; `too_long` before `unchanged`, control and secret; `control_characters` before secret: no secret reaches any output). `ac3_not_requested_comes_first_in_diff_mode` ×5 (a context line, too long, unchanged, a control character, a secret). `ac3_secret_in_a_suggestion_is_in_no_cli_output` ×6. `ac3_secret_in_a_suggestion_is_in_no_shadow_output` ×2 `ac3_suggestion_equal_to_a_line_ending_in_cr_is_control_characters`: a new file whose one added line ends `\r\r\n`. The parser strips the CRLF ending, so the line's text ends in `\r`, which the test checks first with `parse_diff`. A suggestion equal to that line exactly gives `control_characters` in the report and in the `verify` record | pass (92) |
+| AC4 | `ac4_empty_suggestion_is_kept` (`""`, not null). `ac4_empty_suggestion_renders_an_empty_block` (the closing fence is the line after the opener) | pass (2) |
+| AC5 | `ac5_diff_mode_suggestion_is_dropped_not_requested` ×2 (a fix, and an empty one). `ac5_diff_mode_secret_suggestion_is_in_no_output`. `ac5_pr_shadow_run_drops_the_suggestion_and_shows_no_block` (`python -m review_bot.pr shadow`: the entry's `suggestion` is null, there is no block in the body or `shadow.md`, and the embedded report says `not_requested`). `ac5_dropped_finding_has_null_suggestion_dropped` ×2 (a finding on line 20, outside the diff, in context and diff mode: not reported, and its `verify` record's `suggestion_dropped` is null) | pass (6) |
+| AC6 | `ac6_every_report_finding_has_both_keys`. `ac6_rule_findings_have_null_suggestion_and_reason`. `ac6_finding_without_a_suggestion_has_null_and_null` ×2 (context and diff mode). `ac6_shadow_comment_entry_has_the_kept_suggestion` (rule entries null). `ac6_shadow_report_findings_carry_both_keys` | pass (6) |
+| AC7 | Each of these runs over 7 hostile suggestions: `@user`, `#12`, a URL, `<!--`, a forged marker line, a closing-fence line followed by a forged marker, and all of them at once. `ac7_hostile_suggestion_appears_only_inside_the_fence` ×7 (body: one fence holding exactly the text, the check passes, and the one HTML block is the real last line). `ac7_read_marker_reads_the_real_marker` ×7 (the fingerprint and anchor equal the entry's, not the forged zeros; the rule part is `ai:logic`). `ac7_shadow_markdown_keeps_the_suggestion_fenced` ×7. `ac7_check_catches_a_mention_outside_the_fence` | pass (22) |
+| AC8 | `ac8_markdown_shows_the_suggestion_as_a_plain_fence` (the info string is empty, and the content is exact). `ac8_markdown_empty_suggestion_is_an_empty_plain_fence`. `ac8_markdown_hostile_suggestion_stays_in_its_fence` ×7 (AC7's values, with no HTML block). `ac8_markdown_fence_is_longer_than_the_backticks_inside` ×2. `ac8_markdown_has_no_fence_for_a_dropped_suggestion` | pass (12) |
+| AC9 | `ac9_context_prompt_labels_suggestion`. `ac9_context_prompt_says_optional_and_anchored_added_line_only` (the paragraph naming `suggestion` says it is optional (`optional`, `may`, `if any` or `only when/if`), names an `added` line, and says it replaces the line (`replac…` or `instead of`)). `ac9_context_prompt_version_is_the_next_free_number` (in the report and in the `run` `start` record). `ac9_diff_mode_prompt_does_not_mention_suggestion` | pass (4) |
+| AC10 | `ac10_checked_record_has_the_ac3_reason_and_no_text` ×28 (AC3's cases). `ac10_checked_record_has_not_added_line` ×2. `ac10_checked_record_has_not_requested_in_diff_mode`. `ac10_kept_suggestion_records_null_and_no_text` ×2 (a text and an empty suggestion). `ac10_no_suggestion_records_null` ×2 (context and diff mode). Each checks that no record holds a `suggestion` value and that no line of the suggestion (8 characters or more) appears in the log | pass (36) |
+| AC11 | `ac11_recording_is_written_not_refused`. `ac11_key_in_a_suggestion_is_written_redacted` (the recorded `suggestion` is exactly `        key = '[REDACTED]'`, and `scan_secrets` finds nothing in the file). `ac11_key_reaches_no_command_output` | pass (3) |
+| Limits | `limits_hostile_size_is_dropped_quickly` ×6, each within 60 s: 200,000 characters, 100,000 newlines, 200,000 backticks, 200,000 NULs, two lines of 100,000, and a token after 199,000 characters (which reaches neither stdout nor the log). `limits_longest_backtick_run_kept_is_fenced_quickly` (1,000 backticks, a 1,001-backtick fence). `limits_audit_log_holds_no_suggestion_text` (ADR 0005) | pass (8) |
+
+### Failures
+
+None in this slice's tests. On the full gate's first run, the developer's work was mid-flight. Apart from unit suites the developer was still updating, two earlier integration pins failed on the new keys, and both are fixed below.
+
+### Earlier suites changed
+
+S12 appends `suggestion` and `suggestion_dropped` to every `report/v1` finding and `suggestion` to every `shadow/v1` comment entry, and it bumps the context prompt's version. So these pins were updated. No assertion was weakened.
+
+- **`tests/integration/test_p1_s10_json_output.py`:** `FINDING_KEYS` adds both keys, and the two expected entries (`rule_entry` and the untagged model finding) add `"suggestion": None, "suggestion_dropped": None`.
+- **`tests/fixtures/p1_s10/sample_report.golden.json`:** both rule findings add the two keys as null.
+- **`tests/integration/test_p2_s1_shadow_report_local.py`:** `COMMENT_KEYS` adds `suggestion`.
+- **`tests/integration/test_p0_s1_prompt.py`:** `CONTEXT_ONLY_FIELDS` adds `suggestion`. The diff-mode prompt stays `p1-v1` byte for byte, so it labels no `suggestion`.
+- **`tests/integration/test_p3_s1_local_review_with_repo_tools.py`** and **`test_p3_s4_finding_evidence.py`:** `CONTEXT_PROMPT_VERSION` moves from `p3-v2` to `p3-v3`.
+- **`tests/integration/test_p2_s4_label_shadow_findings.py`:** `shortened` now keeps a body's first and last paragraphs (the heading and the marker), not also the rationale.
+  - **Why:** the extra `"suggestion": null` per entry pushed the 20,000-entry report to 9.02 MB, over the test's own precondition of 90% of the 10 MB cap. It is now about 8.6 MB.
+  - **What it doesn't change:** the limit under test, the entry count, and the time bound.
+
+### Readings for the designer
+
+The first round's seven readings (line feeds and `\r`, reason order, trailing line feeds, `unchanged` and indentation, rule findings in AC6, AC8's info string, and AC9's wording check) were all accepted into the amended spec, and are tested as above. What stays open:
+
+1. **No PR command produces a context-mode body until S8.** AC1, AC2, AC4 and AC7 are tested on the body that `build_shadow_report` renders from a context-mode `review_diff`. That is the body a comment-mode run posts. A comment-mode post of a suggestion over the fake GitHub belongs in S8's tests.
+2. **Resolved in review round 1:** `unchanged` against `control_characters`. Trailing whitespace is only spaces, tabs and line feeds, so the anchored line plus `\r`, `\r\n`, U+2028 or U+2029 is `control_characters`. The coordinator's list read "LINE_14 + \" \"" for the third case. A plain trailing space is `unchanged` by AC3, and round 1 already tests that, so the case was read as U+2028 (and U+2029 was added).
+3. **Not tested:**
+   - An empty suggestion on an empty added line (AC3 says it isn't `unchanged`): the sample diff has no empty added line, and the CLI harness reviews only the sample.
+   - Withheld and resolve entries in `shadow/v1`: the spec names comment entries only.
+   - `--format text`: no criterion names it. Only "no secret" is checked there.
+
+### Coverage
+
+From the full gate's `pytest --cov`: `suggestion` (new), `findings`, `prompt`, `verify`, `review`, `render`, `report` and `pr.comments` are at 100%. `evals.live` is at 98%; its missed lines 184 and 186 aren't S12's change, which is in `_scrubbed_finding`. `pr.shadow` is at 99%, and its missed lines 375 to 376 are the unreachable `assert_never` arm of `_not_reviewed`, which predates S12. Total: 99.39%.
+
 ## P3-S5: Score context-mode eval cases offline, including injection through a repository file
 
 Spec: [p3-s5-context-eval-cases.md](slices/p3-s5-context-eval-cases.md), as amended by the designer for AC3, AC5, AC8 and AC10. Tests: [`tests/evals/test_p3_s5_context_eval_cases.py`](../../../tests/evals/test_p3_s5_context_eval_cases.py), 226 cases. They were written from the spec's criteria, Limits and Interfaces, P1-S14's and P1-S15's formats, ADR 0007 and design.md's "Spend and caps", while the developer built the slice and before any of its code was read. The tester owns `tests/evals/cases/`, so the six new cases, their fixture repositories and their synthetic context controls are the tester's too.

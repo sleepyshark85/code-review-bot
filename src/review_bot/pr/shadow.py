@@ -45,7 +45,12 @@ from review_bot.pr.plan import (
     plan_comments,
 )
 from review_bot.providers.base import TokenUsage
-from review_bot.render import evidence_json, markdown_path, report_document
+from review_bot.render import (
+    evidence_json,
+    indented_in_list_item,
+    markdown_path,
+    report_document,
+)
 from review_bot.report import PipelineResult, path_fields
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings
@@ -469,11 +474,13 @@ def _comment_json(comment: ShadowComment, codeowners: CodeOwners) -> dict[str, o
         "owners": list(owners_for(codeowners, reviewed.finding.file)),
         "evidence": evidence_json(reviewed.finding.evidence),
         "evidence_dropped": reviewed.evidence_dropped,
+        "suggestion": reviewed.finding.suggestion,
     }
 
 
 def _resolve_json(resolve: ShadowResolve, codeowners: CodeOwners) -> dict[str, object]:
-    # The bot's comment, read back from the pull request, holds no source, body or evidence.
+    # The bot's comment, read back from the pull request, holds no source, body, evidence or
+    # suggestion.
     comment = resolve.comment
     return {
         "action": Action.RESOLVE,
@@ -489,6 +496,7 @@ def _resolve_json(resolve: ShadowResolve, codeowners: CodeOwners) -> dict[str, o
         "owners": list(owners_for(codeowners, comment.path)),
         "evidence": None,
         "evidence_dropped": None,
+        "suggestion": None,
     }
 
 
@@ -512,6 +520,5 @@ def render_shadow_markdown(shadow: ShadowReport) -> str:
 
 def _markdown_comment(comment: ShadowComment) -> str:
     finding = comment.planned.reviewed.finding
-    # Indented two spaces, so every paragraph of the body stays inside the list item.
-    body = "\n".join(f"  {line}" if line else "" for line in comment.body.split("\n"))
-    return f"- {markdown_path(finding.file, suffix=f':{finding.line}')}\n\n{body}"
+    location = markdown_path(finding.file, suffix=f":{finding.line}")
+    return f"- {location}\n\n{indented_in_list_item(comment.body)}"

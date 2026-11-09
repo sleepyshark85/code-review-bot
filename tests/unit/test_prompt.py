@@ -107,6 +107,14 @@ def test_context_prompt_asks_for_evidence_the_diff_prompt_does_not() -> None:
     assert "evidence" not in build_request("d", model="m").system_prompt
 
 
+def test_context_prompt_offers_a_suggestion_for_the_anchored_added_line_only() -> None:
+    context_prompt = build_context_request("d", model="m", tools=NoTools()).system_prompt
+
+    assert "- suggestion: optional, only for a finding anchored on an added line" in context_prompt
+    assert "the full replacement for that one line" in context_prompt
+    assert "suggestion" not in build_request("d", model="m").system_prompt
+
+
 def test_context_prompt_version_is_its_own() -> None:
-    assert CONTEXT_PROMPT_VERSION == "p3-v2"
+    assert CONTEXT_PROMPT_VERSION == "p3-v3"
     assert PROMPT_VERSION == "p1-v1"
