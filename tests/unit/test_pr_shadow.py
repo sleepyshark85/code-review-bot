@@ -23,7 +23,7 @@ from review_bot.errors import (
     RepoConfigError,
     SecretDetectedError,
 )
-from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
+from review_bot.findings import Category, EvidenceSpan, Finding, ReviewedFinding, Severity, Source
 from review_bot.fingerprint import anchor_for
 from review_bot.policy import Decision
 from review_bot.pr.config import DEFAULT_REPO_CONFIG, RepoConfig
@@ -232,6 +232,8 @@ def test_render_shadow_json_writes_each_comment_and_withheld_finding() -> None:
         "line": 1,
         "applied": "not_attempted",
         "owners": [],
+        "evidence": [],
+        "evidence_dropped": 0,
     }
     assert comment["body"].endswith(f"anchor={comment['anchor']} -->")
     assert document["withheld"] == [
@@ -244,6 +246,20 @@ def test_render_shadow_json_writes_each_comment_and_withheld_finding() -> None:
         }
     ]
     assert document["codeowners"] is None
+
+
+def test_render_shadow_json_writes_each_comments_kept_evidence_and_dropped_count() -> None:
+    plain = reviewed(1)
+    evidence = (EvidenceSpan(file="a.py", start_line=1, end_line=2),)
+    finding = dataclasses.replace(
+        plain, finding=plain.finding.model_copy(update={"evidence": evidence}), evidence_dropped=1
+    )
+
+    (comment,) = build(result(finding))["comments"]
+
+    assert comment["evidence"] == [{"file": "a.py", "start_line": 1, "end_line": 2}]
+    assert comment["evidence_dropped"] == 1
+    assert "Context: `a.py:1-2`" in comment["body"]
 
 
 def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
@@ -512,6 +528,8 @@ def test_render_shadow_json_in_comment_mode_writes_paired_comments_then_resolves
         "body": None,
         "applied": "not_attempted",
         "owners": [],
+        "evidence": None,
+        "evidence_dropped": None,
     }
 
 

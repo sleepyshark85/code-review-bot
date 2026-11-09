@@ -69,9 +69,14 @@ class _PolicyOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ReviewContext:
-    """What a context review may look up: the commit its tools read."""
+    """What a context review may look up: the commit its tools read.
+
+    ``is_diff_head`` says that commit is the one the diff ends at, as in PR mode, so the lines
+    the tools return count as evidence in the files the diff changes too.
+    """
 
     repo: RepoRef
+    is_diff_head: bool = False
 
 
 async def run_pipeline(
@@ -108,8 +113,9 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
 
     The rules' findings come first. A model finding is reported only if its file and line are in
     the diff and it repeats no earlier one, and any finding only if its severity meets the
-    threshold. Each stage's decision goes to ``audit``; the run's end is the caller's to record.
-    The provider's warnings go to stderr too, before the caller writes the review.
+    threshold. A kept model finding keeps only the evidence spans the model was shown. Each
+    stage's decision goes to ``audit``; the run's end is the caller's to record. The provider's
+    warnings go to stderr too, before the caller writes the review.
 
     Args:
         diff: The diff's text.
@@ -172,7 +178,13 @@ async def review_diff(  # noqa: PLR0913 - name, exclude and context are keyword-
         ledger = () if tools is None else tools.ledger
         _record_tool_calls(ledger, audit)
     # The model proposes, code disposes: nothing it returns is reported before both checks.
-    verification = verify_findings(response.findings, rule_result.findings, parsed)
+    verification = verify_findings(
+        response.findings,
+        rule_result.findings,
+        parsed,
+        ledger=ledger,
+        is_diff_head=context is not None and context.is_diff_head,
+    )
     _record_verification(verification, audit)
     decision = decide(verification.kept, settings.threshold)
     _record_decision(decision, audit)
@@ -377,7 +389,8 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
     """A proposal's anchor and outcome, with hashes in place of the model's text.
 
     A ``file`` that names no diff path is the model's own text, so only its hash and length are
-    kept. ``fingerprint`` is set for a kept finding, and ``duplicate_of`` for a duplicate.
+    kept. ``fingerprint`` is set for a kept finding, and ``duplicate_of`` for a duplicate. Its
+    evidence is only counted, so no span the model wrote is recorded.
     """
     finding = check.proposed
     if check.diff_path is None:
@@ -396,6 +409,8 @@ def _verify_data(check: ProposalCheck) -> dict[str, JsonValue]:
         "reason": check.drop_reason,
         "duplicate_of": check.duplicate_of,
         "rationale_sha256": _sha256(finding.rationale),
+        "evidence_kept": len(check.evidence.kept),
+        "evidence_dropped": check.evidence.dropped,
     }
 
 

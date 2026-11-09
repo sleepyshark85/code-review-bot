@@ -4,8 +4,17 @@ from dataclasses import replace
 import pytest
 from diff_samples import section
 
+from review_bot.context.ledger import LineSpan, ToolCall, ToolName, ToolOutcome
 from review_bot.diff_parser import parse_diff
-from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
+from review_bot.findings import (
+    Category,
+    EvidenceSpan,
+    Finding,
+    ReviewedFinding,
+    RuleId,
+    Severity,
+    Source,
+)
 from review_bot.fingerprint import Fingerprinter, fingerprint_for
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult, verify_findings
 
@@ -419,3 +428,85 @@ def test_ai_anchor_valid_keeps_duplicates_and_leaves_out_dropped_findings() -> N
 
     assert [check.proposed for check in result.ai_anchor_valid] == [first, repeat]
     assert len(result.deduped) == 1
+
+
+def cited(file: str, start: int, end: int) -> EvidenceSpan:
+    return EvidenceSpan(file=file, start_line=start, end_line=end)
+
+
+def read_call(path: str, first: int, last: int) -> ToolCall:
+    return ToolCall(
+        ToolName.READ, ToolOutcome.OK, None, (LineSpan(path, first, last),), (), 10, "0" * 64
+    )
+
+
+def with_evidence(*spans: EvidenceSpan, line: int = 10) -> Finding:
+    return make_finding(line=line).model_copy(update={"evidence": spans})
+
+
+def test_verify_findings_keeps_only_the_shown_evidence_of_a_kept_finding() -> None:
+    finding = with_evidence(cited("lib.py", 2, 3), cited("lib.py", 4, 9), cited("app.py", 11, 12))
+
+    result = verify_findings([finding], (), parse_diff(DIFF), ledger=[read_call("lib.py", 1, 5)])
+
+    [kept] = result.kept
+    assert kept.finding.evidence == (cited("lib.py", 2, 3), cited("app.py", 11, 12))
+    assert kept.evidence_dropped == 1
+    assert result.checks[0].evidence.dropped == 1
+
+
+def test_verify_findings_checks_evidence_against_the_diff_alone_without_a_ledger() -> None:
+    finding = with_evidence(cited("app.py", 10, 12), cited("app.py", 9, 10), cited("lib.py", 1, 1))
+
+    [kept] = verify_findings([finding], (), parse_diff(DIFF)).kept
+
+    assert kept.finding.evidence == (cited("app.py", 10, 12),)
+    assert kept.evidence_dropped == 2
+
+
+@pytest.mark.parametrize(("is_diff_head", "dropped"), [(True, 0), (False, 1)])
+def test_verify_findings_counts_tool_lines_of_a_skipped_file_only_at_the_diffs_head(
+    is_diff_head: bool, dropped: int
+) -> None:
+    finding = with_evidence(cited("README.md", 1, 1))
+    ledger = [read_call("README.md", 1, 5)]
+
+    result = verify_findings(
+        [finding], (), parse_diff(DIFF), ledger=ledger, is_diff_head=is_diff_head
+    )
+
+    assert result.kept[0].evidence_dropped == dropped
+
+
+def test_verify_findings_never_counts_a_skipped_files_diff_lines_as_evidence() -> None:
+    finding = with_evidence(cited("README.md", 1, 1))
+
+    assert verify_findings([finding], (), parse_diff(DIFF)).kept[0].evidence_dropped == 1
+
+
+@pytest.mark.parametrize(("is_diff_head", "kept_count"), [(True, 1), (False, 0)])
+def test_verify_findings_counts_tool_lines_of_a_changed_file_only_at_the_diffs_head(
+    is_diff_head: bool, kept_count: int
+) -> None:
+    finding = with_evidence(cited("app.py", 1, 5))
+    ledger = [read_call("app.py", 1, 20)]
+
+    result = verify_findings(
+        [finding], (), parse_diff(DIFF), ledger=ledger, is_diff_head=is_diff_head
+    )
+
+    assert len(result.kept[0].finding.evidence) == kept_count
+
+
+def test_verify_findings_checks_the_evidence_of_dropped_and_duplicate_findings() -> None:
+    first = with_evidence(cited("app.py", 11, 11))
+    duplicate = with_evidence(cited("app.py", 11, 11), cited("app.py", 1, 1))
+    missed = with_evidence(cited("app.py", 1, 1), line=99)
+
+    result = verify_findings([first, duplicate, missed], (), parse_diff(DIFF))
+
+    assert [(len(c.evidence.kept), c.evidence.dropped) for c in result.checks] == [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+    ]

@@ -1,3 +1,4 @@
+import dataclasses
 from collections.abc import Callable
 
 import pytest
@@ -5,7 +6,15 @@ from markdown_it import MarkdownIt
 
 from review_bot.context.codeowners import CodeOwners, parse_codeowners
 from review_bot.errors import ErrorCategory
-from review_bot.findings import Category, Finding, ReviewedFinding, RuleId, Severity, Source
+from review_bot.findings import (
+    Category,
+    EvidenceSpan,
+    Finding,
+    ReviewedFinding,
+    RuleId,
+    Severity,
+    Source,
+)
 from review_bot.pr.comments import (
     Marker,
     blocked_summary,
@@ -84,6 +93,33 @@ def test_comment_body_shows_the_finding_asks_for_a_reaction_and_ends_with_its_ma
         "<!-- review-bot:v1 fingerprint=0123456789abcdef rule=swallowed-exception "
         f"anchor={ANCHOR} -->",
     ]
+
+
+def with_evidence(*spans: tuple[str, int, int]) -> ReviewedFinding:
+    finding = reviewed()
+    evidence = tuple(EvidenceSpan(file=file, start_line=a, end_line=b) for file, a, b in spans)
+    return dataclasses.replace(
+        finding, finding=finding.finding.model_copy(update={"evidence": evidence})
+    )
+
+
+def test_comment_body_lists_the_evidence_after_the_rationale_and_keeps_the_marker_last() -> None:
+    finding = with_evidence(("billing/tax.py", 12, 12), ("a.py", 10, 14))
+
+    body = body_of(finding)
+
+    assert body.split("\n\n")[1:3] == [r"Why\.", "Context: `billing/tax.py:12`, `a.py:10-14`"]
+    assert read_marker(body) == read_marker(body_of(reviewed()))
+
+
+def test_comment_body_without_evidence_has_no_context_line() -> None:
+    assert "Context:" not in body_of(reviewed())
+
+
+def test_comment_body_shows_a_hostile_evidence_path_inert_in_a_code_span() -> None:
+    body = body_of(with_evidence(("@team/x`y.py", 1, 2)))
+
+    assert "Context: ``@team/x`y.py:1-2``" in body.split("\n")
 
 
 def test_comment_body_of_an_untagged_ai_finding_names_no_rule_and_marks_its_category() -> None:

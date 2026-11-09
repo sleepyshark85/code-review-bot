@@ -16,7 +16,9 @@
       "rationale": "Exception swallowed: the handler discards it, so failures pass silently. Handle it, log it or re-raise it.",
       "confidence": 1.0,
       "triage": null,
-      "original_rationale": null
+      "original_rationale": null,
+      "evidence": [],
+      "evidence_dropped": 0
     },
     {
       "fingerprint": "c9af0c94fdf8af0d",
@@ -29,7 +31,9 @@
       "rationale": "open() without encoding uses the platform default. Pass encoding=\"utf-8\", or open in binary mode.",
       "confidence": 1.0,
       "triage": null,
-      "original_rationale": null
+      "original_rationale": null,
+      "evidence": [],
+      "evidence_dropped": 0
     }
   ],
   "counts": {

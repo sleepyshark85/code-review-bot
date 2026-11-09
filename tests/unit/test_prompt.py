@@ -99,6 +99,14 @@ def test_frame_tool_result_wraps_text_in_lines_carrying_its_hash() -> None:
     assert closing == f"<<<END-UNTRUSTED-TOOL-RESULT-{digest}>>>"
 
 
+def test_context_prompt_asks_for_evidence_the_diff_prompt_does_not() -> None:
+    context_prompt = build_context_request("d", model="m", tools=NoTools()).system_prompt
+
+    assert "- evidence: optional, at most 5 spans" in context_prompt
+    assert '{"file": path, "start_line": n, "end_line": n}' in context_prompt
+    assert "evidence" not in build_request("d", model="m").system_prompt
+
+
 def test_context_prompt_version_is_its_own() -> None:
-    assert CONTEXT_PROMPT_VERSION == "p3-v1"
+    assert CONTEXT_PROMPT_VERSION == "p3-v2"
     assert PROMPT_VERSION == "p1-v1"

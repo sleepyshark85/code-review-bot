@@ -19,7 +19,7 @@ from review_bot.cli import build_provider, main, parse_args
 from review_bot.errors import ConfigError, ErrorCategory, GitError, InputError, ProviderError
 from review_bot.findings import Finding, Severity
 from review_bot.git import GitRepo
-from review_bot.prompt import PROMPT_VERSION
+from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
 from review_bot.settings import Settings
@@ -927,7 +927,7 @@ def test_main_in_context_mode_appends_tool_calls_and_names_the_context_prompt(
     )
 
     summary = capsys.readouterr().err.splitlines()[-1]
-    assert " prompt=p3-v1 " in summary
+    assert f" prompt={CONTEXT_PROMPT_VERSION} " in summary
     assert summary.endswith(" tool_calls=2")
 
 
