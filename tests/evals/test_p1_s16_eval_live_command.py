@@ -453,7 +453,8 @@ def test_p1_s16_ac6_ci_set_exits_2_before_any_call_even_with_every_flag(
 
     assert live.exit_code == 2, live.output
     assert sdk.calls == []
-    assert "live never runs in CI, and CI is set in the environment." in live.output
+    # The wording is free (P3-S16 changed it); the refusal must name CI.
+    assert re.search(r"\bCI\b", live.output), live.output
     assert not live_path(root, SAMPLE).exists()
 
 

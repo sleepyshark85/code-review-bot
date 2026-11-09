@@ -1,11 +1,12 @@
 from decimal import Decimal
 from pathlib import Path
+from typing import Final
 
 import pytest
 
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
-from review_bot.settings import Settings, in_ci, load_settings
+from review_bot.settings import Settings, in_ci, live_run_refused, load_settings
 
 
 def test_load_settings_with_nothing_set_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,3 +254,36 @@ def test_in_ci_is_true_when_ci_is_set_whatever_its_value(
     environ: dict[str, str], expected: bool
 ) -> None:
     assert in_ci(environ) is expected
+
+
+DISPATCH: Final = {"CI": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"}
+
+
+def test_live_run_refused_lets_a_ci_workflow_dispatch_run_given_allow_dispatch_through() -> None:
+    assert live_run_refused(DISPATCH, allow_dispatch=True) is False
+
+
+@pytest.mark.parametrize(
+    ("environ", "allow_dispatch"),
+    [
+        ({"CI": "true", "GITHUB_EVENT_NAME": "pull_request"}, True),
+        ({"CI": "true", "GITHUB_EVENT_NAME": "push"}, True),
+        ({"CI": "true", "GITHUB_EVENT_NAME": "schedule"}, True),
+        ({"CI": "true", "GITHUB_EVENT_NAME": "WORKFLOW_DISPATCH"}, True),
+        ({"CI": "true"}, True),
+        (DISPATCH, False),
+        ({"CI": "true"}, False),
+    ],
+)
+def test_live_run_refused_in_ci_unless_both_workflow_dispatch_and_allow_dispatch(
+    environ: dict[str, str], *, allow_dispatch: bool
+) -> None:
+    assert live_run_refused(environ, allow_dispatch=allow_dispatch) is True
+
+
+@pytest.mark.parametrize("allow_dispatch", [True, False])
+@pytest.mark.parametrize("environ", [{}, {"GITHUB_EVENT_NAME": "pull_request"}])
+def test_live_run_refused_never_outside_ci_whatever_the_flag(
+    environ: dict[str, str], *, allow_dispatch: bool
+) -> None:
+    assert live_run_refused(environ, allow_dispatch=allow_dispatch) is False

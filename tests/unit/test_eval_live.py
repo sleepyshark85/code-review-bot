@@ -7,7 +7,7 @@ the real SDK. Each test runs in its own working directory, which receives the li
 import json
 import logging
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Final
 
@@ -185,19 +185,68 @@ def test_live_without_a_sufficient_budget_exits_2_before_any_call(
     assert not LIVE_AUDIT.exists()
 
 
-def test_live_with_ci_set_exits_2_before_any_call(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("event", "flags"),
+    [
+        ("pull_request", ["--allow-dispatch"]),
+        ("push", ["--allow-dispatch"]),
+        ("schedule", ["--allow-dispatch"]),
+        (None, ["--allow-dispatch"]),
+        ("workflow_dispatch", []),
+    ],
+)
+def test_live_in_ci_exits_2_before_any_call_unless_a_dispatch_given_allow_dispatch(
+    event: str | None,
+    flags: list[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    ci_run: Callable[[str | None], None],
 ) -> None:
     write_case(tmp_path / "cases")
-    monkeypatch.setenv("CI", "")
+    ci_run(event)
     sdk = ScriptedSdk(answer())
 
     exit_code, _, err = live(
-        capsys, sdk, "--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1
+        capsys, sdk, "--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1, *flags
     )
 
     assert (exit_code, sdk.options) == (2, [])
-    assert "live never runs in CI" in err
+    assert "live runs in CI only from a workflow_dispatch run given --allow-dispatch" in err
+    assert not LIVE_AUDIT.exists()
+
+
+def test_live_in_a_ci_workflow_dispatch_run_given_allow_dispatch_calls_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], ci_run: Callable[[str | None], None]
+) -> None:
+    write_case(tmp_path / "cases")
+    ci_run("workflow_dispatch")
+    sdk = ScriptedSdk(answer(finding()))
+
+    _, _, err = live(
+        capsys,
+        sdk,
+        *("--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1, "--allow-dispatch"),
+    )
+
+    assert len(sdk.options) == 1
+    assert err == "live: case calc run 1/1 ... ok\n"
+
+
+def test_live_outside_ci_runs_the_same_with_allow_dispatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_case(tmp_path / "cases")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    sdk = ScriptedSdk(answer(finding()))
+
+    _, _, err = live(
+        capsys,
+        sdk,
+        *("--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1, "--allow-dispatch"),
+    )
+
+    assert len(sdk.options) == 1
+    assert err == "live: case calc run 1/1 ... ok\n"
 
 
 def test_live_with_a_secret_in_a_case_diff_exits_2_naming_it_before_any_call(
