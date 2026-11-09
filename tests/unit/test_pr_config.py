@@ -1,14 +1,16 @@
 import pytest
 
-from review_bot.errors import RepoConfigError
-from review_bot.findings import Severity
+from review_bot.errors import ConfigFileError, RepoConfigError
+from review_bot.findings import RuleId, Severity
 from review_bot.pr.config import (
     DEFAULT_REPO_CONFIG,
     MAX_CONFIG_BYTES,
     RepoConfig,
+    parse_config_file,
     parse_repo_config,
     with_repo_threshold,
 )
+from review_bot.rules import DomainRule
 from review_bot.settings import Settings, load_settings
 
 BASE = "a" * 40
@@ -145,3 +147,91 @@ def test_parse_repo_config_rejects_a_pattern_with_an_empty_segment(pattern: str)
 
     assert f"'{pattern}'" in str(caught.value)
     assert "'exclude[0]'" in str(caught.value)
+
+
+MONEY_ENTRY = '[[domain_rules]]\nrule = "decimal-money"\npaths = ["billing/**"]\n'
+
+
+def test_parse_repo_config_reads_domain_rules_with_their_default_severity() -> None:
+    config = parse(
+        MONEY_ENTRY
+        + '[[domain_rules]]\nrule = "decimal-money"\npaths = ["a", "b/*.py"]\nseverity = "medium"\n'
+    )
+
+    assert config.domain_rules == (
+        DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",), Severity.HIGH),
+        DomainRule(RuleId.DECIMAL_MONEY, ("a", "b/*.py"), Severity.MEDIUM),
+    )
+
+
+def test_parse_repo_config_accepts_20_domain_rules_of_20_patterns() -> None:
+    patterns = ", ".join(f'"p{n}"' for n in range(20))
+    entry = f'[[domain_rules]]\nrule = "decimal-money"\npaths = [{patterns}]\n'
+
+    config = parse(entry * 20)
+
+    assert [len(rule.paths) for rule in config.domain_rules] == [20] * 20
+
+
+def test_parse_repo_config_without_domain_rules_enables_none() -> None:
+    assert parse('threshold = "low"').domain_rules == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ('[[domain_rules]]\nrule = "float-money"\npaths = ["a"]', "'domain_rules[0].rule'"),
+        ('[[domain_rules]]\nrule = "swallowed-exception"\npaths = ["a"]', "'domain_rules[0].rule'"),
+        ('[[domain_rules]]\nrule = 1\npaths = ["a"]', "'domain_rules[0].rule'"),
+        ('[[domain_rules]]\npaths = ["a"]', "'domain_rules[0].rule'"),
+        ('[[domain_rules]]\nrule = "decimal-money"', "'domain_rules[0].paths'"),
+        ('[[domain_rules]]\nrule = "decimal-money"\npaths = []', "'domain_rules[0].paths'"),
+        (
+            '[[domain_rules]]\nrule = "decimal-money"\npaths = [' + ", ".join(['"a"'] * 21) + "]",
+            "'domain_rules[0].paths'",
+        ),
+        (
+            MONEY_ENTRY + '[[domain_rules]]\nrule = "decimal-money"\npaths = ["/a"]',
+            "'domain_rules[1].paths[0]'",
+        ),
+        (
+            f'[[domain_rules]]\nrule = "decimal-money"\npaths = ["{"x" * 201}"]',
+            "'domain_rules[0].paths[0]'",
+        ),
+        (MONEY_ENTRY + 'severity = "urgent"', "'domain_rules[0].severity'"),
+        (MONEY_ENTRY * 21, "'domain_rules'"),
+        ('domain_rules = "decimal-money"', "'domain_rules'"),
+    ],
+)
+def test_parse_repo_config_rejects_an_invalid_domain_rule_naming_its_entry_and_key(
+    text: str, named: str
+) -> None:
+    with pytest.raises(RepoConfigError, match="is invalid") as caught:
+        parse(text)
+
+    assert named in str(caught.value)
+
+
+def test_parse_repo_config_names_the_domain_rules_when_a_rule_is_unknown() -> None:
+    with pytest.raises(RepoConfigError, match="the domain rules are: decimal-money"):
+        parse('[[domain_rules]]\nrule = "float-money"\npaths = ["a"]')
+
+
+def test_parse_repo_config_names_an_unknown_key_in_a_domain_rule_and_the_keys_it_may_set() -> None:
+    with pytest.raises(RepoConfigError) as caught:
+        parse(MONEY_ENTRY + "colour = 1")
+
+    assert "unknown key 'domain_rules[0].colour'" in str(caught.value)
+    assert "may set only rule, paths and severity" in str(caught.value)
+
+
+def test_parse_config_file_names_the_problem_but_not_where_the_file_is() -> None:
+    with pytest.raises(ConfigFileError) as caught:
+        parse_config_file(b"colour = 1", source="anywhere")
+
+    assert str(caught.value).startswith("unknown key 'colour'")
+    assert "anywhere" not in str(caught.value)
+
+
+def test_parse_config_file_records_its_source() -> None:
+    assert parse_config_file(b"", source="case repo").source == "case repo"

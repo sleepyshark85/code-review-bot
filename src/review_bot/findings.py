@@ -55,10 +55,11 @@ class Category(StrEnum):
 
 
 class RuleId(StrEnum):
-    """A check that runs with no model."""
+    """A check that runs with no model: a built-in one, or a domain rule a repository enables."""
 
     SWALLOWED_EXCEPTION = "swallowed-exception"
     OPEN_WITHOUT_ENCODING = "open-without-encoding"
+    DECIMAL_MONEY = "decimal-money"
 
 
 class EvidenceSpan(BaseModel):

@@ -77,8 +77,9 @@ pytestmark = pytest.mark.integration
 FINDINGS_EXIT = 1
 SHADOW_EXIT = 0
 # AC9: main holds `p3-v2` (P3-S4); P3-S12 takes the next free number. If another slice that bumps
-# the context prompt merges first, this moves on by one (design.md, Prompt versions).
-CONTEXT_PROMPT_VERSION = "p3-v3"
+# the context prompt merges first, this moves on by one (design.md, Prompt versions). P3-S10
+# (AC7) took `p3-v4`.
+CONTEXT_PROMPT_VERSION = "p3-v4"
 # Generous: it catches quadratic or line-by-line work on a hostile suggestion, not a slow CI.
 BOUND_S = 60.0
 

@@ -13,9 +13,9 @@
 ## Consequences
 - Each rule is reviewed, tested and explainable code, with stable rule IDs for fingerprints, dedup and labels.
 - A repository can't add a rule without a bot release.
-- The model's guidance is fixed text, so config can't carry instructions to it.
+- The model's guidance is fixed text. The only config text the prompt carries is each rule's path patterns, quoted as data; they could still spell out words, but they come from the base commit, which a pull request's author can't change, and the rule's own findings never depend on the model.
 
 ## Alternatives considered
 - **Regular expressions in config:** any repository could write a pattern with exponential cost, and matches on raw text can't tell code from comments or strings.
-- **Free-text guidance for the model:** not deterministic, and config text reaching the prompt is a new injection path.
+- **Free-text guidance for the model:** not deterministic, and text written for the model to follow is an injection path by design.
 - **Rules as plugins:** a plugin system for one rule.

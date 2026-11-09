@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from eval_cases import (
     CALC_DIFF,
+    CALC_FILE,
     context_recording,
     failed_run,
     finding,
@@ -664,3 +665,63 @@ def test_replay_cases_counts_only_the_diffs_lines_of_a_file_it_changes_as_the_re
 
     assert (outside.evidence_kept, outside.evidence_dropped) == (0, 1)
     assert (inside.evidence_kept, inside.evidence_dropped) == (1, 0)
+
+
+MONEY_CONFIG = '[[domain_rules]]\nrule = "decimal-money"\npaths = ["app/**"]\n'
+MONEY_BUG = {"id": "float-money", "source": "rule", "file": CALC_FILE, "lines": [[3, 3]]}
+MONEY_DIFF = CALC_DIFF.replace("+        return sum(items)\n", "+        return sum(items) * 1.2\n")
+
+
+def money_case(cases_dir: Path, config: str = MONEY_CONFIG) -> Path:
+    case_file = write_case(cases_dir, bugs=[MONEY_BUG], diff=MONEY_DIFF, repo="repo")
+    write_repo(case_file, {".review-bot.toml": config})
+    return case_file
+
+
+@pytest.mark.parametrize("mode", ["diff", "context"])
+def test_replay_cases_runs_the_domain_rules_of_the_case_repos_config(
+    tmp_path: Path, mode: EvalMode
+) -> None:
+    money_case(tmp_path)
+
+    result = replay_one(tmp_path, mode=mode)
+
+    [money] = scored(result).bugs
+    assert (money.caught, money.credits[0].finding.line) == (1, 3)
+
+
+def test_replay_cases_without_a_config_in_the_case_repo_runs_no_domain_rule(
+    tmp_path: Path,
+) -> None:
+    case_file = write_case(tmp_path, bugs=[MONEY_BUG], diff=MONEY_DIFF, repo="repo")
+    write_repo(case_file, {"app/other.py": "x = 1\n"})
+
+    [money] = scored(replay_one(tmp_path)).bugs
+
+    assert money.caught == 0
+
+
+def test_replay_cases_names_a_case_whose_repo_config_is_invalid(tmp_path: Path) -> None:
+    case_file = money_case(tmp_path, config="colour = 1\n")
+
+    message = rejected(tmp_path)
+
+    assert message.startswith(f"{case_file}: its repo's .review-bot.toml is invalid: ")
+    assert "unknown key 'colour'" in message
+    assert message.endswith("Fix the case's repo.")
+
+
+def test_freshness_fields_in_context_mode_hash_the_domain_rules_in_the_prompt(
+    tmp_path: Path,
+) -> None:
+    with_rules = freshness_fields(money_case(tmp_path / "a"), "context")
+    without = freshness_fields(money_case(tmp_path / "b", config=""), "context")
+
+    assert with_rules["prompt_sha256"] != without["prompt_sha256"]
+
+
+def test_freshness_fields_in_diff_mode_ignore_the_domain_rules(tmp_path: Path) -> None:
+    with_rules = freshness_fields(money_case(tmp_path / "a"))
+    without = freshness_fields(money_case(tmp_path / "b", config=""))
+
+    assert with_rules["prompt_sha256"] == without["prompt_sha256"]

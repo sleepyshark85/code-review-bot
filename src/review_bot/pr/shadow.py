@@ -341,6 +341,10 @@ def _config_json(config: RepoConfig, settings: Settings) -> dict[str, object]:
         "threshold": settings.threshold,
         "exclude": list(config.exclude),
         "max_open_comments": config.max_open_comments,
+        "domain_rules": [
+            {"rule": rule.rule, "paths": list(rule.paths), "severity": rule.severity}
+            for rule in config.domain_rules
+        ],
     }
 
 

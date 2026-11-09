@@ -1,10 +1,13 @@
 """The versioned system prompts, and the wrapping of a diff and tool results as untrusted data."""
 
 import hashlib
+import json
+from collections.abc import Sequence
 from typing import Final
 
 from review_bot.findings import Category, RuleId, Severity
 from review_bot.providers.base import ReviewRequest, ToolExecutor
+from review_bot.rules import DomainRule
 
 __all__ = [
     "CONTEXT_PROMPT_VERSION",
@@ -20,8 +23,10 @@ PROMPT_VERSION: Final = "p1-v1"
 # The same for context mode: bump on any change to its system prompt, or to how
 # ``build_context_request`` frames the diff or ``frame_tool_result`` a result (Phase 3 design,
 # Prompt versions).
-CONTEXT_PROMPT_VERSION: Final = "p3-v3"
+CONTEXT_PROMPT_VERSION: Final = "p3-v4"
 
+# The rule tags are spelled out, not drawn from ``RuleId``, so a new domain rule leaves this
+# prompt as it is: the context prompt offers a domain rule's tag only where it is enabled.
 _SYSTEM_PROMPT: Final = f"""\
 You are a senior engineer reviewing a pull request. Report only real problems: bugs, security or \
 reliability risks, maintainability problems, missing tests.
@@ -44,7 +49,8 @@ added or context line; the header's line counts may be wrong, so don't rely on t
 - category: one of {", ".join(Category)}
 - rationale: why this is a problem, and what to do about it
 - confidence: how sure you are, a number from 0.0 to 1.0
-- rule: optional. One of {", ".join(RuleId)}, only if the finding is exactly that problem: \
+- rule: optional. One of {RuleId.SWALLOWED_EXCEPTION}, {RuleId.OPEN_WITHOUT_ENCODING}, only if \
+the finding is exactly that problem: \
 {RuleId.SWALLOWED_EXCEPTION} for an exception handler that discards the exception, \
 {RuleId.OPEN_WITHOUT_ENCODING} for open() in text mode with no encoding. Omit it, or use null, \
 for any other problem.
@@ -80,6 +86,12 @@ that breaks these rules, leaves the line unchanged or holds a secret is discarde
 kept. Omit it, or use null, if you have no exact fix.
 """
 
+_DOMAIN_RULES_INTRO: Final = """
+This repository enables these domain rules, each only on the files its path patterns match. Code \
+checks the added lines against them too. A finding that is exactly one of these problems, in a \
+file the rule's patterns match, may also have that rule's name as its rule:
+"""
+
 
 def build_request(diff: str, *, model: str) -> ReviewRequest:
     """Wrap a diff in delimiter lines and pair it with the system prompt."""
@@ -88,14 +100,35 @@ def build_request(diff: str, *, model: str) -> ReviewRequest:
     )
 
 
-def build_context_request(diff: str, *, model: str, tools: ToolExecutor) -> ReviewRequest:
-    """Wrap a diff as ``build_request`` does, and pair it with the context prompt and ``tools``."""
+def build_context_request(
+    diff: str, *, model: str, tools: ToolExecutor, domain_rules: Sequence[DomainRule] = ()
+) -> ReviewRequest:
+    """Wrap a diff as ``build_request`` does, and pair it with the context prompt and ``tools``.
+
+    The prompt names each of ``domain_rules``, the repository's enabled domain rules, with its
+    fixed description and its path patterns, and offers its name as a finding's rule.
+    """
     return ReviewRequest(
-        system_prompt=_CONTEXT_SYSTEM_PROMPT,
+        system_prompt=_CONTEXT_SYSTEM_PROMPT + _domain_rules_section(domain_rules),
         user_prompt=_delimited("DIFF", diff),
         model=model,
         tools=tools,
     )
+
+
+def _domain_rules_section(domain_rules: Sequence[DomainRule]) -> str:
+    """The prompt's part naming ``domain_rules``, or nothing if there are none.
+
+    The patterns come from the repository's config, so each list is written as JSON: quoted, on
+    one line, with any control character escaped.
+    """
+    if not domain_rules:
+        return ""
+    rule_lines = "".join(
+        f"- {rule.rule}: {rule.description}. Path patterns: {json.dumps(list(rule.paths))}\n"
+        for rule in domain_rules
+    )
+    return _DOMAIN_RULES_INTRO + rule_lines
 
 
 def frame_tool_result(text: str) -> str:

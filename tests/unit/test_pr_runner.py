@@ -870,6 +870,7 @@ def test_run_pull_request_without_a_config_file_uses_the_defaults(repo: Path, ru
         "threshold": "low",
         "exclude": [],
         "max_open_comments": 10,
+        "domain_rules": [],
     }
 
 
@@ -887,6 +888,27 @@ def test_run_pull_request_applies_the_base_threshold_not_the_heads(repo: Path, r
     assert shadow.config is not None
     assert shadow.config["source"] == f".review-bot.toml@{pr.base_sha}"
     assert shadow.config["threshold"] == "medium"
+
+
+def test_run_pull_request_runs_the_base_configs_domain_rules_and_lists_them(
+    repo: Path, run: Runner
+) -> None:
+    config = '[[domain_rules]]\nrule = "decimal-money"\npaths = ["*.py"]\nseverity = "medium"\n'
+    pr = config_pr(repo, config, {"app.py": "def run():\n    return 1.5\n"})
+
+    shadow = run(pr, factory=CountingFactory(MockProvider(findings=[])))
+
+    [comment] = shadow.comments
+    reviewed = comment.planned.reviewed
+    assert (reviewed.rule, reviewed.finding.line, reviewed.finding.severity) == (
+        "decimal-money",
+        2,
+        "medium",
+    )
+    assert shadow.config is not None
+    assert shadow.config["domain_rules"] == [
+        {"rule": "decimal-money", "paths": ["*.py"], "severity": "medium"}
+    ]
 
 
 def test_run_pull_request_keeps_a_threshold_the_settings_were_given(

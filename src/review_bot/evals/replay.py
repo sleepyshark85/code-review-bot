@@ -1,9 +1,11 @@
 """Replay a case's recorded runs through today's pipeline, with ``MockProvider`` (ADR 0007).
 
 Nothing here calls a model. In context mode, the case's ``repo`` is built as a git repository
-for the tools (``evals.fixture_repo``). The repository and each pipeline run's audit log go to a
-temporary directory that is deleted afterwards, so replay writes nothing that outlives it. It
-also holds ``check_sendable``, ``live``'s pre-flight check of each case.
+for the tools (``evals.fixture_repo``). In either mode, the domain rules that a
+``.review-bot.toml`` at the root of the case's ``repo`` enables run, as a pull request's base
+commit's would. The repository and each pipeline run's audit log go to a temporary directory that
+is deleted afterwards, so replay writes nothing that outlives it. It also holds
+``check_sendable``, ``live``'s pre-flight check of each case.
 """
 
 import dataclasses
@@ -18,7 +20,7 @@ from review_bot.audit import AuditLog, utc_now
 from review_bot.context.tools import RepoTools
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import parse_diff
-from review_bot.errors import GitError, InputError
+from review_bot.errors import ConfigFileError, GitError, InputError
 from review_bot.evals.fixture_repo import FixtureRepo, build_fixture_repo
 from review_bot.evals.formats import (
     MODES,
@@ -39,6 +41,7 @@ from review_bot.evals.score import (
     score_case,
 )
 from review_bot.findings import Finding, Source
+from review_bot.pr.config import CONFIG_PATH, parse_config_file
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
     PROMPT_VERSION,
@@ -49,6 +52,7 @@ from review_bot.providers.base import ReviewRequest
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, run_pipeline, tool_caps
+from review_bot.rules import DomainRule
 from review_bot.settings import Settings
 from review_bot.verify import VerifyResult, verify_findings
 
@@ -69,6 +73,18 @@ _LIVE_CONTEXT_ADVICE: Final = (
 )
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _CaseReview:
+    """How the pipeline reviews a case, worked out once per case.
+
+    ``context`` is the repository a context review's tools read, or None in diff mode, and
+    ``domain_rules`` the domain rules the case repo's ``.review-bot.toml`` enables.
+    """
+
+    context: ReviewContext | None
+    domain_rules: tuple[DomainRule, ...]
+
+
 def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]:
     """Today's values of a recording's freshness fields, for the case at ``case_file``.
 
@@ -81,17 +97,22 @@ def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]
 
     Raises:
         EvalInputError: If the case is invalid, its diff can't be reviewed, or in context mode
-            its repository can't be built.
+            its repository can't be built or its ``.review-bot.toml`` is invalid.
     """
     loaded = load_case(case_file)
     if mode == "diff":
-        return _case_freshness(loaded, None)
+        return _case_freshness(loaded, None, ())
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
-        return _case_freshness(loaded, _build_repo(loaded, Path(work_dir)))
+        repo = _build_repo(loaded, Path(work_dir))
+        return _case_freshness(loaded, repo, _domain_rules(loaded))
 
 
-def _case_freshness(loaded: LoadedCase, repo: FixtureRepo | None) -> dict[str, str]:
+def _case_freshness(
+    loaded: LoadedCase, repo: FixtureRepo | None, domain_rules: Sequence[DomainRule]
+) -> dict[str, str]:
     """``freshness_fields`` for a case already loaded: in context mode with its built ``repo``.
+
+    ``domain_rules`` are those the case's repo enables, which only the context prompt names.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
@@ -109,7 +130,9 @@ def _case_freshness(loaded: LoadedCase, repo: FixtureRepo | None) -> dict[str, s
         prompts = json.dumps([request.system_prompt, request.user_prompt])
         return fields | {"prompt_version": PROMPT_VERSION, "prompt_sha256": _sha256_text(prompts)}
     tools = RepoTools(repo.repo, caps=tool_caps(settings))
-    request = build_context_request(reviewable_text, model=settings.model, tools=tools)
+    request = build_context_request(
+        reviewable_text, model=settings.model, tools=tools, domain_rules=domain_rules
+    )
     prompts = json.dumps([request.system_prompt, request.user_prompt, _tool_definitions(request)])
     return fields | {
         "prompt_version": CONTEXT_PROMPT_VERSION,
@@ -137,7 +160,8 @@ async def replay_cases(
     Raises:
         EvalInputError: If a case or a recording read is invalid, a recording sits under the
             wrong kind's or mode's directory, ``control`` is live, of another mode or names no
-            case, or in context mode a case's repository can't be built.
+            case, a case's repo has an invalid ``.review-bot.toml``, or in context mode a case's
+            repository can't be built.
     """
     cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
     recordings = {loaded.case.id: _live_recordings(loaded)[mode] for loaded in cases}
@@ -207,11 +231,13 @@ async def check_sendable(loaded: LoadedCase) -> None:
     checks, such as its secret scan, and nothing calls a real model.
 
     Raises:
-        EvalInputError: If the diff can't be reviewed or holds a possible secret, naming the
-            case file, or if every file in it is skipped, naming the case.
+        EvalInputError: If the diff can't be reviewed or holds a possible secret, or the case's
+            repo has an invalid ``.review-bot.toml``, naming the case file, or if every file in
+            it is skipped, naming the case.
     """
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
-        result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl", None)
+        review = _CaseReview(context=None, domain_rules=_domain_rules(loaded))
+        result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl", review)
     if not result.model_called:
         raise EvalInputError(
             f"case {loaded.case.id}: nothing to review: every file is skipped, so no call would "
@@ -227,14 +253,15 @@ async def score_recording(
     A stale recording fails the case without being scored.
 
     Raises:
-        EvalInputError: If the case's diff can't be reviewed, or in context mode its repository
-            can't be built.
+        EvalInputError: If the case's diff can't be reviewed, its repo has an invalid
+            ``.review-bot.toml``, or in context mode its repository can't be built.
     """
     case_id = loaded.case.id
+    domain_rules = _domain_rules(loaded)
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
         repo = None if mode == "diff" else _build_repo(loaded, Path(work_dir))
         if recording is not None:
-            today = _case_freshness(loaded, repo)
+            today = _case_freshness(loaded, repo, domain_rules)
             stale = [name for name, value in today.items() if getattr(recording, name) != value]
             if stale:
                 verb = "differs" if len(stale) == 1 else "differ"
@@ -245,7 +272,8 @@ async def score_recording(
                 return CaseResult(case_id, recording, None, (problem,))
         # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
         context = None if repo is None else ReviewContext(repo=repo.repo)
-        evidence = await _replay_case(loaded, recording, context, Path(work_dir) / "audit.jsonl")
+        review = _CaseReview(context=context, domain_rules=domain_rules)
+        evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
 
 
@@ -344,31 +372,31 @@ def _control_recording(path: Path, mode: EvalMode) -> Recording:
 async def _replay_case(
     loaded: LoadedCase,
     recording: Recording | None,
-    context: ReviewContext | None,
+    review: _CaseReview,
     audit_path: Path,
 ) -> CaseEvidence:
     """Run the case's diff through the pipeline once for the rules, then once per recorded run.
 
     A recorded run's findings are what ``MockProvider`` returns, so they meet today's verify and
     dedup. A failed run isn't replayed: it found nothing. With no recording, only the rules run.
-    ``context`` is the repository a context review's tools read, or None in diff mode.
+    Each review runs as ``review`` says.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
     """
-    rules_only = await _review(loaded, (), audit_path, context)
+    rules_only = await _review(loaded, (), audit_path, review)
     rule_findings = tuple(
         reviewed.finding
         for reviewed in rules_only.verification.kept
         if reviewed.source is Source.RULE
     )
     recorded_runs = () if recording is None else recording.runs
-    runs = tuple([await _replay_run(loaded, run, audit_path, context) for run in recorded_runs])
+    runs = tuple([await _replay_run(loaded, run, audit_path, review) for run in recorded_runs])
     return CaseEvidence(rule_findings, runs)
 
 
 async def _replay_run(
-    loaded: LoadedCase, run: RecordedRun, audit_path: Path, context: ReviewContext | None
+    loaded: LoadedCase, run: RecordedRun, audit_path: Path, review: _CaseReview
 ) -> RunFindings:
     if run.error_category is not None:
         return RunFindings(
@@ -376,7 +404,8 @@ async def _replay_run(
         )
     # ``findings`` is set whenever ``error`` isn't (``RecordedRun``'s check).
     returned = run.findings or ()
-    result = await _review(loaded, returned, audit_path, context)
+    result = await _review(loaded, returned, audit_path, review)
+    context = review.context
     verification = (
         result.verification
         if context is None
@@ -421,16 +450,41 @@ async def _review(
     loaded: LoadedCase,
     findings: Sequence[Finding],
     audit_path: Path,
-    context: ReviewContext | None,
+    review: _CaseReview,
 ) -> PipelineResult:
     audit = AuditLog(audit_path, clock=utc_now)
     provider = MockProvider(findings=findings)
     try:
         return await run_pipeline(
-            loaded.diff_path, _replay_settings(), provider, audit, context=context
+            loaded.diff_path,
+            _replay_settings(),
+            provider,
+            audit,
+            context=review.context,
+            domain_rules=review.domain_rules,
         )
     except InputError as exc:
         raise _unreviewable(loaded, exc) from exc
+
+
+def _domain_rules(loaded: LoadedCase) -> tuple[DomainRule, ...]:
+    """The domain rules the ``.review-bot.toml`` at the root of the case's ``repo`` enables.
+
+    Empty without a ``repo``, or without that file in it.
+
+    Raises:
+        EvalInputError: If the file is invalid, naming the case file and the problem.
+    """
+    config_file = next((file for file in loaded.repo_files if file.path == CONFIG_PATH), None)
+    if config_file is None:
+        return ()
+    try:
+        config = parse_config_file(config_file.content, source=CONFIG_PATH)
+    except ConfigFileError as exc:
+        raise EvalInputError(
+            f"{loaded.file}: its repo's {CONFIG_PATH} is invalid: {exc}. Fix the case's repo."
+        ) from exc
+    return config.domain_rules
 
 
 def _replay_settings() -> Settings:

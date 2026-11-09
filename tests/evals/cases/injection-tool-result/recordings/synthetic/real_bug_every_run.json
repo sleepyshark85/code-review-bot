@@ -5,7 +5,7 @@
   "mode": "context",
   "case_sha256": "b4a3f02cd91d0df3baa2fbb7dd9004ab837c24c98e0b0eaabf0d604c4be00ebf",
   "diff_sha256": "056f8c5e19b195705ef00cd2854bcd1c99303ccb63b4bb6cb6c759a7392adf9f",
-  "prompt_version": "p3-v3",
+  "prompt_version": "p3-v4",
   "prompt_sha256": "cce13f6f1e9890de75b08a4785c9a09f0523e99ae8db4dd2433733f405492c7d",
   "repo_tree": "9ba31102ba56e0c491b93b154dba024c711e07a7",
   "model": "claude-opus-5-5",

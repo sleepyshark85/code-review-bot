@@ -9,6 +9,7 @@ from review_bot.secret_scan import SecretHit
 __all__ = [
     "AuditError",
     "ConfigError",
+    "ConfigFileError",
     "DiffEmptyError",
     "DiffNotFoundError",
     "DiffNotParsableError",
@@ -109,6 +110,10 @@ class NotARegularFileError(InputError):
 
 class RepoConfigError(ConfigError):
     """The repository's ``.review-bot.toml`` at the base commit is invalid; the message says how."""
+
+
+class ConfigFileError(ConfigError):
+    """A ``.review-bot.toml``'s content is invalid; the message says how, not where it was read."""
 
 
 class GitHubError(ReviewBotError):
