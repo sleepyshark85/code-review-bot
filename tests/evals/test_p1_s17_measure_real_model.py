@@ -3,6 +3,9 @@
 Written from the spec's AC4, AC5 and AC7. Every run goes through `review_bot.evals.main` in
 process, over the repository's committed cases or a temporary copy of them; nothing calls a model.
 
+Scope (P3-S5 AC5): these checks cover the five Phase 1 cases. The `--require-live` runs use a copy
+holding only them, since Phase 3's cases have no diff-mode live recording until P3-S15.
+
 Report reading, from P1-S14's format: each case starts with a `case <id>: live recording of
 <model>, ...` line, and every threshold the case misses is a `  FAIL: <reason>` line under it. A
 bug below its `min_runs_caught` reads `FAIL: ai bug <id> was caught in N of 5 runs; ...`. A
@@ -27,7 +30,7 @@ from review_bot.settings import Settings
 pytestmark = pytest.mark.integration
 
 CASES = Path(__file__).resolve().parent / "cases"
-CASE_IDS = sorted(path.parent.name for path in CASES.glob("*/case.json"))
+CASE_IDS = ["clean", "injection-canary", "injection-delimiter", "injection-instruction", "sample"]
 DEFAULT_MODEL = Settings.model_fields["model"].default
 CREDENTIAL_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
@@ -84,9 +87,9 @@ def live_recording(case_id: str, cases: Path = CASES) -> dict[str, Any]:
     return data
 
 
-def assert_committed_recordings_hold(replay: Callable[..., Replay]) -> None:
+def assert_committed_recordings_hold(replay: Callable[..., Replay], tmp_path: Path) -> None:
     """AC4's check: a fresh live recording of the default model per case, missing only as known."""
-    result = replay("--cases", CASES, "--require-live")
+    result = replay("--cases", committed_copy(tmp_path), "--require-live")
 
     assert set(result.headers()) == set(CASE_IDS), result.output
     for case_id, header in result.headers().items():
@@ -128,14 +131,16 @@ def test_p1_s17_ac4_committed_live_recording_is_fresh_and_of_the_default_model(
 
 
 def test_p1_s17_ac4_require_live_fails_only_on_the_documented_misses(
-    replay: Callable[..., Replay],
+    replay: Callable[..., Replay], tmp_path: Path
 ) -> None:
-    assert_committed_recordings_hold(replay)
+    assert_committed_recordings_hold(replay, tmp_path)
 
 
 def committed_copy(tmp_path: Path) -> Path:
+    """A copy of the committed cases directory holding only the Phase 1 cases."""
     root = tmp_path / "cases"
-    shutil.copytree(CASES, root)
+    for case_id in CASE_IDS:
+        shutil.copytree(CASES / case_id, root / case_id)
     return root
 
 
@@ -222,9 +227,9 @@ def test_p1_s17_ac5_synthetic_kind_under_live_exits_2_naming_it(
 
 
 def test_p1_s17_ac7_ac4_holds_without_claude_on_path_or_a_key(
-    replay: Callable[..., Replay],
+    replay: Callable[..., Replay], tmp_path: Path
 ) -> None:
     assert shutil.which("claude") is None, "tests/conftest.py must take `claude` off PATH"
     assert [name for name in CREDENTIAL_VARIABLES if name in os.environ] == []
 
-    assert_committed_recordings_hold(replay)
+    assert_committed_recordings_hold(replay, tmp_path)

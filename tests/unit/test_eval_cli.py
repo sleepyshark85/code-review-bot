@@ -7,13 +7,17 @@ import pytest
 from eval_cases import (
     AI_BUG,
     CALC_DIFF,
+    NO_USAGE,
+    context_recording,
     failed_run,
     finding,
     recording,
     run_of,
+    tool_call,
     write_case,
     write_json,
     write_live,
+    write_repo,
 )
 
 from review_bot.evals import main
@@ -253,3 +257,69 @@ def test_main_removes_github_token_from_the_environment_first(
 
     capsys.readouterr()
     assert "GITHUB_TOKEN" not in os.environ
+
+
+# --- P3-S5: context mode ------------------------------------------------------------------------
+
+
+def test_main_in_context_mode_shows_each_runs_tool_calls_cost_cap_and_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case_file = write_case(tmp_path / "cases", repo="repo")
+    write_repo(case_file, {"app/util.py": "".join(f"x{n} = {n}\n" for n in range(1, 11))})
+    evidence = [{"file": "app/util.py", "start_line": 2, "end_line": 4}]
+    calls = [
+        tool_call("read", [("app/util.py", 1, 10)], result_bytes=90),
+        tool_call("read", outcome="refused", reason="not_found", result_bytes=0),
+        tool_call("glob", listed=["app/calc.py", "app/util.py"], result_bytes=1),
+    ]
+    runs = [
+        run_of(finding(evidence=evidence)) | {"tool_calls": calls},
+        run_of(finding(evidence=evidence)) | {"usage": NO_USAGE | {"cost_usd": "0.21"}},
+        {
+            "error": {"category": "transient", "cap": "turns"},
+            "usage": NO_USAGE | {"cost_usd": "0.40"},
+            "warnings": [],
+        },
+    ]
+    control = write_json(tmp_path / "control.json", context_recording(case_file, runs))
+
+    exit_code, out, _ = replay(
+        capsys, "--cases", tmp_path / "cases", "--recording", control, "--mode", "context"
+    )
+
+    assert exit_code == 0
+    assert "case calc: synthetic context recording of claude-opus-5-5" in out
+    assert (
+        "  context runs:\n"
+        "    run 1: 3 tool calls, evidence kept: 1, evidence dropped: 0\n"
+        "      read ok: app/util.py:1-10, 90 bytes\n"
+        "      read refused (not_found), 0 bytes\n"
+        "      glob ok: 2 paths listed, 1 byte\n"
+        "    run 2: 0 tool calls, cost $0.21, evidence kept: 0, evidence dropped: 1\n"
+        "    run 3: 0 tool calls, cost $0.40, cap-hit (turns), a miss for every bug, "
+        "evidence kept: 0, evidence dropped: 0\n"
+    ) in out
+
+
+def test_main_in_diff_mode_shows_no_context_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case_file = write_case(tmp_path / "cases")
+    control = write_json(tmp_path / "control.json", recording(case_file, [run_of(finding())]))
+
+    _, out, _ = replay(capsys, "--cases", tmp_path / "cases", "--recording", control)
+
+    assert "case calc: synthetic recording of" in out
+    assert "context" not in out
+
+
+def test_main_exits_2_on_an_unknown_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path)
+
+    exit_code, _, err = replay(capsys, "--cases", tmp_path, "--mode", "repo")
+
+    assert exit_code == 2
+    assert "--mode: invalid choice: 'repo'" in err

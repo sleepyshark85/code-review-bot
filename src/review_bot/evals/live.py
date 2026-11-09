@@ -158,8 +158,9 @@ async def _record_case(
             "runs": recorded_runs,
         }
     )
-    _write_recording(loaded.live_recording_path, recording)
-    return await score_recording(loaded, load_recording(loaded.live_recording_path))
+    path = loaded.live_recording_path("diff")
+    _write_recording(path, recording)
+    return await score_recording(loaded, load_recording(path), mode="diff")
 
 
 async def _record_run(loaded: LoadedCase, settings: Settings, provider: LLMProvider) -> RecordedRun:
