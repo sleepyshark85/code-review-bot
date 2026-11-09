@@ -1,6 +1,7 @@
 """Unit tests for replay: freshness, choosing recordings, and scoring through the real pipeline."""
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import tempfile
@@ -11,20 +12,27 @@ from typing import Any
 import pytest
 from eval_cases import (
     CALC_DIFF,
+    context_recording,
     failed_run,
     finding,
     recording,
     run_of,
+    tool_call,
     write_case,
     write_json,
     write_live,
+    write_live_context,
+    write_repo,
     write_synthetic,
 )
 
 from review_bot import prompt
 from review_bot.audit import AuditLog
+from review_bot.context.tool_args import TOOL_DEFINITIONS
+from review_bot.errors import GitError, GitTimeoutError
 from review_bot.evals import freshness_fields
-from review_bot.evals.formats import EvalInputError, Recording
+from review_bot.evals import replay as replay_module
+from review_bot.evals.formats import EvalInputError, EvalMode, Recording
 from review_bot.evals.replay import replay_cases, require_live
 from review_bot.evals.score import CaseResult, CaseScore, RunOutcome
 from review_bot.providers.mock import MockProvider
@@ -36,12 +44,14 @@ README_SECTION = (
 )
 
 
-def replay(cases_dir: Path, control: Path | None = None) -> list[CaseResult]:
-    return asyncio.run(replay_cases(cases_dir, control))
+def replay(
+    cases_dir: Path, control: Path | None = None, mode: EvalMode = "diff"
+) -> list[CaseResult]:
+    return asyncio.run(replay_cases(cases_dir, control, mode=mode))
 
 
-def replay_one(cases_dir: Path, control: Path | None = None) -> CaseResult:
-    [result] = replay(cases_dir, control)
+def replay_one(cases_dir: Path, control: Path | None = None, mode: EvalMode = "diff") -> CaseResult:
+    [result] = replay(cases_dir, control, mode)
     return result
 
 
@@ -50,9 +60,9 @@ def scored(result: CaseResult) -> CaseScore:
     return result.score
 
 
-def rejected(cases_dir: Path, control: Path | None = None) -> str:
+def rejected(cases_dir: Path, control: Path | None = None, mode: EvalMode = "diff") -> str:
     with pytest.raises(EvalInputError) as caught:
-        replay(cases_dir, control)
+        replay(cases_dir, control, mode)
     return str(caught.value)
 
 
@@ -306,7 +316,7 @@ def live_result(**fields: Any) -> CaseResult:
 def test_require_live_passes_a_live_recording_of_the_default_model() -> None:
     result = live_result()
 
-    assert require_live(result, "claude-opus-5-5") is result
+    assert require_live(result, "claude-opus-5-5", mode="diff") is result
 
 
 @pytest.mark.parametrize(
@@ -318,9 +328,29 @@ def test_require_live_passes_a_live_recording_of_the_default_model() -> None:
     ],
 )
 def test_require_live_fails_anything_else(result: CaseResult, expected: str) -> None:
-    [problem] = require_live(result, "claude-opus-5-5").problems
+    [problem] = require_live(result, "claude-opus-5-5", mode="diff").problems
 
     assert expected in problem
+    assert problem.endswith(
+        "record one with python -m review_bot.evals live --cases DIR --runs N --max-calls M"
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [CaseResult("calc", None, None), live_result(model="claude-other")],
+    ids=["no_recording", "other_model"],
+)
+def test_require_live_in_context_mode_says_where_a_live_context_recording_goes(
+    result: CaseResult,
+) -> None:
+    [problem] = require_live(result, "claude-opus-5-5", mode="context").problems
+
+    assert problem.endswith(
+        "; no command records a live context run yet (P3-S6); one goes in "
+        "recordings/live-context/recording.json"
+    )
+    assert "evals live" not in problem
 
 
 def test_freshness_fields_name_a_case_whose_diff_cant_be_reviewed(tmp_path: Path) -> None:
@@ -358,3 +388,279 @@ def test_each_committed_sample_control_is_fresh(control: Path) -> None:
     stale = {name: value for name, value in today.items() if data[name] != value}
 
     assert stale == {}, f"Set these fields in {control} to today's values: {stale}"
+
+
+# --- P3-S5: context mode ------------------------------------------------------------------------
+
+UTIL = "app/util.py"
+UTIL_TEXT = "".join(f"line_{number} = {number}\n" for number in range(1, 21))
+
+
+def context_case(cases_dir: Path) -> Path:
+    case_file = write_case(cases_dir, repo="repo")
+    write_repo(case_file, {UTIL: UTIL_TEXT})
+    return case_file
+
+
+def cited(first: int, last: int, file: str = UTIL) -> dict[str, Any]:
+    return finding(evidence=[{"file": file, "start_line": first, "end_line": last}])
+
+
+def test_freshness_fields_in_context_mode_add_the_repo_tree_and_the_tool_definitions(
+    tmp_path: Path,
+) -> None:
+    case_file = context_case(tmp_path)
+    diff_fields = freshness_fields(case_file)
+
+    fields = freshness_fields(case_file, "context")
+
+    assert fields.keys() == {*diff_fields, "repo_tree"}
+    assert fields["case_sha256"] == diff_fields["case_sha256"]
+    assert fields["diff_sha256"] == diff_fields["diff_sha256"]
+    assert fields["prompt_version"] == prompt.CONTEXT_PROMPT_VERSION
+    assert fields["prompt_sha256"] != diff_fields["prompt_sha256"]
+    assert len(fields["repo_tree"]) == 40
+
+
+def test_freshness_fields_in_context_mode_follow_the_repo_but_not_diff_modes(
+    tmp_path: Path,
+) -> None:
+    case_file = context_case(tmp_path)
+    before = (freshness_fields(case_file), freshness_fields(case_file, "context"))
+
+    (case_file.parent / "repo" / UTIL).write_text(UTIL_TEXT + "more = 1\n", encoding="utf-8")
+    after = (freshness_fields(case_file), freshness_fields(case_file, "context"))
+
+    assert after[0] == before[0]
+    assert after[1] == before[1] | {"repo_tree": after[1]["repo_tree"]}
+    assert after[1]["repo_tree"] != before[1]["repo_tree"]
+
+
+def test_freshness_fields_in_context_mode_change_with_a_tool_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case_file = context_case(tmp_path)
+    before = freshness_fields(case_file, "context")
+    changed = dataclasses.replace(TOOL_DEFINITIONS[0], description="Read anything.")
+
+    monkeypatch.setattr(
+        "review_bot.context.tools.TOOL_DEFINITIONS", (changed, *TOOL_DEFINITIONS[1:])
+    )
+    after = freshness_fields(case_file, "context")
+
+    assert after == before | {"prompt_sha256": after["prompt_sha256"]}
+    assert after["prompt_sha256"] != before["prompt_sha256"]
+
+
+def test_freshness_fields_in_context_mode_use_an_empty_repo_without_one(tmp_path: Path) -> None:
+    fields = freshness_fields(write_case(tmp_path), "context")
+
+    assert fields["repo_tree"] == "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def test_replay_cases_in_context_mode_without_a_recording_scores_the_rules(
+    tmp_path: Path,
+) -> None:
+    context_case(tmp_path)
+
+    result = replay_one(tmp_path, mode="context")
+
+    rule, ai = scored(result).bugs
+    assert (rule.caught, ai.is_measured, result.recording) == (1, False, None)
+
+
+def test_replay_cases_in_context_mode_reads_the_live_context_recording_only(
+    tmp_path: Path,
+) -> None:
+    case_file = context_case(tmp_path)
+    write_live(case_file, recording(case_file, [run_of()], kind="live"))
+    write_live_context(
+        case_file, context_recording(case_file, [run_of(finding())] * 2, kind="live")
+    )
+
+    context, diff = replay_one(tmp_path, mode="context"), replay_one(tmp_path)
+
+    assert scored(context).bugs[1].caught == 2
+    assert scored(diff).bugs[1].caught == 0
+
+
+@pytest.mark.parametrize(
+    ("calls", "kept", "dropped"),
+    [
+        ([tool_call("read", [(UTIL, 1, 10)])], 1, 0),
+        ([tool_call("grep", [(UTIL, 4, 4)])], 0, 1),
+        ([tool_call("read", outcome="refused", reason="not_found")], 0, 1),
+        ([], 0, 1),
+    ],
+    ids=["read_covers_it", "grep_line_only", "refused", "no_calls"],
+)
+def test_replay_cases_checks_evidence_against_the_runs_recorded_tool_calls(
+    tmp_path: Path, calls: list[dict[str, Any]], kept: int, dropped: int
+) -> None:
+    case_file = context_case(tmp_path)
+    run = run_of(cited(3, 5)) | {"tool_calls": calls}
+    control = write_synthetic(case_file, context_recording(case_file, [run]))
+
+    [replayed] = scored(replay_one(tmp_path, control, "context")).evidence.runs
+
+    assert (replayed.evidence_kept, replayed.evidence_dropped) == (kept, dropped)
+    assert [finding.line for finding in replayed.final] == [3], "the finding is kept either way"
+
+
+def test_replay_cases_in_context_mode_counts_diff_lines_as_shown(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    control = write_synthetic(
+        case_file, context_recording(case_file, [run_of(cited(2, 5, "app/calc.py"))])
+    )
+
+    [replayed] = scored(replay_one(tmp_path, control, "context")).evidence.runs
+
+    assert (replayed.evidence_kept, replayed.evidence_dropped) == (1, 0)
+
+
+def test_replay_cases_checks_each_run_against_its_own_tool_calls(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    runs = [
+        run_of(cited(3, 3)) | {"tool_calls": [tool_call("read", [(UTIL, 1, 10)])]},
+        run_of(cited(3, 3)),
+    ]
+    control = write_synthetic(case_file, context_recording(case_file, runs))
+
+    first, second = scored(replay_one(tmp_path, control, "context")).evidence.runs
+
+    assert (first.evidence_kept, second.evidence_kept) == (1, 0)
+
+
+def test_replay_cases_fails_a_context_recording_with_a_stale_repo_tree(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    data = context_recording(case_file, [run_of()], repo_tree="0" * 40)
+    control = write_synthetic(case_file, data)
+
+    [problem] = replay_one(tmp_path, control, "context").problems
+
+    assert "its repo_tree differs from today's" in problem
+    assert problem.endswith(
+        "Set its five freshness fields to today's values, from "
+        'review_bot.evals.freshness_fields(case.json, "context")'
+    )
+
+
+def test_replay_cases_tells_how_to_replace_a_stale_live_context_recording(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    write_live_context(
+        case_file, context_recording(case_file, [run_of()], kind="live", repo_tree="0" * 40)
+    )
+
+    [problem] = replay_one(tmp_path, mode="context").problems
+
+    assert problem.endswith(
+        "Record it again: no command records a live context run yet (P3-S6); one goes in "
+        "recordings/live-context/recording.json"
+    )
+
+
+def test_replay_cases_rejects_a_context_recording_under_live(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    path = write_live(case_file, context_recording(case_file, [run_of()], kind="live"))
+
+    message = rejected(tmp_path)
+
+    assert message.startswith(f"{path} is a context-mode recording under recordings/live/")
+    assert "Move it to recordings/live-context/" in message
+
+
+def test_replay_cases_rejects_a_diff_recording_under_live_context(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    path = write_live_context(case_file, recording(case_file, [run_of()], kind="live"))
+
+    message = rejected(tmp_path, mode="context")
+
+    assert message.startswith(f"{path} is a diff-mode recording under recordings/live-context/")
+
+
+def test_replay_cases_rejects_a_synthetic_recording_under_live_context(tmp_path: Path) -> None:
+    case_file = context_case(tmp_path)
+    path = write_live_context(case_file, context_recording(case_file, [run_of()]))
+
+    assert rejected(tmp_path).startswith(
+        f"{path} is a synthetic recording under recordings/live-context/"
+    )
+
+
+def test_replay_cases_tells_where_a_live_context_recording_under_synthetic_goes(
+    tmp_path: Path,
+) -> None:
+    case_file = context_case(tmp_path)
+    write_synthetic(case_file, context_recording(case_file, [run_of()], kind="live"))
+
+    assert "Move it to recordings/live-context/recording.json" in rejected(tmp_path)
+
+
+@pytest.mark.parametrize(("mode", "other"), [("diff", "context"), ("context", "diff")])
+def test_replay_cases_rejects_a_control_of_the_other_mode(
+    tmp_path: Path, mode: EvalMode, other: EvalMode
+) -> None:
+    case_file = context_case(tmp_path / "cases")
+    make = recording if other == "diff" else context_recording
+    control = write_json(tmp_path / "control.json", make(case_file, [run_of()]))
+
+    message = rejected(tmp_path / "cases", control, mode)
+
+    assert message.startswith(f"--recording {control} is a {other}-mode recording")
+    assert f"Pass --mode {other}" in message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        GitError("git fast-import failed with exit code 128"),
+        GitTimeoutError("git fast-import took longer than 60 seconds"),
+    ],
+    ids=["fails", "times_out"],
+)
+def test_replay_cases_names_a_case_whose_repo_cant_be_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: GitError
+) -> None:
+    case_file = context_case(tmp_path)
+
+    def fail(*_args: Any) -> Any:
+        raise error
+
+    monkeypatch.setattr(replay_module, "build_fixture_repo", fail)
+
+    assert rejected(tmp_path, mode="context") == f"{case_file}: its repo can't be built: {error}"
+
+
+def test_replay_cases_in_context_mode_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_dir = tmp_path / "cases"
+    case_file = context_case(cases_dir)
+    control = write_synthetic(case_file, context_recording(case_file, [run_of(finding())]))
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    before = sorted(cases_dir.rglob("*"))
+
+    replay(cases_dir, control, "context")
+
+    assert sorted(cases_dir.rglob("*")) == before
+    assert list(temp_root.iterdir()) == []
+
+
+def test_replay_cases_counts_only_the_diffs_lines_of_a_file_it_changes_as_the_repo_is_its_base(
+    tmp_path: Path,
+) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    write_repo(case_file, {"app/calc.py": "".join(f"x{n} = {n}\n" for n in range(1, 21))})
+    read_all = [tool_call("read", [("app/calc.py", 1, 20)])]
+    runs = [
+        run_of(cited(8, 10, "app/calc.py")) | {"tool_calls": read_all},
+        run_of(cited(2, 4, "app/calc.py")) | {"tool_calls": read_all},
+    ]
+    control = write_synthetic(case_file, context_recording(case_file, runs))
+
+    outside, inside = scored(replay_one(tmp_path, control, "context")).evidence.runs
+
+    assert (outside.evidence_kept, outside.evidence_dropped) == (0, 1)
+    assert (inside.evidence_kept, inside.evidence_dropped) == (1, 0)

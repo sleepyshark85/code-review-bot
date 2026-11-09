@@ -1,14 +1,30 @@
 """Unit tests for reading eval cases and recordings: every invalid file is named, exit 2's way."""
 
 import json
+import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
-from eval_cases import AI_BUG, RULE_BUG, failed_run, finding, recording, run_of, write_case
+from eval_cases import (
+    AI_BUG,
+    RULE_BUG,
+    failed_run,
+    finding,
+    recording,
+    run_of,
+    tool_call,
+    write_case,
+    write_repo,
+)
 
+from review_bot.context.ledger import LineSpan, RefusalReason, ToolName, ToolOutcome
 from review_bot.evals.formats import (
+    MAX_REPO_BYTES,
+    MAX_REPO_FILES,
     EvalInputError,
+    FixtureFile,
     find_case_files,
     load_case,
     load_recording,
@@ -187,3 +203,288 @@ def test_load_recording_rejects_bad_top_level_fields(
 
     with pytest.raises(EvalInputError, match=f": {expected}"):
         load_recording(path)
+
+
+# --- P3-S5: a case's repo, and context recordings ----------------------------------------------
+
+
+def test_load_case_reads_its_repo_sorted_with_each_files_bytes_and_mode(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    root = write_repo(case_file, {"b/z.py": "z = 1\n", "a.py": "a = 1\n", "b/run.sh": "echo\n"})
+    (root / "b" / "run.sh").chmod(0o755)
+
+    files = load_case(case_file).repo_files
+
+    assert files == (
+        FixtureFile("a.py", b"a = 1\n"),
+        FixtureFile("b/run.sh", b"echo\n", is_executable=os.name != "nt"),
+        FixtureFile("b/z.py", b"z = 1\n"),
+    )
+
+
+def test_load_case_without_a_repo_has_no_repo_files(tmp_path: Path) -> None:
+    assert load_case(write_case(tmp_path)).repo_files == ()
+
+
+def test_load_case_reads_an_empty_repo(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    write_repo(case_file, {})
+
+    assert load_case(case_file).repo_files == ()
+
+
+@pytest.mark.parametrize("make", ["missing", "file"])
+def test_load_case_rejects_a_repo_that_isnt_a_directory(tmp_path: Path, make: str) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    if make == "file":
+        write_text(case_file.parent / "repo", "not a directory\n")
+
+    message = rejected_case(case_file)
+
+    assert message.startswith(f"{case_file}: its repo 'repo' isn't a directory")
+
+
+def test_load_case_rejects_an_absolute_repo(tmp_path: Path) -> None:
+    absolute = write_repo(write_case(tmp_path / "other"), {"a.py": "a = 1\n"})
+    case_file = write_case(tmp_path / "cases", repo=str(absolute))
+
+    assert rejected_case(case_file) == (
+        f"{case_file}: its repo {str(absolute)!r} is an absolute path; give a directory relative "
+        "to the case file. Fix the case's repo."
+    )
+
+
+@pytest.mark.parametrize("repo", [".", "repo/..", "..", "../..", "../other/repo"])
+def test_load_case_rejects_a_repo_that_isnt_inside_its_case_directory(
+    tmp_path: Path, repo: str
+) -> None:
+    write_repo(write_case(tmp_path / "cases", "other"), {"a.py": "a = 1\n"})
+    case_file = write_case(tmp_path / "cases", repo=repo)
+    write_repo(case_file, {"a.py": "a = 1\n"})
+
+    assert rejected_case(case_file).startswith(
+        f"{case_file}: its repo {repo!r} isn't inside its case directory, after resolving '..' "
+        "and links"
+    )
+
+
+@pytest.mark.parametrize("repo", ["repo/.git", "repo/.GIT/objects", ".git"])
+def test_load_case_rejects_a_repo_whose_path_names_a_git_directory(
+    tmp_path: Path, repo: str
+) -> None:
+    case_file = write_case(tmp_path, repo=repo)
+    (case_file.parent / repo).mkdir(parents=True)
+
+    assert rejected_case(case_file) == (
+        f"{case_file}: its repo {repo!r} names a '.git' directory, which git keeps for itself. "
+        "Fix the case's repo."
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "named"),
+    [
+        ({"vendor/.git/HEAD": "ref: refs/heads/main\n"}, "vendor/.git"),
+        ({"a/.Git": "not a directory\n"}, "a/.Git"),
+    ],
+    ids=["directory", "file_any_case"],
+)
+def test_load_case_rejects_a_git_name_anywhere_in_the_repo(
+    tmp_path: Path, files: dict[str, str], named: str
+) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    write_repo(case_file, {"a.py": "a = 1\n", **files})
+
+    assert rejected_case(case_file) == (
+        f"{case_file}: its repo 'repo' holds {named!r}, a name git keeps for itself. "
+        "Fix the case's repo."
+    )
+
+
+def test_load_case_accepts_a_repo_whose_dots_stay_inside_its_case_directory(
+    tmp_path: Path,
+) -> None:
+    case_file = write_case(tmp_path, repo="fixtures/../repo")
+    write_repo(case_file, {"a.py": "a = 1\n"})
+    (case_file.parent / "fixtures").mkdir()
+
+    assert load_case(case_file).repo_files == (FixtureFile("a.py", b"a = 1\n"),)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need a privilege on Windows")
+def test_load_case_rejects_a_repo_whose_link_leads_outside_its_case_directory(
+    tmp_path: Path,
+) -> None:
+    outside = write_repo(write_case(tmp_path / "other"), {"a.py": "a = 1\n"})
+    case_file = write_case(tmp_path / "cases", repo="linked/repo")
+    (case_file.parent / "linked").symlink_to(outside.parent)
+
+    assert "isn't inside its case directory" in rejected_case(case_file)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need a privilege on Windows")
+@pytest.mark.parametrize("where", ["inside", "root"])
+def test_load_case_rejects_a_symbolic_link_in_or_as_the_repo(tmp_path: Path, where: str) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    target = write_repo(case_file, {"a.py": "a = 1\n"}, name="target")
+    if where == "root":
+        (case_file.parent / "repo").symlink_to(target)
+        expected = "isn't a directory"
+    else:
+        write_repo(case_file, {"b.py": "b = 1\n"})
+        (case_file.parent / "repo" / "link").symlink_to(target / "a.py")
+        expected = "holds 'link', which is neither a regular file nor a plain directory"
+
+    assert expected in rejected_case(case_file)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named pipes are POSIX-only")
+def test_load_case_rejects_a_named_pipe_in_the_repo_without_opening_it(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, repo="repo")
+    root = write_repo(case_file, {"a.py": "a = 1\n"})
+    os.mkfifo(root / "pipe")
+
+    assert "holds 'pipe', which is neither" in rejected_case(case_file)
+
+
+def test_load_case_accepts_the_most_files_and_rejects_one_more(tmp_path: Path) -> None:
+    at_limit = write_case(tmp_path / "a", repo="repo")
+    write_repo(at_limit, {f"d/{index}.txt": "" for index in range(MAX_REPO_FILES)})
+    over = write_case(tmp_path / "b", repo="repo")
+    write_repo(over, {f"d/{index}.txt": "" for index in range(MAX_REPO_FILES + 1)})
+
+    assert len(load_case(at_limit).repo_files) == MAX_REPO_FILES
+    assert f"holds more than {MAX_REPO_FILES} files" in rejected_case(over)
+
+
+def test_load_case_accepts_the_most_bytes_and_rejects_one_more_over_all_files(
+    tmp_path: Path,
+) -> None:
+    half = MAX_REPO_BYTES // 2
+    at_limit = write_case(tmp_path / "a", repo="repo")
+    write_repo(at_limit, {"a.txt": "x" * half, "b.txt": "x" * (MAX_REPO_BYTES - half)})
+    over = write_case(tmp_path / "b", repo="repo")
+    write_repo(over, {"a.txt": "x" * half, "b.txt": "x" * (MAX_REPO_BYTES - half + 1)})
+
+    assert sum(len(file.content) for file in load_case(at_limit).repo_files) == MAX_REPO_BYTES
+    assert f"holds more than {MAX_REPO_BYTES:,} bytes" in rejected_case(over)
+
+
+def test_load_recording_reads_a_context_recording(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path)
+    calls = [
+        tool_call("read", [("app/util.py", 1, 30)]),
+        tool_call("glob", listed=["app/util.py"]),
+        tool_call(None, outcome="refused", reason="unknown_tool"),
+    ]
+    runs = [
+        run_of(finding())
+        | {
+            "tool_calls": calls,
+            "usage": {"input_tokens": 1, "output_tokens": 2, "cost_usd": "0.21"},
+        },
+        failed_run("permanent") | {"error": {"category": "permanent", "cap": "turns"}},
+    ]
+    data = recording(case_file, runs) | {"mode": "context", "repo_tree": "0" * 40}
+    path = write_text(tmp_path / "rec.json", json.dumps(data))
+
+    loaded = load_recording(path)
+
+    first, second = loaded.runs
+    assert loaded.mode == "context"
+    assert (first.cost_usd, first.cap, second.cost_usd, second.cap) == (
+        Decimal("0.21"),
+        None,
+        None,
+        "turns",
+    )
+    read, glob, unknown = first.ledger
+    assert (read.tool, read.outcome, read.spans) == (
+        ToolName.READ,
+        ToolOutcome.OK,
+        (LineSpan("app/util.py", 1, 30),),
+    )
+    assert glob.listed == ("app/util.py",)
+    assert (unknown.tool, unknown.reason) == (None, RefusalReason.UNKNOWN_TOOL)
+
+
+def test_load_recording_reads_a_recording_without_mode_as_diff(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path)
+    path = write_text(tmp_path / "rec.json", json.dumps(recording(case_file, [run_of()])))
+
+    loaded = load_recording(path)
+
+    assert (loaded.mode, loaded.repo_tree, loaded.runs[0].tool_calls) == ("diff", None, ())
+
+
+def _context_run(**fields: Any) -> dict[str, Any]:
+    return run_of() | fields
+
+
+@pytest.mark.parametrize(
+    ("fields", "runs", "expected"),
+    [
+        ({"mode": "context"}, [run_of()], "repo_tree is required for a context recording"),
+        ({"repo_tree": "0" * 40}, [run_of()], "repo_tree is required for a context recording"),
+        ({}, [_context_run(tool_calls=[tool_call()])], "a diff recording's runs make no tool"),
+        ({"mode": "both"}, [run_of()], "mode"),
+    ],
+)
+def test_load_recording_rejects_a_mode_its_fields_dont_fit(
+    tmp_path: Path, fields: dict[str, Any], runs: list[dict[str, Any]], expected: str
+) -> None:
+    case_file = write_case(tmp_path)
+    path = write_text(tmp_path / "rec.json", json.dumps(recording(case_file, runs) | fields))
+
+    with pytest.raises(EvalInputError) as caught:
+        load_recording(path)
+
+    assert str(caught.value).startswith(f"{path}: ")
+    assert expected in str(caught.value)
+
+
+_USAGE = {"input_tokens": 0, "output_tokens": 0}
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        (_context_run(tool_calls=[tool_call()] * 31), "runs.0.tool_calls"),
+        (_context_run(tool_calls=[tool_call(spans=[("a.py", 1, 1)] * 51)]), "spans"),
+        (_context_run(tool_calls=[tool_call(listed=["a.py"] * 201)]), "listed"),
+        (_context_run(tool_calls=[tool_call(spans=[("a.py", 5, 4)])]), "span 5 to 4 ends"),
+        (_context_run(tool_calls=[tool_call(spans=[("a.py", 0, 4)])]), "first_line"),
+        (_context_run(tool_calls=[tool_call(outcome="refused")]), "a reason exactly when"),
+        (_context_run(tool_calls=[tool_call(reason="not_found")]), "a reason exactly when"),
+        (_context_run(tool_calls=[tool_call(tool="bash")]), "tool_calls.0.tool"),
+        (_context_run(tool_calls=[tool_call(input_sha256="0" * 64)]), "input_sha256"),
+        (_context_run(usage=_USAGE | {"cost_usd": 0.21}), "a cost must be a decimal string"),
+        (_context_run(usage=_USAGE | {"cost_usd": "lots"}), "'lots' isn't a decimal number"),
+        (_context_run(usage=_USAGE | {"cost_usd": "-0.01"}), "greater than or equal to 0"),
+        (_context_run(usage=_USAGE | {"cost_usd": "NaN"}), "finite number"),
+        (failed_run() | {"error": {"category": "permanent", "cap": "tokens"}}, "error.cap"),
+    ],
+)
+def test_load_recording_rejects_a_bad_context_run(
+    tmp_path: Path, run: dict[str, Any], expected: str
+) -> None:
+    case_file = write_case(tmp_path)
+    data = recording(case_file, [run]) | {"mode": "context", "repo_tree": "0" * 40}
+    path = write_text(tmp_path / "rec.json", json.dumps(data))
+
+    with pytest.raises(EvalInputError) as caught:
+        load_recording(path)
+
+    assert expected in str(caught.value)
+
+
+def test_load_recording_accepts_the_most_tool_calls_and_spans(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path)
+    calls = [tool_call("grep", [("a.py", line, line) for line in range(1, 51)])] * 30
+    data = recording(case_file, [_context_run(tool_calls=calls)]) | {
+        "mode": "context",
+        "repo_tree": "0" * 40,
+    }
+    path = write_text(tmp_path / "rec.json", json.dumps(data))
+
+    assert len(load_recording(path).runs[0].ledger) == 30

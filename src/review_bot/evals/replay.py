@@ -1,8 +1,9 @@
 """Replay a case's recorded runs through today's pipeline, with ``MockProvider`` (ADR 0007).
 
-Nothing here calls a model. Each pipeline run's audit log goes to a temporary directory that is
-deleted afterwards, so replay writes nothing that outlives it. It also holds ``check_sendable``,
-``live``'s pre-flight check of each case.
+Nothing here calls a model. In context mode, the case's ``repo`` is built as a git repository
+for the tools (``evals.fixture_repo``). The repository and each pipeline run's audit log go to a
+temporary directory that is deleted afterwards, so replay writes nothing that outlives it. It
+also holds ``check_sendable``, ``live``'s pre-flight check of each case.
 """
 
 import dataclasses
@@ -14,11 +15,14 @@ from pathlib import Path
 from typing import Final
 
 from review_bot.audit import AuditLog, utc_now
+from review_bot.context.tools import RepoTools
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import parse_diff
-from review_bot.errors import InputError
+from review_bot.errors import GitError, InputError
+from review_bot.evals.fixture_repo import FixtureRepo, build_fixture_repo
 from review_bot.evals.formats import (
     EvalInputError,
+    EvalMode,
     LoadedCase,
     RecordedRun,
     Recording,
@@ -28,11 +32,18 @@ from review_bot.evals.formats import (
 )
 from review_bot.evals.score import CaseEvidence, CaseResult, RunFindings, score_case
 from review_bot.findings import Finding, Source
-from review_bot.prompt import PROMPT_VERSION, build_request
+from review_bot.prompt import (
+    CONTEXT_PROMPT_VERSION,
+    PROMPT_VERSION,
+    build_context_request,
+    build_request,
+)
+from review_bot.providers.base import ReviewRequest
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
-from review_bot.review import run_pipeline
+from review_bot.review import ReviewContext, run_pipeline, tool_caps
 from review_bot.settings import Settings
+from review_bot.verify import VerifyResult, verify_findings
 
 __all__ = [
     "check_sendable",
@@ -42,25 +53,38 @@ __all__ = [
     "score_recording",
 ]
 
+_MODES: Final[tuple[EvalMode, ...]] = ("diff", "context")
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
+# ``live`` records diff mode only; P3-S6 adds recording context mode.
+_LIVE_CONTEXT_ADVICE: Final = (
+    "no command records a live context run yet (P3-S6); one goes in "
+    "recordings/live-context/recording.json"
+)
 
 
-def freshness_fields(case_file: Path) -> dict[str, str]:
+def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]:
     """Today's values of a recording's freshness fields, for the case at ``case_file``.
 
     A recording is fresh only if its ``case_sha256``, ``diff_sha256``, ``prompt_version`` and
-    ``prompt_sha256`` all equal these. ``prompt_sha256`` covers the system prompt and the user
-    prompt built from the diff's reviewable text, so changing either prompt, the framing, or
-    which files are skipped changes it.
+    ``prompt_sha256``, and in context mode its ``repo_tree``, all equal these. ``prompt_sha256``
+    covers the system prompt and the user prompt built from the diff's reviewable text, and in
+    context mode the tool definitions, so changing either prompt, the framing, a tool, or which
+    files are skipped changes it. ``repo_tree`` is the tree ID of the case's built ``repo``, so
+    changing any file under it changes it. Context mode builds that repository with git.
 
     Raises:
-        EvalInputError: If the case is invalid, or its diff can't be reviewed.
+        EvalInputError: If the case is invalid, its diff can't be reviewed, or in context mode
+            its repository can't be built.
     """
-    return _case_freshness(load_case(case_file))
+    loaded = load_case(case_file)
+    if mode == "diff":
+        return _case_freshness(loaded, None)
+    with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
+        return _case_freshness(loaded, _build_repo(loaded, Path(work_dir)))
 
 
-def _case_freshness(loaded: LoadedCase) -> dict[str, str]:
-    """``freshness_fields`` for a case already loaded.
+def _case_freshness(loaded: LoadedCase, repo: FixtureRepo | None) -> dict[str, str]:
+    """``freshness_fields`` for a case already loaded: in context mode with its built ``repo``.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
@@ -71,51 +95,73 @@ def _case_freshness(loaded: LoadedCase) -> dict[str, str]:
         reviewable_text = parse_diff(diff).reviewable_text
     except InputError as exc:
         raise _unreviewable(loaded, exc) from exc
+    fields = {"case_sha256": loaded.case_sha256, "diff_sha256": _sha256_text(diff)}
     # The same request ``run_pipeline`` builds; ``model`` isn't part of either prompt.
-    request = build_request(reviewable_text, model=settings.model)
-    prompts = json.dumps([request.system_prompt, request.user_prompt])
-    return {
-        "case_sha256": loaded.case_sha256,
-        "diff_sha256": _sha256(diff.encode("utf-8")),
-        "prompt_version": PROMPT_VERSION,
-        "prompt_sha256": _sha256(prompts.encode("utf-8")),
+    if repo is None:
+        request = build_request(reviewable_text, model=settings.model)
+        prompts = json.dumps([request.system_prompt, request.user_prompt])
+        return fields | {"prompt_version": PROMPT_VERSION, "prompt_sha256": _sha256_text(prompts)}
+    tools = RepoTools(repo.repo, caps=tool_caps(settings))
+    request = build_context_request(reviewable_text, model=settings.model, tools=tools)
+    prompts = json.dumps([request.system_prompt, request.user_prompt, _tool_definitions(request)])
+    return fields | {
+        "prompt_version": CONTEXT_PROMPT_VERSION,
+        "prompt_sha256": _sha256_text(prompts),
+        "repo_tree": repo.tree,
     }
 
 
-async def replay_cases(cases_dir: Path, control: Path | None) -> list[CaseResult]:
-    """Score every case under ``cases_dir`` on its live recording, or on rules alone without one.
+def _tool_definitions(request: ReviewRequest) -> list[dict[str, object]]:
+    tools = () if request.tools is None else request.tools.definitions
+    return [
+        {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+        for tool in tools
+    ]
 
-    ``control`` is a synthetic recording (``--recording``) that replaces its case's live one. A
-    stale recording fails its case without scoring it.
+
+async def replay_cases(
+    cases_dir: Path, control: Path | None, *, mode: EvalMode = "diff"
+) -> list[CaseResult]:
+    """Score every case under ``cases_dir`` on its live recording of ``mode``, or on rules alone.
+
+    ``control`` is a synthetic recording (``--recording``) of ``mode`` that replaces its case's
+    live one. A stale recording fails its case without scoring it.
 
     Raises:
         EvalInputError: If a case or a recording read is invalid, a recording sits under the
-            wrong kind's directory, or ``control`` is live or names no case.
+            wrong kind's or mode's directory, ``control`` is live, of another mode or names no
+            case, or in context mode a case's repository can't be built.
     """
     cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
-    recordings = {loaded.case.id: _live_recording(loaded) for loaded in cases}
+    recordings = {loaded.case.id: _live_recordings(loaded)[mode] for loaded in cases}
     for loaded in cases:
         _check_synthetic_recordings(loaded)
     if control is not None:
-        recording = _control_recording(control)
+        recording = _control_recording(control, mode)
         if recording.case_id not in recordings:
             raise EvalInputError(
                 f"--recording {control}: case_id {recording.case_id!r} names no case under "
                 f"{cases_dir}. Pass a recording of one of its cases."
             )
         recordings[recording.case_id] = recording
-    return [await score_recording(loaded, recordings[loaded.case.id]) for loaded in cases]
+    return [
+        await score_recording(loaded, recordings[loaded.case.id], mode=mode) for loaded in cases
+    ]
 
 
-def require_live(result: CaseResult, default_model: str) -> CaseResult:
-    """``result``, failed too unless it was scored on a live recording of ``default_model``."""
+def require_live(result: CaseResult, default_model: str, *, mode: EvalMode) -> CaseResult:
+    """``result``, failed too unless it was scored on a live recording of ``default_model``.
+
+    ``mode`` is the replay's, so the advice says how to get a live recording of that mode.
+    """
     recording = result.recording
+    advice = f"record one with {_LIVE_COMMAND}" if mode == "diff" else _LIVE_CONTEXT_ADVICE
     if recording is None or recording.kind != "live":
-        problem = f"--require-live needs a live recording; record one with {_LIVE_COMMAND}"
+        problem = f"--require-live needs a live recording; {advice}"
     elif recording.model != default_model:
         problem = (
             f"--require-live needs a recording of the default model {default_model}, but this "
-            f"one is of {recording.model}; record one with {_LIVE_COMMAND}"
+            f"one is of {recording.model}; {advice}"
         )
     else:
         return result
@@ -133,7 +179,7 @@ async def check_sendable(loaded: LoadedCase) -> None:
             case file, or if every file in it is skipped, naming the case.
     """
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
-        result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl")
+        result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl", None)
     if not result.model_called:
         raise EvalInputError(
             f"case {loaded.case.id}: nothing to review: every file is skipped, so no call would "
@@ -141,50 +187,90 @@ async def check_sendable(loaded: LoadedCase) -> None:
         )
 
 
-async def score_recording(loaded: LoadedCase, recording: Recording | None) -> CaseResult:
-    """Score the case on ``recording`` through today's pipeline, or on rules alone without one.
+async def score_recording(
+    loaded: LoadedCase, recording: Recording | None, *, mode: EvalMode
+) -> CaseResult:
+    """Score the case in ``mode`` on ``recording`` through today's pipeline, or on rules alone.
 
     A stale recording fails the case without being scored.
 
     Raises:
-        EvalInputError: If the case's diff can't be reviewed.
+        EvalInputError: If the case's diff can't be reviewed, or in context mode its repository
+            can't be built.
     """
     case_id = loaded.case.id
-    if recording is not None:
-        today = _case_freshness(loaded)
-        stale = [name for name, value in today.items() if getattr(recording, name) != value]
-        if stale:
-            verb = "differs" if len(stale) == 1 else "differ"
-            problem = (
-                f"the recording is stale: its {', '.join(stale)} {verb} from today's, so it "
-                f"wasn't scored. {_refresh_advice(recording)}"
-            )
-            return CaseResult(case_id, recording, None, (problem,))
-    evidence = await _replay_case(loaded, recording)
+    with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
+        repo = None if mode == "diff" else _build_repo(loaded, Path(work_dir))
+        if recording is not None:
+            today = _case_freshness(loaded, repo)
+            stale = [name for name, value in today.items() if getattr(recording, name) != value]
+            if stale:
+                verb = "differs" if len(stale) == 1 else "differ"
+                problem = (
+                    f"the recording is stale: its {', '.join(stale)} {verb} from today's, so it "
+                    f"wasn't scored. {_refresh_advice(recording)}"
+                )
+                return CaseResult(case_id, recording, None, (problem,))
+        # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
+        context = None if repo is None else ReviewContext(repo=repo.repo)
+        evidence = await _replay_case(loaded, recording, context, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
 
 
+def _build_repo(loaded: LoadedCase, work_dir: Path) -> FixtureRepo:
+    """Build the case's ``repo``, or an empty repository without one, under ``work_dir``.
+
+    Raises:
+        EvalInputError: If git can't build it.
+    """
+    try:
+        return build_fixture_repo(loaded.repo_files, work_dir / "repo")
+    except GitError as exc:
+        raise EvalInputError(f"{loaded.file}: its repo can't be built: {exc}") from exc
+
+
 def _refresh_advice(recording: Recording) -> str:
+    """How to make a stale ``recording`` fresh. The message names the stale fields already."""
+    if recording.mode == "context":
+        if recording.kind == "live":
+            return f"Record it again: {_LIVE_CONTEXT_ADVICE}"
+        return (
+            "Set its five freshness fields to today's values, from "
+            'review_bot.evals.freshness_fields(case.json, "context")'
+        )
     live_advice = f"record a live run with {_LIVE_COMMAND}"
     if recording.kind == "live":
         return f"Record it again: {live_advice}"
-    # ``live`` can't remake a hand-written control, so updating its fields comes first. The
-    # stale fields are named earlier in the message, so this advice doesn't list them.
+    # ``live`` can't remake a hand-written control, so updating its fields comes first.
     return (
         "Set its four freshness fields to today's values, from "
         f"review_bot.evals.freshness_fields(case.json), or {live_advice}"
     )
 
 
-def _live_recording(loaded: LoadedCase) -> Recording | None:
-    path = loaded.live_recording_path
+def _live_recordings(loaded: LoadedCase) -> dict[EvalMode, Recording | None]:
+    """The case's live recording of each mode, or None where it has none.
+
+    Raises:
+        EvalInputError: If one is invalid, synthetic, of another case or of the other mode.
+    """
+    return {mode: _live_recording(loaded, mode) for mode in _MODES}
+
+
+def _live_recording(loaded: LoadedCase, mode: EvalMode) -> Recording | None:
+    path = loaded.live_recording_path(mode)
     if not path.is_file():
         return None
     recording = load_recording(path)
     if recording.kind != "live":
         raise EvalInputError(
-            f"{path} is a {recording.kind} recording under recordings/live/. Move it to "
+            f"{path} is a {recording.kind} recording under {_live_directory(mode)}. Move it to "
             "recordings/synthetic/: only --recording reads a synthetic one."
+        )
+    if recording.mode != mode:
+        raise EvalInputError(
+            f"{path} is a {recording.mode}-mode recording under {_live_directory(mode)}, which "
+            f"holds {mode}-mode ones. Move it to {_live_directory(recording.mode)}."
         )
     if recording.case_id != loaded.case.id:
         raise EvalInputError(
@@ -194,56 +280,76 @@ def _live_recording(loaded: LoadedCase) -> Recording | None:
     return recording
 
 
+def _live_directory(mode: EvalMode) -> str:
+    return "recordings/live/" if mode == "diff" else "recordings/live-context/"
+
+
 def _check_synthetic_recordings(loaded: LoadedCase) -> None:
     for path in sorted((loaded.file.parent / "recordings" / "synthetic").glob("*.json")):
         recording = load_recording(path)
         if recording.kind != "synthetic":
             raise EvalInputError(
                 f"{path} is a {recording.kind} recording under recordings/synthetic/. Move it "
-                "to recordings/live/recording.json."
+                f"to {_live_directory(recording.mode)}recording.json."
             )
 
 
-def _control_recording(path: Path) -> Recording:
+def _control_recording(path: Path, mode: EvalMode) -> Recording:
     recording = load_recording(path)
     if recording.kind != "synthetic":
         raise EvalInputError(
             f"--recording {path} is a {recording.kind} recording, but --recording reads only "
             "synthetic ones. Replay reads each case's live recording itself."
         )
+    if recording.mode != mode:
+        raise EvalInputError(
+            f"--recording {path} is a {recording.mode}-mode recording, but replay runs in "
+            f"{mode} mode. Pass --mode {recording.mode}, or a {mode}-mode recording."
+        )
     return recording
 
 
-async def _replay_case(loaded: LoadedCase, recording: Recording | None) -> CaseEvidence:
+async def _replay_case(
+    loaded: LoadedCase,
+    recording: Recording | None,
+    context: ReviewContext | None,
+    audit_path: Path,
+) -> CaseEvidence:
     """Run the case's diff through the pipeline once for the rules, then once per recorded run.
 
     A recorded run's findings are what ``MockProvider`` returns, so they meet today's verify and
     dedup. A failed run isn't replayed: it found nothing. With no recording, only the rules run.
+    ``context`` is the repository a context review's tools read, or None in diff mode.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
     """
-    with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
-        audit_path = Path(audit_dir) / "audit.jsonl"
-        rules_only = await _review(loaded, (), audit_path)
-        rule_findings = tuple(
-            reviewed.finding
-            for reviewed in rules_only.verification.kept
-            if reviewed.source is Source.RULE
-        )
-        recorded_runs = () if recording is None else recording.runs
-        runs = tuple([await _replay_run(loaded, run, audit_path) for run in recorded_runs])
+    rules_only = await _review(loaded, (), audit_path, context)
+    rule_findings = tuple(
+        reviewed.finding
+        for reviewed in rules_only.verification.kept
+        if reviewed.source is Source.RULE
+    )
+    recorded_runs = () if recording is None else recording.runs
+    runs = tuple([await _replay_run(loaded, run, audit_path, context) for run in recorded_runs])
     return CaseEvidence(rule_findings, runs)
 
 
-async def _replay_run(loaded: LoadedCase, run: RecordedRun, audit_path: Path) -> RunFindings:
+async def _replay_run(
+    loaded: LoadedCase, run: RecordedRun, audit_path: Path, context: ReviewContext | None
+) -> RunFindings:
     if run.error_category is not None:
         return RunFindings(
             returned=(), anchor_valid=(), dropped=(), final=(), error=run.error_category
         )
     # ``findings`` is set whenever ``error`` isn't (``RecordedRun``'s check).
     returned = run.findings or ()
-    verification = (await _review(loaded, returned, audit_path)).verification
+    result = await _review(loaded, returned, audit_path, context)
+    verification = (
+        result.verification
+        if context is None
+        else _verify_against_recorded_tools(result, returned, run, context)
+    )
     kept_ai = [reviewed for reviewed in verification.kept if reviewed.source is Source.AI]
     return RunFindings(
         returned=returned,
@@ -254,16 +360,43 @@ async def _replay_run(loaded: LoadedCase, run: RecordedRun, audit_path: Path) ->
         dropped=tuple(check.proposed for check in verification.dropped),
         final=tuple(reviewed.finding for reviewed in kept_ai),
         fingerprints=tuple(reviewed.fingerprint for reviewed in kept_ai),
+        evidence_kept=sum(len(check.evidence.kept) for check in verification.checks),
+        evidence_dropped=sum(check.evidence.dropped for check in verification.checks),
+    )
+
+
+def _verify_against_recorded_tools(
+    result: PipelineResult, returned: Sequence[Finding], run: RecordedRun, context: ReviewContext
+) -> VerifyResult:
+    """Verify ``returned`` again, as the pipeline did, with the run's recorded tool calls.
+
+    ``MockProvider`` calls no tool, so the pipeline's own check of the evidence saw an empty
+    ledger. The recorded calls are the ledger the live review had.
+    """
+    rule_findings = [
+        reviewed for reviewed in result.verification.kept if reviewed.source is Source.RULE
+    ]
+    return verify_findings(
+        returned,
+        rule_findings,
+        result.parsed,
+        ledger=run.ledger,
+        is_diff_head=context.is_diff_head,
     )
 
 
 async def _review(
-    loaded: LoadedCase, findings: Sequence[Finding], audit_path: Path
+    loaded: LoadedCase,
+    findings: Sequence[Finding],
+    audit_path: Path,
+    context: ReviewContext | None,
 ) -> PipelineResult:
     audit = AuditLog(audit_path, clock=utc_now)
     provider = MockProvider(findings=findings)
     try:
-        return await run_pipeline(loaded.diff_path, _replay_settings(), provider, audit)
+        return await run_pipeline(
+            loaded.diff_path, _replay_settings(), provider, audit, context=context
+        )
     except InputError as exc:
         raise _unreviewable(loaded, exc) from exc
 
@@ -277,5 +410,5 @@ def _unreviewable(loaded: LoadedCase, exc: InputError) -> EvalInputError:
     return EvalInputError(f"{loaded.file}: its diff can't be reviewed: {exc}")
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()

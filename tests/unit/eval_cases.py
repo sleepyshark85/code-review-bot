@@ -96,3 +96,36 @@ def write_live(case_file: Path, data: Mapping[str, Any]) -> Path:
 
 def write_synthetic(case_file: Path, data: Mapping[str, Any], name: str = "control") -> Path:
     return write_json(case_file.parent / "recordings" / "synthetic" / f"{name}.json", data)
+
+
+def tool_call(
+    tool: str | None = "read",
+    spans: Sequence[tuple[str, int, int]] = (),
+    **fields: Any,
+) -> dict:
+    """A recorded tool call that returned `spans`, as (path, first line, last line)."""
+    spans_data = [{"path": path, "first_line": a, "last_line": b} for path, a, b in spans]
+    return {"tool": tool, "outcome": "ok", "spans": spans_data, "result_bytes": 120} | fields
+
+
+def context_recording(case_file: Path, runs: Sequence[Mapping[str, Any]], **fields: Any) -> dict:
+    """A fresh synthetic context recording of `case_file`'s case; `fields` override any field."""
+    return recording(case_file, runs) | {
+        "mode": "context",
+        **freshness_fields(case_file, "context"),
+        **fields,
+    }
+
+
+def write_live_context(case_file: Path, data: Mapping[str, Any]) -> Path:
+    return write_json(case_file.parent / "recordings" / "live-context" / "recording.json", data)
+
+
+def write_repo(case_file: Path, files: Mapping[str, str], name: str = "repo") -> Path:
+    """Write `files` (path to text) under the case's `name` directory; return the directory."""
+    root = case_file.parent / name
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    root.mkdir(parents=True, exist_ok=True)
+    return root

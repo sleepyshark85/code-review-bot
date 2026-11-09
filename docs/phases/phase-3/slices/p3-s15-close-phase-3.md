@@ -16,7 +16,7 @@ Mostly recorded evidence, as in [P2-S12](../../phase-2/slices/p2-s12-close-phase
 - **AC5 (recorded):** It states whether the gate is met under [Q3](../design.md#6-open-questions) and [Q4](../design.md#6-open-questions), clause by clause, and the disclosures: sample sizes, agent-written PRs merged by one person, cases written to need context, few PRs linking issues, and prompts tuned on these cases.
 - **AC6:** Given the committed context recordings, then `replay --mode context --require-live` scores the 9 cases offline with the default model and reproduces AC2's per-bug numbers; any miss the user accepted is expected by the test, as `double-tax` is in Phase 1.
 - **AC7:** Given the committed `tests/evals/labelled/` files, now with the candidate's would-be comments and the new labels, then a test recomputes AC3's precision, recall, coverage and verdict exactly, and finds no body, rationale or username in any line.
-- **AC8:** Given the Phase 1 cases, then diff-mode `replay` still exits 1 only for `double-tax`, and the Phase 1 and Phase 2 suites pass unchanged.
+- **AC8:** Given the Phase 1 cases, then diff-mode `replay` still exits 1 only for `double-tax`, and the Phase 1 and Phase 2 suites pass unchanged since P3-S5 (which scoped P1-S17's checks to the Phase 1 cases).
 - **AC9:** `pyproject.toml` is at `0.4.0`, and `docs/phases/phase-3/release-notes.md` lists the changes. The tag and release follow [CLAUDE.md](../../../../CLAUDE.md).
 
 ## Limits
