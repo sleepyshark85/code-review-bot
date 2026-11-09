@@ -1,8 +1,9 @@
 """Record each case's runs against the real model, within a call budget (P1-S16, ADR 0007).
 
-The only eval code that calls a model. Before any call it refuses to run in CI, without a budget
-that covers every call, or with a case whose diff can't be sent, such as one holding a secret or
-one whose files are all skipped. Each call's outcome goes to stderr as it ends.
+The only eval code that calls a model. Before any call it refuses to run in CI, except from a
+manual dispatch given ``--allow-dispatch`` (ADR 0015), without a budget that covers every call,
+or with a case whose diff can't be sent, such as one holding a secret or one whose files are all
+skipped. Each call's outcome goes to stderr as it ends.
 """
 
 import json
@@ -32,7 +33,7 @@ from review_bot.findings import Finding
 from review_bot.providers.base import LLMProvider
 from review_bot.review import run_pipeline
 from review_bot.secret_scan import redact, scan_secrets
-from review_bot.settings import Settings, in_ci, load_settings
+from review_bot.settings import Settings, live_run_refused, load_settings
 
 if TYPE_CHECKING:
     from review_bot.providers.claude_agent import SdkCall
@@ -44,12 +45,13 @@ _REDACTED: Final = "[REDACTED]"
 _NO_USAGE: Final = {"input_tokens": 0, "output_tokens": 0}
 
 
-async def record_live(
+async def record_live(  # noqa: PLR0913 - keyword-only, each a distinct input
     cases_dir: Path,
     *,
     runs: int,
     max_calls: int | None,
     environ: Mapping[str, str],
+    allow_dispatch: bool,
     sdk_call: "SdkCall | None" = None,
 ) -> list[CaseResult]:
     """Call the model ``runs`` times per case, write each case's live recording, and score it.
@@ -63,18 +65,22 @@ async def record_live(
         cases_dir: The eval cases directory.
         runs: How many calls to make per case.
         max_calls: The most calls allowed in all; None refuses, as no budget was given.
-        environ: The process environment, read for ``CI``.
+        environ: The process environment, read for ``CI`` and ``GITHUB_EVENT_NAME``.
+        allow_dispatch: Whether ``--allow-dispatch`` was given, which lets a CI run that is a
+            ``workflow_dispatch`` call the model.
         sdk_call: Replaces the real SDK call, so tests stay offline.
 
     Raises:
-        EvalInputError: Before any call, if ``CI`` is set, the planned calls exceed
+        EvalInputError: Before any call, if ``CI`` is set and the run isn't a
+            ``workflow_dispatch`` given ``allow_dispatch``, the planned calls exceed
             ``max_calls``, a case is invalid, its diff can't be reviewed or has nothing to
             review, or a setting is invalid. During the run, if the audit log or a recording
             can't be written.
     """
-    if in_ci(environ):
+    if live_run_refused(environ, allow_dispatch=allow_dispatch):
         raise EvalInputError(
-            "live never runs in CI, and CI is set in the environment. Run it by hand, outside CI."
+            "live runs in CI only from a workflow_dispatch run given --allow-dispatch, and this "
+            "CI run (CI is set) isn't one. Run it by hand, outside CI, or dispatch live.yml."
         )
     cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
     _check_budget(len(cases), runs, max_calls)
