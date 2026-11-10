@@ -54,7 +54,9 @@ class Settings(BaseModel):
     audit_log: Path = DEFAULT_AUDIT_LOG_PATH
     format: Literal["text", "json", "markdown"] = "text"
     triage: bool = False
-    # Context mode (Phase 3 design, Spend and caps): None means diff mode, with no tools.
+    # Context mode on a pull request: ``repo`` lets the model read its head commit (P3-S8).
+    context: Literal["off", "repo"] = "off"
+    # Context mode on a local diff (Phase 3 design, Spend and caps): None means diff mode.
     context_repo: Path | None = None
     context_rev: str = Field(default="HEAD", min_length=1)
     max_tool_calls: int = Field(default=12, ge=1, le=30)

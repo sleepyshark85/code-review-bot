@@ -74,6 +74,8 @@ SHADOW_KEYS = (
     "config",
     # P3-S11.
     "codeowners",
+    # P3-S8 (Phase 3 design.md, Report keys: `shadow/v1` adds the same `context` as `report/v1`).
+    "context",
 )
 # `applied` joined in P2-S5, `owners` in P3-S11, `evidence` and `evidence_dropped` in P3-S4, and
 # `suggestion` in P3-S12 (design.md, `shadow/v1`: later slices add keys, never remove them).

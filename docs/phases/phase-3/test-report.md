@@ -818,3 +818,92 @@ Two of the slice's modules are below 100%:
 - `pr/shadow.py` 99% (lines 384 and 385, and one branch).
 
 Neither gap is on a line this slice's criteria reach.
+
+## P3-S8: Review pull requests with repository context
+
+Spec: [p3-s8-pr-review-with-context.md](slices/p3-s8-pr-review-with-context.md). Tests: [`tests/integration/test_p3_s8_pr_review_with_context.py`](../../../tests/integration/test_p3_s8_pr_review_with_context.py) (57 cases). They were written from the spec's criteria, Limits and Interfaces, design.md (Spend and caps) and ADR 0015, while the developer built the slice and before any of its code was read.
+
+**Status: pending implementation.** On a first run against the developer's uncommitted, in-progress tree, all 57 cases pass. That run doesn't count as the slice's result: it is re-run on the finished tree before the PR.
+
+**On the way:** 8 cases failed first, all test bugs, and none was fixed by weakening an assertion:
+- AC1 checked that `charged = invoice.total()` wasn't in the read. It's a prefix of the head's line, so the check now compares numbered line 12.
+- AC6 built each refused event and then ran the default event instead.
+- The AC12 helper created its fake `bin/` under a parent directory that didn't exist.
+- The backfill tests read reports through P2-S1's `load_shadow`, which pinned the keys before `context` joined. They now read `shadow.json` as plain JSON, so that AC3's check of the new keys is this suite's own.
+
+### Gate
+
+Pending the finished tree. So far:
+- `ruff format --check` and `ruff check`: clean on the changed test files. `mypy` (`src/`): clean.
+- `uv run pytest tests/integration -q -k "p2 or p3"`, after the `SHADOW_KEYS` change: the run reached 92% with no failure. Then Claude Code stopped it because the machine was low on memory, so the last 8% didn't run and there is no final count.
+
+### Seam and set-up (assumed)
+
+- **`run` and `backfill`**, in process through `review_bot.pr.cli.main(argv, provider=P[, github=FAKE])`, as P2-S2's and P2-S13's suites drive them.
+  - In each `run` repository, the working tree is at the base (`main` checked out). The head commit exists only as `refs/pull/7/head`, and its branch is deleted.
+  - The head changes line 12 of `billing/checkout.py` (P3-S1's fixture).
+  - `backfill` uses P2-S13's `History` and `Backfiller`, and adds `--context repo --max-usd --max-cost-usd`.
+- **Providers:**
+  - `MockProvider(tool_calls=...)`.
+  - A local `ContextProvider` that makes the same tool calls and reports `ReviewResponse.cost_usd` for each PR.
+  - For AC5, `ClaudeAgentProvider` over P3-S3's fake SDK, ending with the CLI's `error_max_budget_usd` or `error_max_turns` result.
+- **Readings of key names:** `report.mode`, `report.prompt_version` (pinned through P3-S1's `CONTEXT_PROMPT_VERSION`, `p3-v4`) and `report.context.commit`. `caps.max_cost_usd` and `report.usage.cost_usd` are compared as exact decimals, whether written as strings or numbers. The counts line holds `stopped=budget`, and the spend as text such as `1.20`.
+- **AC11 and AC12** read `.github/workflows/live.yml` as P3-S16's suite does.
+  - The backfill job's live step is run with bash and a fake `uv` that records its argv and environment.
+  - AC12 passes the recorded arguments to the real `pr` CLI in an empty directory, with `CI` set and `GITHUB_EVENT_NAME=push`. A parse that succeeds stops at the CI guard: exit 2, the refusal message, and nothing read or written. A control (`--no-such-flag` appended) shows that a parse failure gives a different message.
+
+### Criteria
+
+Test names drop the `test_p3_s8_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_read_returns_the_head_commits_text_not_the_working_trees` (also checks that `HEAD` stays at the base on `main`). `ac1_a_file_the_pr_adds_is_readable_and_a_working_tree_only_file_isnt`. `ac1_shadow_report_is_context_mode_at_the_head_sha` (mode, prompt version, `context.commit`, the three tools). `ac1_evidence_in_a_changed_file_counts_lines_the_tools_returned` ×2: a span outside the hunk is kept when a tool read it, and dropped when none did | pending (5) |
+| Limits | `limits_control_checking_out_the_head_runs_the_traps`. `limits_head_is_read_through_git_objects_and_no_trap_runs`: a smudge/clean filter, a textconv and an external diff driver, plus a `post-checkout` hook, each write a marker. With them planted, the read is the plain head text and no marker appears | pending (2) |
+| AC2 | `ac2_incremental_run_reviews_only_new_hunks_and_tools_read_the_head`: the summary has `reviewed=A`. The scope is `incremental` since `A`, and the prompt holds B's hunk but not A's. The read shows both A's and B's lines, and `context.commit` is B | pending (1) |
+| AC3 | `ac3_variable_repo_behaves_as_the_flag`. `ac3_variable_unset_or_off_is_phase_2s_run` ×2: no tools, `p1-v1`, no tool records, no cost, `over_budget` false. Every key beyond Phase 2's `shadow/v1`, `caps` and `report/v1` keys is null or empty (except `report.mode` `diff`, see Readings, 2). `ac3_flag_off_wins_over_the_variable`. `ac3_any_other_value_exits_2_naming_it` ×4 (`on`, `REPO`, `repo `, `true`; no call, no report). `ac3_an_invalid_flag_value_exits_2_naming_the_flag`. `ac3_backfill_reads_the_variable_too` | pending (10) |
+| AC4 | `ac4_caps_add_the_tool_and_cost_caps` (`--max-tool-calls 5` gives 5, plus the default byte caps, `max_cost_usd` 0.60, and `usage.cost_usd` 0.42). `ac4_over_budget_when_the_reported_cost_exceeds_the_cap` ×3 (0.59 and 0.60 are false, 0.61 is true) | pending (4) |
+| AC5 | `ac5_cap_hit_writes_a_failed_permanent_report_with_its_exit_code` ×2 (cost, turns; exit 12). `ac5_backfilled_cap_hit_fails_that_pr_only` | pending (3) |
+| AC6 | `ac6_refused_run_calls_neither_tools_nor_provider` ×4 (fork, action `closed`, `no_credential` in CI, draft in comment mode): no request, no tool result, no `context` `tool_call` record | pending (4) |
+| AC7 | `ac7_context_backfill_without_a_dollar_cap_refuses` ×3 (neither flag, no `--max-usd`, no `--max-cost-usd`; each missing flag is named). `ac7_planned_calls_times_the_cap_over_max_usd_refuses_naming_them` (3 × 0.60 > 1.79; names both flags and both amounts). `ac7_an_exact_fit_runs_with_decimal_arithmetic` (3 × 0.10 = 0.30, which floats would refuse). `ac7_the_cap_may_come_from_its_variable` | pending (6) |
+| AC8 | `ac8_overspend_stops_before_the_next_pr_and_writes_no_report_for_it` (0.80 + 0.40 spent of 1.50, with a 0.50 cap: no third call or report, and `stopped=budget` and `1.20` in the counts). `ac8_unreported_cost_counts_as_the_full_cap` (design rule). `ac8_exactly_one_cap_left_still_reviews_the_next` (boundary). `ac8_a_later_run_picks_up_the_prs_left` | pending (4) |
+| AC9 | `ac9_backfill_without_context_is_p2_s13s`: no tools, `p1-v1`, `context` null, no `--max-usd` needed, and P2-S13's exact counts lines | pending (1) |
+| AC10 | `ac10_run_audit_log_holds_its_tool_call_records` and `ac10_backfill_audit_log_holds_each_prs_tool_call_records`, both with `REVIEW_BOT_AUDIT_LOG` unset | pending (2) |
+| AC11 | `ac11_step_choice_adds_backfill`. `ac11_job_checks_out_main_with_full_history`. `ac11_job_fetches_every_pull_head_before_the_live_step`. `ac11_live_step_runs_exactly_the_spec_arguments` (the recorded argv, less `--out`, equals the spec's list). `ac11_live_step_runs_with_retries_0`. `ac11_permissions_are_exactly_contents_and_issues_read`. `ac11_secret_reaches_only_the_live_step` ×2 (`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`). `ac11_github_token_is_in_no_other_job`. `ac11_artifact_holds_out_and_the_captured_output` (`--out`, the audit log's default place, and stdout and stderr captured to files under the upload path). `ac11_upload_runs_always_and_is_kept_90_days`. `ac11_a_failed_backfill_fails_the_step_and_keeps_its_output`. Interfaces: `interfaces_backfill_accepts_entries_with_a_body` (the labelled file holds `body`). P3-S16's AC3 to AC6 tests cover every job, the backfill job included | pending (13) |
+| AC12 | `ac12_real_parser_accepts_the_steps_arguments_with_no_call_or_read`. `ac12_control_an_argument_the_parser_rejects_isnt_the_ci_refusal` | pending (2) |
+
+### Failures
+
+None open on the in-progress tree. To be confirmed on the finished tree.
+
+### Earlier suites changed
+
+No assertion was weakened.
+
+- **`tests/integration/test_p2_s1_shadow_report_local.py`:** `SHADOW_KEYS` appends `context` after `codeowners`, as Phase 3 design.md's Report keys list it. Without it, 372 P2 and P3 integration tests failed in `load_shadow` on the extra key.
+- **`tests/integration/test_p3_s16_live_workflow.py`**, for S16's ACs as amended by S8 AC11:
+  - `CHOICES` is now `smoke, backfill`, and the old `the_only_option_is_smoke` test is renamed `options_are_smoke_and_the_later_slices_choices`.
+  - In the non-option cases, `backfill` is replaced with `backfill-x`. Actions compares strings case-insensitively, so `Backfill` would match.
+  - `every_job_has_exactly_contents_read` expects S8's `contents: read` and `issues: read` on the backfill job, and `contents: read` alone on every other job.
+  - The only secrets are now `ANTHROPIC_API_KEY` and `GITHUB_TOKEN`, and the API-key holder check is scoped to the smoke job. S8's suite checks the backfill job.
+  - `upload_paths` substitutes the runner temp through a function, so a Windows path's backslashes aren't read as regex escapes. This was a Windows-only failure of the AC5 tests, there before S8.
+
+### Readings for the designer
+
+1. **The top-level `shadow.json` key `context`:** the slice spec doesn't name it, but design.md's Report keys does: "`shadow/v1` adds the same `context`". It is now pinned in P2-S1's `SHADOW_KEYS` and checked in `ac1_shadow_report_is_context_mode_at_the_head_sha`. In diff mode it is null, which AC3 allows. The slice spec could link to that design line.
+2. **AC3, "differs from Phase 2's only by the new keys, null or empty":** `report.mode` has read `diff` in every diff-mode report since P3-S1. It is neither null nor empty, so it is allowed explicitly. Comment entries' `evidence: []` and `evidence_dropped: 0` (P3-S4) aren't checked, because the runs have no findings.
+3. **AC3, "exits 2 naming it":** read as naming the variable `REVIEW_BOT_CONTEXT`. The test doesn't require the value to appear.
+4. **AC10, "`DIR/audit.jsonl`":** in P2-S2 and P2-S13, `DIR` is `--repo`, and the audit log defaults to `OUT/audit.jsonl` (P2-S2 AC14). The tests read `OUT/audit.jsonl`. If `DIR` means the clone, the spec needs to say so.
+5. **AC8, "the spend":** its format isn't given. The test requires the decimal text (`1.20`) on the counts lines. The exit code of a run stopped by the budget isn't given either, and isn't asserted.
+6. **AC6, draft:** P2-S2 AC15 reviews drafts in shadow mode, so the draft refusal is tested in comment mode (P2-S5 AC14).
+
+### On live.yml's `backfill` job (main session)
+
+Nothing in the job contradicts AC11. Notes:
+- `timeout-minutes: 60` equals 12 PRs × the 300-second context deadline, before checkout and install. A slow run can be cut at the job limit. The reports already written survive, and the `always()` upload still runs.
+- `git fetch origin` runs with `persist-credentials: false`. That works anonymously only if the repository is public.
+- The live command is one long line with runs of spaces: the line continuations seem lost. It works, but it is hard to read.
+
+### Coverage
+
+Pending the finished tree.

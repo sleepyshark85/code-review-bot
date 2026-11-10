@@ -1,6 +1,6 @@
 # P3-S8: Review pull requests with repository context
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S2, P3-S3, P3-S16
 - **Touches:** `pr` (`runner`, `cli`, `shadow`), `settings`, `.github/workflows/live.yml` (main session, from this spec: the `backfill` choice), `tests/` (the tester parses the workflow)
 
@@ -18,7 +18,7 @@ A pull request is reviewed with the model able to read the PR's head commit, in 
 - **AC7:** Given `backfill --context repo` without `--max-usd` or `--max-cost-usd`, or with planned calls × `--max-cost-usd` over `--max-usd`, then it refuses before any call, naming them. Exit 2.
 - **AC8:** Given reported costs that leave less than `--max-cost-usd` of `--max-usd`, then no further PR is reviewed and no report is written for those PRs, so a later run picks them up. stdout's counts add `stopped=budget` and the spend.
 - **AC9:** Given `backfill` without `--context`, then it behaves exactly as P2-S13.
-- **AC10:** Given a context run, then `DIR/audit.jsonl` holds its `context` `tool_call` records.
+- **AC10:** Given a context run, then `OUT/audit.jsonl` (the `--out` directory) holds its `context` `tool_call` records.
 - **AC11:** Given `live.yml`, then its `step` choice adds `backfill`. That job checks out `main` with `fetch-depth: 0`, fetches `refs/pull/*/head`, and runs `pr backfill --pulls tests/evals/labelled/phase-3-pulls.json --github-repo sleepyshark85/code-review-bot --repo . --context repo --max-calls 12 --max-usd 7.20 --max-cost-usd 0.60 --allow-dispatch` with retries 0. Its permissions are exactly `contents: read` and `issues: read` (for S9's issue reads), and `GITHUB_TOKEN` reaches only that step. P3-S16 AC3 to AC6 otherwise hold, and the artifact holds `--out`.
 - **AC12:** Given that step's argument list, read from `live.yml`, then the real `pr` CLI argument parser accepts it, with no call made and no file read.
 
@@ -35,3 +35,8 @@ As P2-S2 and P3-S2. The head commit is read only through git objects, never chec
 
 ## Notes
 - **README (main session):** describe `--context repo` on `run` and `backfill`, and backfill's dollar cap.
+- **Build choices (developer):**
+  - `context` is a `Settings` field (`off`/`repo`), so `--context` and `REVIEW_BOT_CONTEXT` are validated like every setting (exit 2 naming the flag or variable). `run` and `backfill` also take the tool cap flags. `pr shadow` (a local diff, no commit) and `review-bot` (which has `--context-repo`) ignore it.
+  - Everything new in `shadow.json` is gated on context mode, so a diff-mode run is Phase 2's even with `--max-cost-usd` set: `caps` adds the four keys only in context mode (`max_cost_usd` a decimal string, as `usage.cost_usd`, or null), and `over_budget` counts cost only there. The one new key in every run is the top-level `context`, the report's own `context` (null in diff mode or with no review), as the design's `shadow/v1` lists it.
+  - `backfill`'s dollar budget applies whenever `--max-usd` is given, and `--context repo` requires it (as P3-S6 AC6 for evals). It is checked after `--max-calls`. A run is charged only if it called the model: its reported cost, or `--max-cost-usd` if it reported none or failed in the provider. A budget stop writes a stderr line and the totals line adds `spent_usd=S stopped=budget`; `spent_usd` shows in every budgeted run. The exit code stays P2-S13's (0, or the first failure's): stopping within an approved budget isn't a failure.
+  - The pure budget arithmetic is `review_bot.spend.DollarBudget`, outside `pr`, so `evals live` (S6) can share it. `MockProvider` takes `cost_usd`, so tests script reported costs.

@@ -60,8 +60,13 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "live.yml"
 CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 READ_ONLY = {"contents": "read"}
 SMOKE = "smoke"
-# This slice's only choice; S6 adds evals-diff and evals-context, S8 adds backfill.
-CHOICES = [SMOKE]
+BACKFILL = "backfill"
+# This slice's choice, then later slices': P3-S8 AC11 adds `backfill`; S6 adds evals-diff and
+# evals-context.
+CHOICES = [SMOKE, BACKFILL]
+# P3-S8 AC11: the backfill job also reads issues (for S9), so S16 AC3's `contents: read` alone
+# holds for every other job.
+BACKFILL_PERMISSIONS = {"contents": "read", "issues": "read"}
 MAIN_REF = "refs/heads/main"
 OTHER_REFS = [
     "refs/heads/feat/p3-s16",
@@ -274,7 +279,7 @@ def test_p3_s16_ac1_exactly_one_input_step_a_required_choice(workflow):
     assert inputs["step"]["required"] is True
 
 
-def test_p3_s16_ac1_the_only_option_is_smoke(workflow):
+def test_p3_s16_ac1_options_are_smoke_and_the_later_slices_choices(workflow):
     assert triggers_of(workflow)["workflow_dispatch"]["inputs"]["step"]["options"] == CHOICES
 
 
@@ -299,7 +304,7 @@ def test_p3_s16_ac1_every_choice_an_if_compares_is_an_option(workflow):
     assert compared <= set(CHOICES)
 
 
-@pytest.mark.parametrize("step", ["", "evals-diff", "backfill", "SMOKE-x", "smoke "])
+@pytest.mark.parametrize("step", ["", "evals-diff", "backfill-x", "SMOKE-x", "smoke "])
 def test_p3_s16_ac1_no_job_runs_for_a_value_that_isnt_an_option(workflow, step):
     for name, job in jobs_of(workflow).items():
         assert not job_runs(job, ref=MAIN_REF, step=step), name
@@ -511,8 +516,11 @@ def test_p3_s16_ac3_every_job_has_a_timeout_of_at_most_60_minutes(workflow):
 
 
 def test_p3_s16_ac3_every_job_has_exactly_contents_read(workflow):
+    """As amended by P3-S8 AC11: the `backfill` job's permissions are exactly that AC's."""
     for name, job in jobs_of(workflow).items():
-        assert job.get("permissions") == READ_ONLY, name
+        is_backfill = job_runs(job, ref=MAIN_REF, step=BACKFILL)
+        expected = BACKFILL_PERMISSIONS if is_backfill else READ_ONLY
+        assert job.get("permissions") == expected, name
     assert workflow.get("permissions", READ_ONLY) == READ_ONLY
 
 
@@ -528,18 +536,28 @@ def test_p3_s16_ac3_every_checkout_persists_no_credentials(workflow):
 # --- AC4: the key reaches one step; the choice is read only in `if:` ------------------------------
 
 
-def test_p3_s16_ac4_the_only_secret_is_the_api_key(text):
-    assert set(SECRET_REFERENCE.findall(text)) == {"ANTHROPIC_API_KEY"}
+def test_p3_s16_ac4_the_only_secrets_are_the_api_key_and_backfills_github_token(text):
+    """P3-S8 AC11 adds `GITHUB_TOKEN`, for the backfill step only (tested in P3-S8's suite)."""
+    assert set(SECRET_REFERENCE.findall(text)) == {"ANTHROPIC_API_KEY", "GITHUB_TOKEN"}
 
 
 def test_p3_s16_ac4_api_key_is_only_in_the_review_steps_env(workflow):
+    """In the smoke job; P3-S8's suite checks the backfill job's one live step the same way."""
     job = smoke_job(workflow)
-    holders = [
-        path for path, value in walk(workflow) if isinstance(value, str) and "secrets." in value
-    ]
     job_name = next(name for name, other in jobs_of(workflow).items() if other is job)
+    holders = [
+        path
+        for path, value in walk(workflow)
+        if isinstance(value, str) and "secrets." in value and path[:2] == ("jobs", job_name)
+    ]
     review_index = steps_of(job).index(review_step(workflow))
     assert holders == [("jobs", job_name, "steps", review_index, "env", "ANTHROPIC_API_KEY")]
+    outside_jobs = [
+        path
+        for path, value in walk(workflow)
+        if isinstance(value, str) and "secrets." in value and path[:1] != ("jobs",)
+    ]
+    assert outside_jobs == []
     assert review_step(workflow)["env"]["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
 
 
@@ -578,7 +596,9 @@ def upload_step(workflow: dict[Any, Any]) -> dict[str, Any]:
 def upload_paths(workflow: dict[Any, Any], runner_temp: Path) -> list[Path]:
     lines = str(upload_step(workflow)["with"]["path"]).splitlines()
     shown = [
-        re.sub(r"\$\{\{\s*runner\.temp\s*\}\}", str(runner_temp), line).strip() for line in lines
+        # A function, so a Windows path's backslashes aren't read as escapes.
+        re.sub(r"\$\{\{\s*runner\.temp\s*\}\}", lambda _: str(runner_temp), line).strip()
+        for line in lines
     ]
     return [Path(line) for line in shown if line]
 

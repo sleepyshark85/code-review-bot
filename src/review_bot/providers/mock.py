@@ -1,6 +1,7 @@
 """A scripted provider that needs no model, account or network."""
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Final
 
 from review_bot.errors import ProviderError
@@ -34,6 +35,7 @@ class MockProvider:
         warnings: Sequence[str] = (),
         usage: TokenUsage | None = None,
         tool_calls: Sequence[tuple[str, Mapping[str, object]]] = (),
+        cost_usd: Decimal | None = None,
     ) -> None:
         """Script the answer.
 
@@ -45,6 +47,7 @@ class MockProvider:
             usage: The token usage to report; None reports none.
             tool_calls: Tool names and arguments to call, in order, through a request's
                 ``tools`` before answering. A request with no tools gets no calls.
+            cost_usd: The cost to report; None reports none.
         """
         self.requests: list[ReviewRequest] = []
         self.tool_results: list[str] = []
@@ -54,6 +57,7 @@ class MockProvider:
         self._warnings = tuple(warnings)
         self._usage = TokenUsage(0, 0) if usage is None else usage
         self._tool_calls = tuple(tool_calls)
+        self._cost_usd = cost_usd
 
     async def review(self, request: ReviewRequest) -> ReviewResponse:
         """Record the request, make the scripted tool calls, and return or raise as scripted."""
@@ -64,4 +68,6 @@ class MockProvider:
         if self._error is not None:
             raise self._error
         findings = self._findings if self._raw_output is None else parse_findings(self._raw_output)
-        return ReviewResponse(findings=findings, usage=self._usage, warnings=self._warnings)
+        return ReviewResponse(
+            findings=findings, usage=self._usage, warnings=self._warnings, cost_usd=self._cost_usd
+        )

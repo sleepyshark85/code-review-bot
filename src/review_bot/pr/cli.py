@@ -23,8 +23,9 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 
@@ -32,6 +33,7 @@ from review_bot.audit import AuditLog, Stage, utc_now
 from review_bot.cli import (
     RaisingArgumentParser,
     add_setting_arguments,
+    add_tool_cap_arguments,
     build_provider,
     record_failed_end,
     report_failure,
@@ -96,6 +98,7 @@ from review_bot.settings import (
     load_settings,
     take_github_token,
 )
+from review_bot.spend import DollarBudget
 
 __all__ = ["main"]
 
@@ -153,6 +156,7 @@ class _BackfillCommand:
     repo_dir: Path
     out_dir: Path
     max_calls: int
+    max_usd: Decimal | None
     allow_dispatch: bool
     settings: Settings
 
@@ -213,7 +217,8 @@ def main(
         ``run --mode comment`` with no ``github`` exits 2 if ``GITHUB_TOKEN`` is missing or
         ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
         or invalid config's code, an error's code if one stops it, and 2 over ``--max-calls``
-        or in CI, unless a ``workflow_dispatch`` run gave ``--allow-dispatch``. ``label``
+        or ``--max-usd``, without both dollar amounts under ``--context repo``, or in CI,
+        unless a ``workflow_dispatch`` run gave ``--allow-dispatch``. ``label``
         returns 0 when done or interrupted, and 2 with no terminal or an invalid labels file.
         ``collect`` returns 0 once ``feedback.jsonl`` is written; 2 with no ``github`` and an
         unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an unwritable ``--out``; 18 for
@@ -311,12 +316,14 @@ def _parse_args(
         commands.add_parser,
         "shadow",
         "write the comments and summary the bot would post for a diff file, posting nothing",
+        context=False,
     )
     shadow.add_argument("diff_path", help="the diff file to review")
     run = _add_command(
         commands.add_parser,
         "run",
         "review a pull request from its event file and a clone, posting nothing",
+        context=True,
     )
     run.add_argument(
         "--event", type=Path, required=True, help="the pull_request event file (GITHUB_EVENT_PATH)"
@@ -335,6 +342,7 @@ def _parse_args(
         "backfill",
         "review merged pull requests from a pulls file and a clone, posting nothing; each call "
         "is one attempt, whatever --max-retries says",
+        context=True,
     )
     backfill.add_argument(
         "--pulls",
@@ -360,6 +368,12 @@ def _parse_args(
         type=_whole_number,
         required=True,
         help="the most model calls allowed: one per pull request without a report in --out",
+    )
+    backfill.add_argument(
+        "--max-usd",
+        type=_dollars,
+        help="the most all calls may cost, in USD; required with --context repo, with "
+        "--max-cost-usd, and checked against each call's --max-cost-usd before and during the run",
     )
     backfill.add_argument(
         "--allow-dispatch",
@@ -406,16 +420,18 @@ def _parse_args(
         flags["audit_log"] = str(out_dir / _AUDIT_LOG_NAME)
     if name == "shadow":
         diff_path = Path(flags.pop("diff_path"))
-        return _ShadowCommand(diff_path, out_dir, load_settings(flags))
+        # A local diff has no commit for tools to read, so REVIEW_BOT_CONTEXT doesn't apply.
+        settings = load_settings(flags).model_copy(update={"context": "off"})
+        return _ShadowCommand(diff_path, out_dir, settings)
     if name == "backfill":
         pulls_path, github_repo = flags.pop("pulls"), flags.pop("github_repo")
         repo_dir, max_calls = flags.pop("repo"), flags.pop("max_calls")
-        allow_dispatch = flags.pop("allow_dispatch")
+        max_usd, allow_dispatch = flags.pop("max_usd"), flags.pop("allow_dispatch")
         # Checked first, so an invalid value is still refused. Then one attempt per call, as
         # ``evals live`` makes, so --max-calls bounds the attempts.
         settings = load_settings(flags).model_copy(update={"max_retries": 0})
         return _BackfillCommand(
-            pulls_path, github_repo, repo_dir, out_dir, max_calls, allow_dispatch, settings
+            pulls_path, github_repo, repo_dir, out_dir, max_calls, max_usd, allow_dispatch, settings
         )
     event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
     return _RunCommand(event_path, repo_dir, out_dir, mode, load_settings(flags))
@@ -552,6 +568,25 @@ def _iso_date(text: str) -> date:
         ) from None
 
 
+def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--context",
+        help="off (default) reviews the diff alone; repo also lets the model read, search and "
+        "list the pull request's head commit",
+    )
+    add_tool_cap_arguments(parser)
+
+
+def _dollars(text: str) -> Decimal:
+    try:
+        amount = Decimal(text)
+    except InvalidOperation:
+        amount = None
+    if amount is None or not amount.is_finite() or amount <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} isn't an amount of USD above 0, such as 7.20")
+    return amount
+
+
 def _whole_number(text: str) -> int:
     if not (text.isascii() and text.isdigit()):
         raise argparse.ArgumentTypeError(f"{text!r} isn't a whole number")
@@ -559,13 +594,16 @@ def _whole_number(text: str) -> int:
 
 
 def _add_command(
-    add_parser: Callable[..., RaisingArgumentParser], name: str, summary: str
+    add_parser: Callable[..., RaisingArgumentParser], name: str, summary: str, *, context: bool
 ) -> RaisingArgumentParser:
-    """Add a subcommand with ``--out`` and the setting flags."""
+    """Add a subcommand with ``--out`` and the setting flags, and ``--context`` if ``context``."""
+    examples = (
+        "--provider, --max-cost-usd or --context" if context else "--provider or --max-cost-usd"
+    )
     command = add_parser(
         name,
         help=summary,
-        description="The setting options, from --provider to --deadline-s, can also be set with "
+        description=f"Each setting option, such as {examples}, can also be set with "
         "REVIEW_BOT_<OPTION>.",
         allow_abbrev=False,
     )
@@ -573,6 +611,8 @@ def _add_command(
         "--out", type=Path, required=True, help="the directory to write shadow.json and shadow.md"
     )
     add_setting_arguments(command)
+    if context:
+        _add_context_arguments(command)
     return command
 
 
@@ -852,11 +892,13 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
     """Review each merged pull request in the pulls file that has no report in ``--out`` yet.
 
     A pull request whose report there is ``failed`` is reviewed again, and its report replaced.
-    Nothing is called over ``--max-calls``. Each pull request is its own run, with its own
-    ``run_id``, report and audit records. Once any could run, stdout ends with the counts.
+    Nothing is called over ``--max-calls``, nor, with a dollar budget, over ``--max-usd``. Each
+    pull request is its own run, with its own ``run_id``, report and audit records. Once any
+    could run, stdout ends with the counts.
 
     Raises:
-        ConfigError: If the planned calls exceed ``--max-calls``.
+        ConfigError: If the planned calls exceed ``--max-calls``, or don't fit the dollar budget
+            (``_dollar_budget``).
         EventError: If the pulls file is unusable.
         GitError: If git fails.
         AuditError: If the audit log can't be opened.
@@ -869,13 +911,12 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
             f"backfill would make up to {len(pending)} calls, more than --max-calls "
             f"{command.max_calls}. Pass --max-calls {len(pending)} if that budget is approved."
         )
+    progress = _BackfillProgress(_dollar_budget(command, planned=len(pending)))
     git = GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S)
     settings = command.settings
-    # Filled as each pull request ends, so the counts cover those done before any stop.
-    reports: list[ShadowReport] = []
     backfill = _backfill_pulls(
         [pull.ref(command.github_repo) for pull in pending],
-        reports,
+        progress,
         git=git,
         make_provider=lambda: build_provider(settings) if provider is None else provider,
         settings=settings,
@@ -887,22 +928,94 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
         return run_to_completion(backfill)
     finally:
         already = len(pulls) - len(pending)
-        write_output(_backfill_counts(reports, entries=len(pulls), already=already))
+        write_output(_backfill_counts(progress, entries=len(pulls), already=already))
+
+
+def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:
+    """The dollar budget the backfill's calls are charged to, or None if there is none.
+
+    ``--context repo`` needs one, and ``--max-usd`` makes one in either mode: ``--max-usd`` is
+    the allowance, and ``--max-cost-usd`` each call's cap (ADR 0015). With no calls planned,
+    nothing will be spent, so missing amounts mean no budget rather than an error.
+
+    Raises:
+        ConfigError: If calls are planned and one is needed but either amount is missing, or
+            the ``planned`` calls, each at its cap, could cost more than ``--max-usd``.
+    """
+    settings = command.settings
+    max_usd, max_cost_usd = command.max_usd, settings.max_cost_usd
+    if max_usd is None and settings.context == "off":
+        return None
+    if max_usd is None or max_cost_usd is None:
+        if planned == 0:
+            return None
+        given = "--context repo" if settings.context == "repo" else "--max-usd"
+        raise ConfigError(
+            f"backfill with {given} needs both --max-usd and --max-cost-usd (or "
+            f"REVIEW_BOT_MAX_COST_USD): it would make up to {planned} calls. Pass --max-cost-usd, "
+            f"the most one call may cost, and --max-usd, at least {planned} times that, if that "
+            "budget is approved."
+        )
+    budget = DollarBudget(max_usd=max_usd, max_cost_usd=max_cost_usd)
+    if not budget.covers(planned):
+        planned_usd = budget.planned_usd(planned)
+        raise ConfigError(
+            f"backfill would make up to {planned} calls of up to --max-cost-usd {max_cost_usd} "
+            f"each, {planned_usd} USD in all, more than --max-usd {max_usd}. Pass --max-usd "
+            f"{planned_usd} if that budget is approved."
+        )
+    return budget
+
+
+@dataclass(slots=True)
+class _BackfillProgress:
+    """What a backfill has done so far, filled as each pull request ends.
+
+    So the counts cover the pull requests done before any stop. ``spent_usd`` is what their
+    calls count towards ``budget``, if there is one, and ``stopped_by_budget`` says whether too
+    little of it was left to start another call.
+    """
+
+    budget: DollarBudget | None
+    reports: list[ShadowReport] = field(default_factory=list)
+    spent_usd: Decimal = Decimal(0)
+    stopped_by_budget: bool = False
+
+    def add(self, shadow: ShadowReport) -> None:
+        """Count ``shadow``, and charge its call, if it made one, to the budget."""
+        self.reports.append(shadow)
+        # Only a review, or a provider error, comes from a call; an error's cost is unknown.
+        made_call = shadow.report is not None or isinstance(shadow.error, ProviderError)
+        if self.budget is not None and made_call:
+            self.spent_usd += self.budget.charge(shadow.cost_usd)
+
+    def stop_if_out_of_budget(self, *, unreviewed: int) -> bool:
+        """Whether the budget can't cover another call; if so, mark the stop and say why.
+
+        ``unreviewed`` is how many pull requests the stop leaves without a report.
+        """
+        if self.budget is None or self.budget.has_room(self.spent_usd):
+            return False
+        self.stopped_by_budget = True
+        write_diagnostic(_budget_stop_line(self.budget, self.spent_usd, unreviewed))
+        return True
 
 
 async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the runner's
     prs: Sequence[PullRequestRef],
-    reports: list[ShadowReport],
+    progress: _BackfillProgress,
     *,
     git: GitRepo,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
     out_dir: Path,
 ) -> int:
-    """Run and report each pull request in turn, appending each report to ``reports``.
+    """Run and report each pull request in turn, adding each report to ``progress``.
 
-    A failed review doesn't stop the rest. Any other error, such as git failing or a report
-    that can't be written, stops them at that pull request, with its message.
+    A failed review doesn't stop the rest. Once the budget can't cover another call, the rest
+    aren't reviewed and get no report, so a later run picks them up. Any other error, such as
+    git failing or a report that can't be written, stops them at that pull request, with its
+    message.
 
     Returns:
         The stopping error's exit code if one stopped them, else the first failed review's, or
@@ -912,7 +1025,9 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
         AuditError: If the audit log can't be opened.
     """
     first_failure = 0
-    for pr in prs:
+    for index, pr in enumerate(prs):
+        if progress.stop_if_out_of_budget(unreviewed=len(prs) - index):
+            break
         audit = AuditLog(settings.audit_log, clock=utc_now)
         pr_dir = out_dir / str(pr.number)
         try:
@@ -929,7 +1044,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
             exit_code = report_failure(exc)
             record_failed_end(audit, exit_code, exc)
             return exit_code
-        reports.append(shadow)
+        progress.add(shadow)
         exit_code = _finish(shadow, pr_dir, audit)
         first_failure = first_failure or exit_code
     return first_failure
@@ -947,19 +1062,33 @@ def _is_done(out_dir: Path, number: int) -> bool:
     return not (isinstance(report, ShadowFile) and report.outcome is Outcome.FAILED)
 
 
-def _backfill_counts(reports: Sequence[ShadowReport], *, entries: int, already: int) -> str:
+def _budget_stop_line(budget: DollarBudget, spent_usd: Decimal, unreviewed: int) -> str:
+    return (
+        f"review-bot pr: backfill stopped: {spent_usd} USD spent leaves less than --max-cost-usd "
+        f"{budget.max_cost_usd} of --max-usd {budget.max_usd}, so it reviewed no more: "
+        f"{unreviewed} left, with no report. Run it again with an approved budget to review them."
+    )
+
+
+def _backfill_counts(progress: _BackfillProgress, *, entries: int, already: int) -> str:
     """Two lines of ``name=N`` pairs: the totals, then each outcome and each reason given.
 
-    Every outcome is shown, and so is ``too_large``: it is how many the reviewable-bytes cap
-    left out (Phase 2 design, PR supply). Outcome, skip reason and error category names never
-    coincide.
+    With a dollar budget, the totals add the spend, and ``stopped=budget`` if it stopped the
+    backfill. Every outcome is shown, and so is ``too_large``: it is how many the
+    reviewable-bytes cap left out (Phase 2 design, PR supply). Outcome, skip reason and error
+    category names never coincide.
     """
+    reports = progress.reports
     outcomes = Counter(report.outcome for report in reports)
     reasons = Counter(str(report.reason) for report in reports if report.reason is not None)
     reasons.setdefault(Reason.TOO_LARGE, 0)
     pairs = [f"{outcome}={outcomes[outcome]}" for outcome in Outcome]
     pairs += [f"{reason}={count}" for reason, count in sorted(reasons.items())]
     totals = f"entries={entries} already_in_out={already} run={len(reports)}"
+    if progress.budget is not None:
+        totals += f" spent_usd={progress.spent_usd}"
+    if progress.stopped_by_budget:
+        totals += " stopped=budget"
     return f"backfill: {totals}\nbackfill: {' '.join(pairs)}"
 
 
