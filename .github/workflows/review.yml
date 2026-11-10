@@ -1,8 +1,10 @@
 name: Review
 
 # Reviews every same-repo pull request in shadow mode (P2-S3) or with comments (P2-S6),
-# and collects reactions as labels when it closes (P2-S8). ADRs 0008 to 0012.
-# The bot's code and settings come from the base commit; the PR supplies only its diff.
+# with repository context when REVIEW_BOT_CONTEXT=repo (P3-S14), and collects reactions as
+# labels when it closes (P2-S8). ADRs 0008 to 0012 and 0015.
+# The bot's code and settings come from the base commit; the PR supplies its diff, and in
+# context mode its head commit's files and the issues its body closes.
 # Never a required check: branch protection requires only CI's "gate".
 
 on:
@@ -32,6 +34,18 @@ jobs:
               ;;
           esac
 
+      - name: Fail on an unknown REVIEW_BOT_CONTEXT
+        env:
+          CONTEXT: ${{ vars.REVIEW_BOT_CONTEXT }}
+        run: |
+          case "$CONTEXT" in
+            ""|off|repo) ;;
+            *)
+              echo "::error::REVIEW_BOT_CONTEXT is '$CONTEXT'; it must be unset, off or repo."
+              exit 1
+              ;;
+          esac
+
   shadow:
     name: shadow review
     needs: check-mode
@@ -46,6 +60,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      issues: read
     steps:
       - name: Check out the base commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,18 +82,28 @@ jobs:
       - name: Review the pull request in shadow mode
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REVIEW_BOT_MAX_RETRIES: "0"
           REVIEW_BOT_MAX_DIFF_BYTES: "400000"
           REVIEW_BOT_MAX_REVIEW_BYTES: "120000"
           REVIEW_BOT_MAX_OUTPUT_TOKENS: "16000"
-          REVIEW_BOT_DEADLINE_S: "240"
-        run: >-
-          uv run --no-sync python -m review_bot.pr run
-          --event "$GITHUB_EVENT_PATH"
-          --repo .
-          --mode shadow
-          --out "$RUNNER_TEMP/review-bot"
+          # Context mode (P3-S14): off unless the repository variable says repo.
+          REVIEW_BOT_CONTEXT: ${{ vars.REVIEW_BOT_CONTEXT || 'off' }}
+          REVIEW_BOT_MAX_TOOL_CALLS: "12"
+          REVIEW_BOT_MAX_TOOL_RESULT_BYTES: "16000"
+          REVIEW_BOT_MAX_TOOL_TOTAL_BYTES: "96000"
+          REVIEW_BOT_DEADLINE_S: ${{ vars.REVIEW_BOT_CONTEXT == 'repo' && '300' || '240' }}
+        run: |
+          # The cost cap is set only in context mode, so a diff-mode run's caps stay Phase 2's.
+          if [ "$REVIEW_BOT_CONTEXT" = repo ]; then
+            export REVIEW_BOT_MAX_COST_USD=0.60
+          fi
+          uv run --no-sync python -m review_bot.pr run \
+            --event "$GITHUB_EVENT_PATH" \
+            --repo . \
+            --mode shadow \
+            --out "$RUNNER_TEMP/review-bot"
 
       - name: Show the shadow report in the job summary
         if: always()
@@ -117,6 +142,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      issues: read
     steps:
       - name: Check out the base commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -144,13 +170,22 @@ jobs:
           REVIEW_BOT_MAX_DIFF_BYTES: "400000"
           REVIEW_BOT_MAX_REVIEW_BYTES: "120000"
           REVIEW_BOT_MAX_OUTPUT_TOKENS: "16000"
-          REVIEW_BOT_DEADLINE_S: "240"
-        run: >-
-          uv run --no-sync python -m review_bot.pr run
-          --event "$GITHUB_EVENT_PATH"
-          --repo .
-          --mode comment
-          --out "$RUNNER_TEMP/review-bot"
+          # Context mode (P3-S14): off unless the repository variable says repo.
+          REVIEW_BOT_CONTEXT: ${{ vars.REVIEW_BOT_CONTEXT || 'off' }}
+          REVIEW_BOT_MAX_TOOL_CALLS: "12"
+          REVIEW_BOT_MAX_TOOL_RESULT_BYTES: "16000"
+          REVIEW_BOT_MAX_TOOL_TOTAL_BYTES: "96000"
+          REVIEW_BOT_DEADLINE_S: ${{ vars.REVIEW_BOT_CONTEXT == 'repo' && '300' || '240' }}
+        run: |
+          # The cost cap is set only in context mode, so a diff-mode run's caps stay Phase 2's.
+          if [ "$REVIEW_BOT_CONTEXT" = repo ]; then
+            export REVIEW_BOT_MAX_COST_USD=0.60
+          fi
+          uv run --no-sync python -m review_bot.pr run \
+            --event "$GITHUB_EVENT_PATH" \
+            --repo . \
+            --mode comment \
+            --out "$RUNNER_TEMP/review-bot"
 
       - name: Show the report in the job summary
         if: always()

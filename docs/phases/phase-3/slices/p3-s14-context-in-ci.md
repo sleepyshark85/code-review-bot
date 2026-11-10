@@ -1,6 +1,6 @@
 # P3-S14: Turn on context reviews in CI with one repository variable
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S8, P3-S9
 - **Touches:** `.github/workflows/review.yml` (main session, from this spec), `tests/` (the tester parses the workflow, as for [P2-S3](../../phase-2/slices/p2-s3-shadow-workflow.md))
 

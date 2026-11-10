@@ -47,6 +47,7 @@ from test_p2_s2_review_pr_event import event
 from test_p2_s3_shadow_workflow import (
     CAPS,
     OUT_DIR,
+    PHASE_2_VARIABLES,
     REPORT_FILES,
     SHADOW_ACTIONS,
     WORKFLOW_PATH,
@@ -56,6 +57,7 @@ from test_p2_s3_shadow_workflow import (
     job_runs,
     jobs_of,
     option_value,
+    resolved_env,
     review_job,
     run_script,
     run_step_in,
@@ -770,9 +772,11 @@ def test_p2_s6_ac10_comment_job_runs_only_for_the_shadow_jobs_four_actions(workf
 def test_p2_s6_ac10_comment_job_permissions_are_exactly_contents_read_and_pull_requests_write(
     workflow,
 ):
+    """P3-S14 AC3 adds `issues: read`, for context mode's linked issues; nothing else."""
     assert comment_job(workflow).get("permissions") == {
         "contents": "read",
         "pull-requests": "write",
+        "issues": "read",
     }
 
 
@@ -793,8 +797,8 @@ CREDENTIAL = re.compile(r"secrets\.|github\.token|GITHUB_TOKEN|ANTHROPIC_API_KEY
 
 
 def test_p2_s6_ac10_no_other_step_gets_either_credential(workflow):
-    """Keys and values in every job; the shadow job's key is P2-S3 AC5's, and the collect
-    step's token is P2-S8 AC9's."""
+    """Keys and values in every job; the shadow job's key is P2-S3 AC5's, the collect step's
+    token is P2-S8 AC9's, and the shadow run step's token is P3-S14 AC3's."""
     holders = set()
     for job_name, job in jobs_of(workflow).items():
         for path, node in walk(job):
@@ -821,6 +825,7 @@ def test_p2_s6_ac10_no_other_step_gets_either_credential(workflow):
         (comment_name, "steps", comment_index, "env", "ANTHROPIC_API_KEY"),
         (shadow_name, "steps", shadow_index, "env"),
         (shadow_name, "steps", shadow_index, "env", "ANTHROPIC_API_KEY"),
+        (shadow_name, "steps", shadow_index, "env", "GITHUB_TOKEN"),
         (collect_name, "steps", collect_index, "env"),
         (collect_name, "steps", collect_index, "env", "GITHUB_TOKEN"),
     }
@@ -852,9 +857,9 @@ def test_p2_s6_ac10_comment_job_runs_the_bot_from_the_base_and_only_fetches_the_
 
 
 def test_p2_s6_ac10_comment_job_has_the_design_caps_timeout_and_concurrency(workflow):
-    """P2-S3 AC7, for this job."""
+    """P2-S3 AC7, for this job, with `vars.REVIEW_BOT_CONTEXT` unset as Phase 2 ran (P3-S14)."""
     job = comment_job(workflow)
-    env = {name: str(value) for name, value in comment_run_step(workflow)["env"].items()}
+    env = resolved_env(comment_run_step(workflow), PHASE_2_VARIABLES)
     assert {name: env.get(name) for name in CAPS} == CAPS
     assert job["timeout-minutes"] == 10
     concurrency = job.get("concurrency") or workflow.get("concurrency")
@@ -895,14 +900,17 @@ def test_p2_s6_ac10_comment_job_shows_the_report_and_uploads_it_always(workflow,
 def test_p2_s6_ac10_run_command_and_caps_are_accepted_by_the_cli(
     workflow, tmp_path, monkeypatch, capsys
 ):
-    """The step's own argv and env, with a broken event, get past parsing to the event (19)."""
+    """The step's own argv and env, with a broken event, get past parsing to the event (19).
+
+    The env is as Phase 2 ran it, `vars.REVIEW_BOT_CONTEXT` unset; P3-S14's suite runs the
+    step's script in both context modes.
+    """
     event_path = tmp_path / "event.json"
     event_path.write_text("not json", encoding="utf-8")
     for name in [name for name in os.environ if name.startswith("REVIEW_BOT_")]:
         monkeypatch.delenv(name)
-    for name, value in comment_run_step(workflow)["env"].items():
-        if not str(value).startswith("${{"):
-            monkeypatch.setenv(name, str(value))
+    for name, value in resolved_env(comment_run_step(workflow), PHASE_2_VARIABLES).items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
     monkeypatch.setenv("GITHUB_API_URL", "http://127.0.0.1:9")  # never reached: the event fails
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
@@ -915,7 +923,11 @@ def test_p2_s6_ac10_run_command_and_caps_are_accepted_by_the_cli(
 
 
 def test_p2_s6_ac11_shadow_job_permissions_are_still_contents_read_only(workflow):
-    assert review_job(workflow, "shadow").get("permissions") == {"contents": "read"}
+    """P3-S14 AC3 adds `issues: read`, for context mode's linked issues; still nothing to write."""
+    assert review_job(workflow, "shadow").get("permissions") == {
+        "contents": "read",
+        "issues": "read",
+    }
 
 
 # --- Limits: pages, timeouts and schemas ---------------------------------------------------------

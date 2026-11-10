@@ -1171,3 +1171,72 @@ None.
 ### Coverage
 
 From this file alone: `pr/compare.py` 98%. Its 2 uncovered lines are a reviewed shadow report without a PR (`origin` `local`) and a non-shadow label (Readings 6). The developer's unit tests cover the rest. `pr/reports.py` is 91% and `pr/units.py` 93%. `pr/cli.py` and `pr/metrics_report.py` serve other commands too, so their totals from this file (40% and 71%) aren't meaningful; see the main session's `pytest --cov`.
+
+## P3-S14: Turn on context reviews in CI with one repository variable
+
+Spec: [p3-s14-context-in-ci.md](slices/p3-s14-context-in-ci.md). Tests: [`tests/integration/test_p3_s14_context_in_ci.py`](../../../tests/integration/test_p3_s14_context_in_ci.py), 95 cases. They were written from the spec's criteria, design.md (Spend and caps) and ADR 0012, against the main session's uncommitted `review.yml` (base `0cf5b6c`).
+
+**Status: AC1 to AC6 pass, 95 of 95. AC7 is recorded below: context mode hasn't been turned on.**
+
+### Gate
+
+Only this file and the suites below were run, one at a time, with no parallel pytest and not the full suite. `ruff format --check`, `ruff check` and `mypy` are clean on the whole tree. The P2-S3, P2-S6 and P2-S8 workflow suites give 253 passed. The P3-S6, P3-S8 and P3-S16 suites, which import the P2-S3 helpers changed below, give 185 passed. For the full gate, see the main session's run.
+
+### Seam and set-up
+
+- `review.yml` is read with PyYAML. Each `${{ ... }}` env value is evaluated with P2-S3's evaluator (`resolved_env`, new). Like GitHub, it reads an unset variable as `''` and compares strings case-insensitively. Secrets resolve to canaries.
+- **Executed, not read:**
+  - the `check-mode` job's context check, with bash, for each value;
+  - each review step's `run:` script, with bash and P3-S16's fake `uv` first on `PATH`. The fake records the argv and environment the bot would get, so the conditional `export` actually runs;
+  - that recorded argv and environment, through `review_bot.pr.cli.main` in a P3-S8 pull request clone (working tree at the base, head only under `refs/pull/7/head`, `--repo .` by `chdir`). The provider is P3-S8's scripted one, which also records `os.environ` when called. These are real runs, in context mode and in diff mode.
+
+### Criteria
+
+Test names drop the `test_p3_s14_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_check_job_reads_the_variable_into_its_env_not_its_script`. `ac1_mode_check_is_still_there`. `ac1_known_value_passes_the_check_quietly` ×4 (unset, empty, `off`, `repo`: exit 0, no output). `ac1_variable_absent_from_env_passes_the_check`. `ac1_unknown_value_fails_with_one_error_line_naming_the_value` ×13 (`Repo`, `REPO`, `OFF`, ` repo`, `repo `, `on`, `true`, `context`, `shadow`, `repo\|off`, `*`, `$(touch pwned)` and a backtick command): non-zero exit, one `::error::` line naming the variable, the value and `unset`, `off`, `repo`, and no command runs. `ac1_both_review_jobs_need_the_check_and_respect_its_failure` | pass (21) |
+| AC2 | `ac2_context_comes_from_the_variable_defaulting_to_off` ×8. `ac2_tool_caps_are_literals` ×2 (12, 16000, 96000). `ac2_deadline_is_300_for_repo_else_240` ×6. `ac2_phase_2_caps_are_unchanged_but_the_deadline` ×6. `ac2_cost_cap_is_no_env_key_anywhere`. Run with the fake `uv`: `ac2_repo_exports_the_cost_cap_060_to_the_bot` ×2, `ac2_diff_mode_never_sets_the_cost_cap` ×4 (`off`, empty), `ac2_script_runs_the_same_command_in_both_modes` ×2, `ac2_cap_deadline_and_context_agree_for_every_value_the_check_passes` ×14 (see Readings 1) and `ac2_hostile_context_value_runs_nothing_and_sets_no_cap` ×6. End to end: `ac2_repo_run_is_context_mode_with_the_workflow_caps` (`mode` `context`, tools offered, `caps` 0.60, 12, 16000, 96000 and 300 s). `ac2_repo_run_over_the_cost_cap_is_over_budget` (a reported 0.61) | pass (53) |
+| AC3 | `ac3_every_jobs_permissions_are_exactly_these`: shadow `contents: read` and `issues: read`; comment adds `pull-requests: write`; check-mode and collect unchanged; workflow `contents: read`; an added job fails the test. `ac3_review_step_gets_the_github_token` ×2. `ac3_review_jobs_are_the_shadow_and_comment_jobs` | pass (4) |
+| AC4 | `ac4_base_is_checked_out_and_the_head_only_fetched` ×2. `ac4_no_step_moves_the_work_tree_off_the_base`. `ac4_no_run_block_interpolates_an_expression` (no `${{` at all, which is stricter). `ac4_no_job_is_named_gate`. `ac4_bot_installs_locked_from_the_base_and_runs_without_syncing` ×2 | pass (7) |
+| AC5 | `ac5_credentials_appear_only_in_the_review_and_collect_steps`: keys and values in every job; collect's token is P2-S8 AC9's. `ac5_both_credentials_reach_the_bot_process` ×4. `ac5_github_token_never_reaches_the_model_process` ×2 (unset, `repo`): the step's env, token included, runs the real CLI, and the provider sees neither `GITHUB_TOKEN` nor its value in the environment | pass (7) |
+| AC6 | `ac6_unset_or_off_variable_is_phase_2s_run` ×2: no cost cap in the recorded env, `REVIEW_BOT_CONTEXT=off`, P3-S8's `assert_phase_2_run` (no tools, `p1-v1`, new keys null) and deadline 240. `ac6_unset_variable_run_writes_phase_2s_caps`: the `caps` of a run from the S14 step env, variable unset, equal those of a run from Phase 2's env (`CAPS` alone) | pass (3) |
+| AC7 | Recorded, not tested: see below | recorded |
+
+A mutation check by hand: making the script's export unconditional is caught by `ac2_diff_mode_never_sets_the_cost_cap`.
+
+### AC7: context mode in CI
+
+As of 2026-11-10, `REVIEW_BOT_CONTEXT` hasn't been set on this repository. Context mode hasn't run in CI, so there is no run to record (date, `mode`, cost, tool calls, review and end-to-end time, set-up time). Turning it on is the owner's call ([Q6](design.md#6-open-questions)).
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+No assertion was weakened. Each change follows from something P3-S14 amends, and the test says so.
+
+- **`tests/integration/test_p2_s3_shadow_workflow.py`:**
+  - `argv_of` reads the one line naming `review_bot.pr`, with backslash-newline continuations joined as the shell joins them, because the review step's `run:` is now a script. Splitting the whole script with `shlex` gave `\n` words. It only parsed at all because the comment's two apostrophes happen to pair.
+  - New helpers: `expression_value` (`evaluate` now calls it), `resolved_env` and `PHASE_2_VARIABLES` (the variable unset, as Phase 2 ran).
+  - `ac2_shadow_job_sets_exactly_contents_read`: expects `issues: read` too (S14 AC3).
+  - `ac5_api_key_is_only_in_the_run_steps_env`: the run step's `GITHUB_TOKEN` is the job's second secret; there is still nothing else.
+  - `ac5_no_github_token_is_passed_anywhere_in_the_shadow_job` is renamed `ac5_github_token_reaches_only_the_run_step_in_the_shadow_job`. The run step's `GITHUB_TOKEN` must be `secrets.GITHUB_TOKEN` or `github.token`, and with it removed neither name appears anywhere in the job.
+  - `ac5_ac7_run_command_and_caps_are_accepted_by_the_cli` and `ac7_run_step_env_sets_the_design_caps`: the env is `resolved_env` with the variable unset, so `REVIEW_BOT_DEADLINE_S` is still asserted as 240 and every Phase 2 cap is unchanged.
+  - `check_script` picks the step whose env has `MODE`, because `check-mode` now has two steps.
+- **`tests/integration/test_p2_s6_comments_on.py`:**
+  - `ac10_comment_job_permissions_are_exactly_contents_read_and_pull_requests_write` and `ac11_shadow_job_permissions_are_still_contents_read_only`: expect `issues: read` too.
+  - `ac10_no_other_step_gets_either_credential`: allows the shadow run step's `GITHUB_TOKEN`.
+  - `ac10_comment_job_has_the_design_caps_timeout_and_concurrency` and `ac10_run_command_and_caps_are_accepted_by_the_cli`: use `resolved_env` with the variable unset.
+
+### Readings for the designer
+
+1. **Case.** GitHub's `vars.REVIEW_BOT_CONTEXT == 'repo'` ignores case. The script's `[ "$REVIEW_BOT_CONTEXT" = repo ]` and the CLI's `context` don't. So `Repo` would give a 300 s deadline, no cost cap and an invalid `REVIEW_BOT_CONTEXT`. That never happens only because AC1's check refuses `Repo` and every review job needs the check. `ac2_cap_deadline_and_context_agree_for_every_value_the_check_passes` pins this. It isn't a bug, but the coupling matters if the check ever changes.
+2. **AC5, "reaches only the review step":** read as the review steps of the shadow and comment jobs, plus the collect step's `GITHUB_TOKEN`, which P2-S8 AC9 allows and S14 doesn't change.
+3. **AC5, the model's process:** the test records `os.environ` when the provider is called, which is what the Claude CLI subprocess inherits. It doesn't drive `ClaudeAgentProvider` in context mode; P2-S6 AC8 covers that provider's own environment.
+
+### Coverage
+
+The slice changes no code under `src/`, so there is no module coverage to report. The tests reproduce GitHub's expression evaluation with P2-S3's evaluator; GitHub's own evaluation is the only part not exercised.

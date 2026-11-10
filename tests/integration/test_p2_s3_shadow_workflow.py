@@ -14,6 +14,7 @@ language they use: context names, string literals, `==`, `!=`, `&&`, `||`, `!` a
 Like GitHub, it compares strings case-insensitively and reads an unset variable as `''`.
 """
 
+import copy
 import os
 import re
 import shlex
@@ -181,8 +182,14 @@ def same_dir(path: str) -> str:
 
 
 def argv_of(step: dict[str, Any]) -> list[str]:
-    """A run step's arguments after `python -m review_bot.pr`, as the shell would split them."""
-    words = shlex.split(step["run"])
+    """A run step's arguments after `python -m review_bot.pr`, as the shell would split them.
+
+    Since P3-S14 the review step's `run:` is a script, so this reads the one command line naming
+    `review_bot.pr`, its backslash-newline continuations joined as the shell joins them.
+    """
+    lines = step["run"].replace("\\\n", " ").splitlines()
+    (command,) = [line for line in lines if "review_bot.pr" in line]
+    words = shlex.split(command)
     start = words.index("review_bot.pr")
     return words[start + 1 :]
 
@@ -202,6 +209,11 @@ _TOKEN = re.compile(r"\s*(?:('(?:[^']|'')*')|(==|!=|&&|\|\||!|\(|\))|([A-Za-z_][
 
 
 def evaluate(expression: str, contexts: dict[str, Any]) -> bool:
+    return _truthy(expression_value(expression, contexts))
+
+
+def expression_value(expression: str, contexts: dict[str, Any]) -> Any:
+    """The expression's value, not only its truth: `vars.X || 'off'` is `'off'` when X is unset."""
     tokens: list[str] = []
     position, expression = 0, expression.strip()
     while position < len(expression):
@@ -212,7 +224,7 @@ def evaluate(expression: str, contexts: dict[str, Any]) -> bool:
     parser = _Parser(tokens, contexts)
     value = parser.either()
     assert parser.done(), f"unread tokens in {expression!r}"
-    return _truthy(value)
+    return value
 
 
 class _Parser:
@@ -281,6 +293,34 @@ def _loose_equal(left: Any, right: Any) -> bool:
     if left is None or right is None:
         return (left or "") == (right or "")
     return str(left).casefold() == str(right).casefold()
+
+
+_TEMPLATE = re.compile(r"\$\{\{(.*)\}\}", re.DOTALL)
+_CONTEXT_NAME = re.compile(r"\b[A-Za-z_][\w-]*(?:\.[\w-]+)+")
+
+
+def resolved_env(step: dict[str, Any], contexts: dict[str, Any]) -> dict[str, str]:
+    """A step's `env` as the runner gives it, each `${{ ... }}` value evaluated with `contexts`.
+
+    A context set to None is unset, which GitHub reads as `''`. A value reading a context that
+    `contexts` doesn't name (a secret or an event field, say) is left out, for the test to set.
+    """
+    resolved: dict[str, str] = {}
+    for name, value in (step.get("env") or {}).items():
+        template = _TEMPLATE.fullmatch(str(value).strip())
+        if template is None:
+            assert "${{" not in str(value), f"{name} mixes text and an expression: {value!r}"
+            resolved[name] = str(value)
+            continue
+        expression = re.sub(r"'(?:[^']|'')*'", "''", template.group(1))
+        if set(_CONTEXT_NAME.findall(expression)) <= set(contexts):
+            result = expression_value(template.group(1), contexts)
+            resolved[name] = "" if result is None else str(result)
+    return resolved
+
+
+# The repository variables as Phase 2 ran: P3-S14's REVIEW_BOT_CONTEXT unset.
+PHASE_2_VARIABLES: dict[str, Any] = {"vars.REVIEW_BOT_CONTEXT": None}
 
 
 def shadow_runs(workflow: dict[Any, Any], *, head_repo: str | None, mode: str) -> bool:
@@ -358,7 +398,8 @@ def test_p2_s3_ac2_workflow_permissions_are_contents_read_only(workflow):
 
 
 def test_p2_s3_ac2_shadow_job_sets_exactly_contents_read(workflow):
-    assert shadow_job(workflow).get("permissions") == READ_ONLY
+    """P3-S14 AC3 adds `issues: read`, for context mode's linked issues; nothing else."""
+    assert shadow_job(workflow).get("permissions") == {**READ_ONLY, "issues": "read"}
 
 
 # --- AC3: who runs it, and the required check ---------------------------------------------------
@@ -448,19 +489,32 @@ def test_p2_s3_ac4_dependencies_install_locked_without_dev_after_checkout(workfl
 
 
 def test_p2_s3_ac5_api_key_is_only_in_the_run_steps_env(workflow):
-    """Scoped to the shadow job since P2-S6, whose comment job has its own rule (its AC10)."""
+    """Scoped to the shadow job since P2-S6, whose comment job has its own rule (its AC10).
+
+    Since P3-S14 AC3 the run step also gets `GITHUB_TOKEN`, the job's only other secret.
+    """
     job = shadow_job(workflow)
     assert run_step(workflow)["env"]["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
     holders = [path for path, value in walk(job) if isinstance(value, str) and "secrets." in value]
     run_index = steps_of(job).index(run_step(workflow))
-    assert holders == [("steps", run_index, "env", "ANTHROPIC_API_KEY")]
-    assert yaml.safe_dump(job).count("secrets.") == 1
+    assert holders == [
+        ("steps", run_index, "env", "ANTHROPIC_API_KEY"),
+        ("steps", run_index, "env", "GITHUB_TOKEN"),
+    ]
+    assert yaml.safe_dump(job).count("secrets.") == 2
 
 
 @pytest.mark.parametrize("token", ["GITHUB_TOKEN", "github.token"])
-def test_p2_s3_ac5_no_github_token_is_passed_anywhere_in_the_shadow_job(workflow, token):
-    """Keys and values alike; scoped to the shadow job since P2-S6 (its AC10)."""
-    assert token.casefold() not in yaml.safe_dump(shadow_job(workflow)).casefold()
+def test_p2_s3_ac5_github_token_reaches_only_the_run_step_in_the_shadow_job(workflow, token):
+    """Keys and values alike; scoped to the shadow job since P2-S6 (its AC10). Until P3-S14 AC3
+    no step had it; now only the run step's `GITHUB_TOKEN` does."""
+    job = copy.deepcopy(shadow_job(workflow))
+    step = run_step_in(job)
+    assert step is not None
+    assert re.fullmatch(
+        r"\$\{\{\s*(secrets\.GITHUB_TOKEN|github\.token)\s*\}\}", step["env"].pop("GITHUB_TOKEN")
+    )
+    assert token.casefold() not in yaml.safe_dump(job).casefold()
 
 
 def test_p2_s3_ac5_no_job_or_workflow_env_carries_values_to_every_step(workflow):
@@ -478,14 +532,17 @@ def test_p2_s3_ac5_run_passes_mode_shadow_and_out(workflow):
 def test_p2_s3_ac5_ac7_run_command_and_caps_are_accepted_by_the_cli(
     workflow, tmp_path, monkeypatch, capsys
 ):
-    """The step's own argv and env, with a broken event, get past parsing to the event (19)."""
+    """The step's own argv and env, with a broken event, get past parsing to the event (19).
+
+    The env is as Phase 2 ran it: since P3-S14 some values read `vars.REVIEW_BOT_CONTEXT`, here
+    unset (`resolved_env`); P3-S14's suite runs the step's script in both context modes.
+    """
     event = tmp_path / "event.json"
     event.write_text("not json", encoding="utf-8")
     for name in [name for name in os.environ if name.startswith("REVIEW_BOT_")]:
         monkeypatch.delenv(name)
-    for name, value in run_step(workflow)["env"].items():
-        if not str(value).startswith("${{"):
-            monkeypatch.setenv(name, str(value))
+    for name, value in resolved_env(run_step(workflow), PHASE_2_VARIABLES).items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     argv = [os.path.expandvars(word) for word in run_command_argv(workflow)]
@@ -542,7 +599,9 @@ def test_p2_s3_ac6_branch_name_context_is_never_read(text):
 
 
 def test_p2_s3_ac7_run_step_env_sets_the_design_caps(workflow):
-    env = {name: str(value) for name, value in run_step(workflow)["env"].items()}
+    """With `vars.REVIEW_BOT_CONTEXT` unset, as Phase 2 ran: P3-S14 AC2 makes the deadline 300
+    only in context mode."""
+    env = resolved_env(run_step(workflow), PHASE_2_VARIABLES)
     assert {name: env.get(name) for name in CAPS} == CAPS
 
 
@@ -644,7 +703,12 @@ def test_p2_s3_ac10_nothing_continues_on_error(workflow, text):
 
 
 def check_script(workflow: dict[Any, Any]) -> str:
-    steps = [step for step in jobs_of(workflow)[check_job_name(workflow)]["steps"] if "run" in step]
+    """The mode check's script; since P3-S14 AC1 the job also checks REVIEW_BOT_CONTEXT."""
+    steps = [
+        step
+        for step in jobs_of(workflow)[check_job_name(workflow)]["steps"]
+        if "run" in step and "MODE" in (step.get("env") or {})
+    ]
     assert len(steps) == 1
     assert re.fullmatch(r"\$\{\{\s*vars\.REVIEW_BOT_MODE\s*\}\}", steps[0]["env"]["MODE"])
     return str(steps[0]["run"])
