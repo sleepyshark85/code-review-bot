@@ -300,7 +300,7 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 | Approve and dispatch S15's live steps from `live.yml` | The gate |
 | Approve any use of the reserve | Re-runs past a step's cap |
 | Judge every new would-be comment the context backfill produces, with `pr label` | Precision coverage (S13, S15) |
-| Allow `issues: read` for the shadow and comment jobs | Linked issues in CI (S14) |
+| Allow `issues: read` for the shadow and comment jobs: **allowed by the user, 2026-11-10** | Linked issues in CI (S14) |
 | Decide when to set `REVIEW_BOT_CONTEXT=repo` | Context reviews in CI (S14) |
 
 ## 5. Known risks
