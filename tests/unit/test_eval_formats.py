@@ -19,6 +19,7 @@ from eval_cases import (
     write_repo,
 )
 
+from review_bot.context.issues import IssueStatus
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolName, ToolOutcome
 from review_bot.evals.formats import (
     MAX_REPO_BYTES,
@@ -488,3 +489,52 @@ def test_load_recording_accepts_the_most_tool_calls_and_spans(tmp_path: Path) ->
     path = write_text(tmp_path / "rec.json", json.dumps(data))
 
     assert len(load_recording(path).runs[0].ledger) == 30
+
+
+def test_load_case_reads_its_issues_as_a_context_review_sends_them(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, issues="issues.json")
+    issues = [{"number": n, "title": f"Issue {n}", "body": "Body."} for n in (12, 7, 9, 4)]
+    write_text(case_file.parent / "issues.json", json.dumps(issues))
+
+    loaded = load_case(case_file)
+
+    assert [(issue.number, issue.status) for issue in loaded.issues] == [
+        (12, IssueStatus.INCLUDED),
+        (7, IssueStatus.INCLUDED),
+        (9, IssueStatus.INCLUDED),
+        (4, IssueStatus.OVER_LIMIT),
+    ]
+    assert loaded.issues[0].text == "Issue 12\n\nBody."
+
+
+def test_load_case_without_issues_has_none(tmp_path: Path) -> None:
+    assert load_case(write_case(tmp_path)).issues == ()
+
+
+@pytest.mark.parametrize(
+    ("issues", "problem"),
+    [
+        ('{"number": 1}', "Fix the issues file"),
+        ('[{"number": 1, "title": "t"}]', "0.body"),
+        ('[{"number": 0, "title": "t", "body": "b"}]', "0.number"),
+        ('[{"number": 1, "title": "t", "body": "b", "x": 1}]', "0.x"),
+        (
+            '[{"number": 1, "title": "t", "body": "b"}, {"number": 1, "title": "u", "body": "c"}]',
+            "unique",
+        ),
+    ],
+)
+def test_load_case_names_an_invalid_issues_file(tmp_path: Path, issues: str, problem: str) -> None:
+    case_file = write_case(tmp_path, issues="issues.json")
+    write_text(case_file.parent / "issues.json", issues)
+
+    message = rejected_case(case_file)
+
+    assert "issues.json" in message
+    assert problem in message
+
+
+def test_load_case_names_a_missing_issues_file(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, issues="issues.json")
+
+    assert "issues.json can't be read" in rejected_case(case_file)

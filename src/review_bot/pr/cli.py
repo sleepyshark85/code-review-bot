@@ -59,7 +59,7 @@ from review_bot.pr.feedback import (
     labels_from_signals,
     render_feedback_line,
 )
-from review_bot.pr.github import GitHubClient
+from review_bot.pr.github import GitHubClient, IssueReader
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
 from review_bot.pr.metrics import (
     Prices,
@@ -203,9 +203,11 @@ def main(
         argv: The arguments; None means the process's own.
         provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
             from the settings, and only if the run calls one.
-        github: The GitHub client ``run --mode comment``, ``collect`` and ``baseline`` use;
-            None means a ``RestGitHubClient`` from ``GITHUB_TOKEN`` and ``GITHUB_API_URL``.
-            ``--mode shadow`` uses none, and builds no client.
+        github: The GitHub client ``run --mode comment``, ``collect`` and ``baseline`` use,
+            which also reads the linked issues of ``run`` and ``backfill`` with ``--context
+            repo``; None means a ``RestGitHubClient`` from ``GITHUB_TOKEN`` and
+            ``GITHUB_API_URL``. A shadow mode or diff mode run that reads no issue builds none,
+            and so does a context run with no token: its linked issues are ``no_token``.
 
     Returns:
         0 for a written report that isn't ``failed``; otherwise ``review-bot``'s code for the
@@ -214,12 +216,15 @@ def main(
         4 for one the system can't read, 7 to 13 for a provider failure, whose report is still
         written, 18 for a failed GitHub call, whose report is still written unless listing the
         bot's comments failed, and 19 for an unusable event, pulls file or git command. A
+        failed read of a linked issue isn't a failure: the issue is ``unavailable``. A
         ``run --mode comment`` with no ``github`` exits 2 if ``GITHUB_TOKEN`` is missing or
-        ``GITHUB_API_URL`` isn't allowed. ``backfill`` returns the first provider failure's
-        or invalid config's code, an error's code if one stops it, and 2 over ``--max-calls``
-        or ``--max-usd``, without both dollar amounts under ``--context repo``, or in CI,
-        unless a ``workflow_dispatch`` run gave ``--allow-dispatch``. ``label``
-        returns 0 when done or interrupted, and 2 with no terminal or an invalid labels file.
+        ``GITHUB_API_URL`` isn't allowed, and so does ``run`` or ``backfill`` with
+        ``--context repo`` and no ``github`` if either is set but unusable. ``backfill``
+        returns the first provider failure's or invalid config's code, an error's code if one
+        stops it, and 2 over ``--max-calls`` or ``--max-usd``, without both dollar amounts
+        under ``--context repo``, or in CI, unless a ``workflow_dispatch`` run gave
+        ``--allow-dispatch``. ``label`` returns 0 when done or interrupted, and 2 with no
+        terminal or an invalid labels file.
         ``collect`` returns 0 once ``feedback.jsonl`` is written; 2 with no ``github`` and an
         unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an unwritable ``--out``; 18 for
         a failed GitHub call, and 19 for an unusable event. A failed GitHub call or an unusable
@@ -231,7 +236,7 @@ def main(
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
-    their client.
+    their client, and ``run`` and ``backfill`` with ``--context repo`` for reading issues.
     """
     keep_library_logs_off_stderr()
     github_token = take_github_token()
@@ -247,10 +252,11 @@ def main(
         make_github: Callable[[str], GitHubClient] | None = None
         if isinstance(command, _RunCommand):
             make_github = _github_for(command.mode, github, github_token)
+        make_issue_reader = _issue_reader_for(command.settings, github, github_token)
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
         if isinstance(command, _BackfillCommand):
-            return _backfill(command, provider)
+            return _backfill(command, provider, make_issue_reader)
         audit = AuditLog(command.settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
@@ -259,7 +265,7 @@ def main(
             case _ShadowCommand():
                 shadow = _shadow(command, provider, audit)
             case _RunCommand():
-                shadow = _run(command, provider, make_github, audit)
+                shadow = _run(command, provider, make_github, make_issue_reader, audit)
         _write_report(shadow, command.out_dir)
         return _finish(shadow, command.out_dir, audit)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
@@ -349,7 +355,7 @@ def _parse_args(
         type=Path,
         required=True,
         help="the JSON from gh pr list --state merged --json "
-        "number,baseRefOid,headRefOid,mergedAt,isCrossRepository",
+        "number,baseRefOid,headRefOid,mergedAt,isCrossRepository,body",
     )
     backfill.add_argument(
         "--github-repo",
@@ -780,6 +786,23 @@ def _github_for(
     return _github_client(github, github_token)
 
 
+def _issue_reader_for(
+    settings: Settings, github: GitHubClient | None, github_token: str | None
+) -> Callable[[str], IssueReader] | None:
+    """What makes a context review's reader of linked issues for its repository.
+
+    It is ``github`` if given, else a ``RestGitHubClient`` with ``github_token`` and
+    ``GITHUB_API_URL``, checked now, before anything runs. None in diff mode, which reads no
+    issue, and with neither ``github`` nor a token, so each linked issue is ``no_token``.
+
+    Raises:
+        ConfigError: If ``GITHUB_TOKEN`` or ``GITHUB_API_URL`` is unusable.
+    """
+    if settings.context == "off" or (github is None and not github_token):
+        return None
+    return _github_client(github, github_token)
+
+
 def _github_requiring_token(
     github: GitHubClient | None, github_token: str | None, missing: str
 ) -> Callable[[str], GitHubClient]:
@@ -848,12 +871,13 @@ def _run(
     command: _RunCommand,
     provider: LLMProvider | None,
     make_github: Callable[[str], GitHubClient] | None,
+    make_issue_reader: Callable[[str], IssueReader] | None,
     audit: AuditLog,
 ) -> ShadowReport:
     """Review the pull request in the event file, and in comment mode apply it on GitHub.
 
     ``make_github`` makes the client for the pull request's repository; it is None in shadow
-    mode.
+    mode. ``make_issue_reader`` makes the reader of its linked issues, if any is read.
 
     Raises:
         EventError: If the event file is unusable; nothing else runs.
@@ -868,6 +892,7 @@ def _run(
         git=GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S),
         make_provider=lambda: build_provider(settings) if provider is None else provider,
         github=None if make_github is None else make_github(pr.repo),
+        issue_reader=None if make_issue_reader is None else make_issue_reader(pr.repo),
         settings=settings,
         audit=audit,
         environ=os.environ,
@@ -878,10 +903,15 @@ def _run(
     return run_to_completion(run)
 
 
-def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
+def _backfill(
+    command: _BackfillCommand,
+    provider: LLMProvider | None,
+    make_issue_reader: Callable[[str], IssueReader] | None,
+) -> int:
     """Review each merged pull request in the pulls file that has no report in ``--out`` yet.
 
-    A pull request whose report there is ``failed`` is reviewed again, and its report replaced.
+    ``make_issue_reader`` makes the reader of their linked issues, if any is read. A pull
+    request whose report there is ``failed`` is reviewed again, and its report replaced.
     Nothing is called over ``--max-calls``, nor, with a dollar budget, over ``--max-usd``. Each
     pull request is its own run, with its own ``run_id``, report and audit records. Once any
     could run, stdout ends with the counts.
@@ -893,7 +923,7 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
         GitError: If git fails.
         AuditError: If the audit log can't be opened.
     """
-    pulls = read_pulls(command.pulls_path)
+    pulls = read_pulls(command.pulls_path, repo=command.github_repo)
     pending = [pull for pull in pulls if not _is_done(command.out_dir, pull.number)]
     # Counted before any is skipped, so the approved budget is the most that can be spent.
     if len(pending) > command.max_calls:
@@ -909,6 +939,7 @@ def _backfill(command: _BackfillCommand, provider: LLMProvider | None) -> int:
         progress,
         git=git,
         make_provider=lambda: build_provider(settings) if provider is None else provider,
+        issue_reader=None if make_issue_reader is None else make_issue_reader(command.github_repo),
         settings=settings,
         out_dir=command.out_dir,
     )
@@ -997,6 +1028,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
     *,
     git: GitRepo,
     make_provider: Callable[[], LLMProvider],
+    issue_reader: IssueReader | None,
     settings: Settings,
     out_dir: Path,
 ) -> int:
@@ -1025,6 +1057,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
                 pr,
                 git=git,
                 make_provider=make_provider,
+                issue_reader=issue_reader,
                 settings=settings,
                 audit=audit,
                 clock=utc_now,

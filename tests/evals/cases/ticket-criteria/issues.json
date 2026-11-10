@@ -1,0 +1,7 @@
+[
+  {
+    "number": 31,
+    "title": "Invoice CSV export for finance",
+    "body": "Finance reconciles invoices against payments each month and needs a CSV export of them.\n\nAcceptance criteria:\n- One row per invoice, after a header row.\n- Columns, in this order: invoice_id, customer, subtotal, discount, total.\n- The discount column holds the discount applied to the invoice, so that subtotal minus discount equals total on every row.\n"
+  }
+]

@@ -93,9 +93,10 @@ def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]
     A recording is fresh only if its ``case_sha256``, ``diff_sha256``, ``prompt_version`` and
     ``prompt_sha256``, and in context mode its ``repo_tree``, all equal these. ``prompt_sha256``
     covers the system prompt and the user prompt built from the diff's reviewable text, and in
-    context mode the tool definitions, so changing either prompt, the framing, a tool, or which
-    files are skipped changes it. ``repo_tree`` is the tree ID of the case's built ``repo``, so
-    changing any file under it changes it. Context mode builds that repository with git.
+    context mode the case's linked issues and the tool definitions, so changing either prompt,
+    the framing, an issue, a tool, or which files are skipped changes it. ``repo_tree`` is the
+    tree ID of the case's built ``repo``, so changing any file under it changes it. Context mode
+    builds that repository with git.
 
     Raises:
         EvalInputError: If the case is invalid, its diff can't be reviewed, or in context mode
@@ -133,7 +134,11 @@ def _case_freshness(
         return fields | {"prompt_version": PROMPT_VERSION, "prompt_sha256": _sha256_text(prompts)}
     tools = RepoTools(repo.repo, caps=tool_caps(settings))
     request = build_context_request(
-        reviewable_text, model=settings.model, tools=tools, domain_rules=domain_rules
+        reviewable_text,
+        model=settings.model,
+        tools=tools,
+        domain_rules=domain_rules,
+        issues=loaded.issues,
     )
     prompts = json.dumps([request.system_prompt, request.user_prompt, _tool_definitions(request)])
     return fields | {
@@ -274,7 +279,11 @@ async def score_recording(
                 )
                 return CaseResult(case_id, recording, None, (problem,))
         # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
-        context = None if repo is None else ReviewContext(repo=repo.repo)
+        context = (
+            None
+            if repo is None
+            else ReviewContext(repo=repo.repo, read_issues=lambda: loaded.issues)
+        )
         review = _CaseReview(context=context, domain_rules=domain_rules)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))

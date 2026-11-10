@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from review_bot.context.issues import IssueText
 from review_bot.errors import GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.pr.comments import comment_body
@@ -304,3 +305,40 @@ def test_a_failing_history_call_raises_github_error(
 
     with pytest.raises(GitHubError, match=operation):
         call(client)
+
+
+def test_read_issue_returns_an_issue_a_pull_request_or_none_and_records_each_call() -> None:
+    github = FakeGitHubClient()
+    github.add_issue(number=12, title="Export", body="Discount.")
+    github.add_pull_request(
+        number=8, title="A pull", created_at=OPENED, closed_at=None, merged_at=None
+    )
+
+    found = [github.read_issue("owner/repo", number) for number in (12, 8, 404)]
+
+    assert found == [
+        IssueText("Export", "Discount."),
+        IssueText("A pull", "", is_pull_request=True),
+        None,
+    ]
+    assert [call.args for call in github.calls] == [
+        ("owner/repo", 12),
+        ("owner/repo", 8),
+        ("owner/repo", 404),
+    ]
+
+
+def test_a_failing_read_issue_raises_github_error() -> None:
+    github = FakeGitHubClient()
+    github.fail_on("read_issue")
+
+    with pytest.raises(GitHubError, match="read_issue"):
+        github.read_issue("owner/repo", 12)
+
+
+def test_read_issue_refuses_another_repository_as_the_rest_client_does() -> None:
+    github = FakeGitHubClient("owner/repo")
+    github.add_issue(number=12, title="Export", body="Discount.")
+
+    with pytest.raises(ValueError, match=r"for owner/repo, not other/repo"):
+        github.read_issue("other/repo", 12)

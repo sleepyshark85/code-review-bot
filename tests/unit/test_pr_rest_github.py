@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
 from review_bot.pr.comments import comment_body
@@ -855,5 +856,66 @@ def test_history_calls_refuse_another_repository(stub: Stub) -> None:
         client(stub).list_merged_pull_requests("other/repo", SINCE, UNTIL)
     with pytest.raises(ValueError, match="not other/repo"):
         client(stub).count_issues("other/repo", "bug", SINCE, UNTIL)
+
+    assert stub.received == []
+
+
+# --- read_issue: linked issues (P3-S9) ---
+
+
+def test_read_issue_gets_the_issue_and_keeps_its_title_and_body(stub: Stub) -> None:
+    stub.respond = lambda _request: reply({"number": 12, "title": "Export", "body": "Discount."})
+
+    issue = client(stub).read_issue("owner/repo", 12)
+
+    assert issue == IssueText("Export", "Discount.")
+    (request,) = stub.received
+    assert (request.method, request.path) == ("GET", "/repos/owner/repo/issues/12")
+
+
+def test_read_issue_reads_a_null_body_as_empty(stub: Stub) -> None:
+    stub.respond = lambda _request: reply({"title": "Export", "body": None})
+
+    assert client(stub).read_issue("owner/repo", 12) == IssueText("Export", "")
+
+
+def test_read_issue_marks_a_pull_request(stub: Stub) -> None:
+    stub.respond = lambda _request: reply({"title": "A pull", "body": "", "pull_request": {}})
+
+    issue = client(stub).read_issue("owner/repo", 8)
+
+    assert issue is not None
+    assert issue.is_pull_request
+
+
+def test_read_issue_not_found_is_none(stub: Stub) -> None:
+    stub.respond = lambda _request: reply({"message": "Not Found"}, status=404)
+
+    assert client(stub).read_issue("owner/repo", 404) is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "problem"),
+    [
+        (Reply(403, b"{}"), "HTTP 403"),
+        (Reply(200, b"{"), "the response isn't JSON"),
+        (Reply(200, b'{"body": "x"}'), "doesn't have the expected shape at title"),
+        (Reply(200, b" " * (1024 * 1024) + b"{}"), "the response is over 1 MB"),
+    ],
+)
+def test_read_issue_that_fails_raises_naming_the_call(
+    stub: Stub, answer: Reply, problem: str
+) -> None:
+    stub.respond = lambda _request: answer
+
+    with pytest.raises(GitHubError, match=r"^GitHub read_issue failed: ") as caught:
+        client(stub).read_issue("owner/repo", 12)
+
+    assert problem in str(caught.value)
+
+
+def test_read_issue_refuses_another_repository(stub: Stub) -> None:
+    with pytest.raises(ValueError, match="not other/repo"):
+        client(stub).read_issue("other/repo", 12)
 
     assert stub.received == []

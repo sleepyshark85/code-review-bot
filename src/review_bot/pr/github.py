@@ -1,6 +1,8 @@
-"""The GitHub API a pull request run uses, behind a ``Protocol`` (Phase 2 design, Interfaces).
+"""The GitHub API a pull request run uses, behind ``Protocol``s (Phase 2 design, Interfaces).
 
-``RestGitHubClient`` implements it against GitHub, and ``FakeGitHubClient`` in memory for tests.
+``RestGitHubClient`` implements them against GitHub, and ``FakeGitHubClient`` in memory for
+tests. ``IssueReader`` is apart from ``GitHubClient``, since a shadow mode run has no
+``GitHubClient`` but may read linked issues (Phase 3 design, Interfaces).
 """
 
 from collections.abc import Sequence
@@ -9,6 +11,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Final, Protocol
 
+from review_bot.context.issues import IssueText
 from review_bot.errors import GitHubError
 from review_bot.findings import Severity
 from review_bot.pr.event import PullRequestRef
@@ -20,6 +23,7 @@ __all__ = [
     "BotComment",
     "CommentSignals",
     "GitHubClient",
+    "IssueReader",
     "MergedPullRequest",
     "NewComment",
     "Resolver",
@@ -135,10 +139,24 @@ def too_many_merged_pulls(count: int) -> GitHubError:
     )
 
 
-class GitHubClient(Protocol):
+class IssueReader(Protocol):
+    """Reads one issue, read-only, for a context review's linked issues (P3-S9)."""
+
+    def read_issue(self, repo: str, number: int) -> IssueText | None:
+        """Return issue ``number`` of ``repo`` (``owner/name``), or None if it isn't found.
+
+        A pull request is returned too, marked as one, since GitHub's issues API returns both.
+
+        Raises:
+            GitHubError: If the call fails, or the response is unusable.
+        """
+        ...
+
+
+class GitHubClient(IssueReader, Protocol):
     """The calls a comment-mode run, ``collect`` and ``baseline`` make.
 
-    Each raises ``GitHubError`` naming itself on failure.
+    Each raises ``GitHubError`` naming itself on failure. Every client reads issues too.
     """
 
     def list_bot_comments(self, pr: PullRequestRef) -> tuple[BotComment, ...]:

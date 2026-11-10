@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import os
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import version
@@ -16,6 +16,7 @@ from typing import Final
 
 from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diagnostics
 from review_bot.console import write_diagnostic
+from review_bot.context.issues import LinkedIssue
 from review_bot.context.ledger import LineSpan, ToolCall
 from review_bot.context.tools import RepoRef, RepoTools, ToolCaps
 from review_bot.diff_input import load_diff
@@ -69,14 +70,18 @@ class _PolicyOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ReviewContext:
-    """What a context review may look up: the commit its tools read.
+    """What a context review may look up: the commit its tools read, and the issues it closes.
 
     ``is_diff_head`` says that commit is the one the diff ends at, as in PR mode, so the lines
-    the tools return count as evidence in the files the diff changes too.
+    the tools return count as evidence in the files the diff changes too. ``read_issues``
+    returns the linked issues; the review calls it only once the model will be called, so a
+    review stopped before then reads none. Those whose text is sent follow the diff in the
+    prompt.
     """
 
     repo: RepoRef
     is_diff_head: bool = False
+    read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()
 
 
 async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-only
@@ -129,8 +134,10 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
         audit: Where each stage's decision goes.
         name: How messages name the diff; it must already be redacted.
         exclude: Globs whose matching files are skipped too, as ``parse_diff`` matches them.
-        context: The commit the model's tools read, within the settings' tool caps, with the
-            context prompt; None reviews in diff mode, with no tools.
+        context: The commit the model's tools read, within the settings' tool caps, and the
+            linked issues sent after the diff, with the context prompt, read only once the diff
+            has passed every check before the model call; None reviews in diff mode, with no
+            tools.
         domain_rules: The domain rules the repository enables, which run with the built-in
             rules, and in context mode are named in the prompt too.
 
@@ -173,13 +180,20 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
         )
 
     _stop_if_too_large_to_review(parsed, settings, name, audit)
-    tools = None if context is None else RepoTools(context.repo, caps=tool_caps(settings))
-    if tools is None:
+    tools: RepoTools | None = None
+    if context is None:
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
+        issues = await asyncio.to_thread(context.read_issues)
+        tools = RepoTools(context.repo, caps=tool_caps(settings))
         request = build_context_request(
-            parsed.reviewable_text, model=settings.model, tools=tools, domain_rules=domain_rules
+            parsed.reviewable_text,
+            model=settings.model,
+            tools=tools,
+            domain_rules=domain_rules,
+            issues=issues,
         )
+        _record_issues(issues, audit)
     try:
         response = await _call_provider(provider, request, diff, audit)
     finally:
@@ -385,6 +399,17 @@ def _record_tool_calls(ledger: Iterable[ToolCall], audit: AuditLog) -> None:
                 "result_bytes": call.result_bytes,
                 "input_sha256": call.input_sha256,
             },
+        )
+
+
+def _record_issues(issues: Iterable[LinkedIssue], audit: AuditLog) -> None:
+    """Record each linked issue's number, status and bytes of text sent, never the text."""
+    for issue in issues:
+        sent_bytes = len(issue.text.encode("utf-8"))
+        audit.record(
+            Stage.CONTEXT,
+            "issue",
+            {"number": issue.number, "status": issue.status, "bytes_sent": sent_bytes},
         )
 
 

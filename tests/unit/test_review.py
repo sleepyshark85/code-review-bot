@@ -1,6 +1,7 @@
 """Unit tests for `run_pipeline`: the secret check, and what each stage records."""
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from diff_samples import MINIMAL_DIFF, section
 from git_samples import commit, init_repo
 
 from review_bot.audit import AuditLog
+from review_bot.context.issues import IssueStatus, LinkedIssue
 from review_bot.context.tools import RepoRef
 from review_bot.errors import (
     DiffNotParsableError,
@@ -891,3 +893,56 @@ def test_run_pipeline_reports_a_model_finding_tagged_with_a_domain_rule_once_as_
     assert [(item.source, item.finding.line) for item in result.decision.reported] == [
         (Source.RULE, 1)
     ]
+
+
+# Linked issues (P3-S9).
+
+ISSUE_TEXT = "Export totals\n\nThe CSV must include the discount."
+ISSUES = (
+    LinkedIssue(12, IssueStatus.INCLUDED, ISSUE_TEXT),
+    LinkedIssue(404, IssueStatus.NOT_FOUND),
+)
+
+
+def test_run_pipeline_with_linked_issues_sends_each_sent_one_after_the_diff(
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider(findings=[])
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=lambda: ISSUES)
+
+    run_with_context(tmp_path, provider, context)
+
+    [request] = provider.requests
+    assert f"linked issue #12\n<<<UNTRUSTED-ISSUE-{sha256(ISSUE_TEXT)}>>>" in request.user_prompt
+    assert "#404" not in request.user_prompt
+
+
+def test_run_pipeline_records_each_linked_issue_with_the_bytes_sent_but_not_its_text(
+    tmp_path: Path,
+) -> None:
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=lambda: ISSUES)
+
+    run_with_context(tmp_path, MockProvider(findings=[]), context)
+
+    log = tmp_path / "audit.jsonl"
+    records = [r["data"] for r in read_records(log) if r["event"] == "issue"]
+    assert records == [
+        {"number": 12, "status": "included", "bytes_sent": len(ISSUE_TEXT.encode("utf-8"))},
+        {"number": 404, "status": "not_found", "bytes_sent": 0},
+    ]
+    assert "discount" not in log.read_text(encoding="ascii")
+
+
+def test_run_pipeline_stopped_before_the_model_call_reads_no_linked_issue(tmp_path: Path) -> None:
+    def read_issues() -> tuple[LinkedIssue, ...]:
+        raise AssertionError("issues read before the review knew it would call the model")
+
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=read_issues)
+    provider = MockProvider(findings=[])
+
+    with pytest.raises(DiffTooLargeError):
+        run_with_context(tmp_path, provider, context, max_review_bytes=1)
+
+    assert provider.requests == []
+    log = tmp_path / "audit.jsonl"
+    assert [r for r in read_records(log) if r["event"] == "issue"] == []

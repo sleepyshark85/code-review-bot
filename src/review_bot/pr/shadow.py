@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import Final, assert_never
 
 from review_bot.context.codeowners import NO_CODEOWNERS, CodeOwners, owners_for
+from review_bot.context.issues import LinkedIssue
 from review_bot.diff_parser import ParsedDiff
 from review_bot.errors import (
     DiffEmptyError,
@@ -171,7 +172,8 @@ class ShadowReport:
     reviewed commit a comment mode run started from, the head or an ancestor of it, else None.
     ``error`` is the error that ended the run, if any, for the caller's message and exit code;
     it is never written. ``cost_usd`` is the review's cost as the provider reported it, None if
-    it reported none or the model wasn't called.
+    it reported none or the model wasn't called. ``issues`` are the issues a context review
+    read for the pull request, of which only each number and status is written.
     """
 
     run_id: str
@@ -194,6 +196,7 @@ class ShadowReport:
     since: str | None
     error: ReportedError | GitHubError | None
     cost_usd: Decimal | None = None
+    issues: tuple[LinkedIssue, ...] = ()
 
     @property
     def scope(self) -> Scope:
@@ -216,6 +219,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     since: str | None = None,
     incremental: Incremental | None = None,
     codeowners: CodeOwners | None = None,
+    issues: Sequence[LinkedIssue] = (),
 ) -> ShadowReport:
     """Build the report of a review, of the error that stopped it, or of a refused run.
 
@@ -236,7 +240,8 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     ``settings`` are those the review ran with, the repository's threshold applied, and
     ``config`` the repository's policy, or None if the run read none. Comments are planned up
     to its ``max_open_comments``. ``codeowners``, if the run read it, names the owners of each
-    entry, and a reviewed summary groups the findings by owner.
+    entry, and a reviewed summary groups the findings by owner. ``issues`` are the linked issues
+    a context review read, none otherwise.
 
     Raises:
         ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it;
@@ -306,6 +311,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         since=since,
         error=error,
         cost_usd=review.cost_usd if isinstance(review, PipelineResult) else None,
+        issues=tuple(issues),
     )
 
 
@@ -461,6 +467,8 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "codeowners": _codeowners_json(shadow.codeowners),
         # The same as the review's own, so readers of shadow/v1 needn't open ``report``.
         "context": None if shadow.report is None else shadow.report["context"],
+        # Never an issue's text, which is untrusted and may be long.
+        "issues": [{"number": issue.number, "status": issue.status} for issue in shadow.issues],
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
 

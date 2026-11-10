@@ -65,7 +65,8 @@ GOLDEN = REPO_ROOT / "tests" / "fixtures" / "p3_s1"
 PHASE_1_PROMPT_VERSION = "p1-v1"
 # AC7: main holds `p3-v3` (P3-S12, after P3-S4's `p3-v2`); S10 takes the next free number. If
 # another slice that bumps the context prompt merges first, this moves on by one (design.md).
-CONTEXT_PROMPT_VERSION = "p3-v4"
+# P3-S9 (AC11) then took `p3-v5`.
+CONTEXT_PROMPT_VERSION = "p3-v5"
 GIT_TIMEOUT_S = 30.0
 # Generous: it catches a hang or super-linear tokenising, not a slow CI machine.
 BOUND_S = 60.0

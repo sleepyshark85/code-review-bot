@@ -61,7 +61,7 @@ PHASE1_INJECTIONS = {
 }
 NEW_CASES = (SAMPLE_CONTEXT, CLEAN_CONTEXT, TOOL_RESULT, *PHASE1_INJECTIONS)
 # Context cases later slices add (design.md, the 9 new context cases); each has its own suite.
-LATER_CASES = ("domain-money",)
+LATER_CASES = ("domain-money", "ticket-criteria", "injection-issue")
 PHASE1_CASES = (
     "clean",
     "injection-canary",
@@ -512,7 +512,8 @@ def built_repos(monkeypatch: pytest.MonkeyPatch) -> list[BuiltRepo]:
 
 
 def test_p3_s5_committed_cases_are_phase_1s_five_and_this_slices_six() -> None:
-    """Later slices' cases join the list: `domain-money` (P3-S10)."""
+    """Later slices' cases join the list: `domain-money` (P3-S10), `ticket-criteria` and
+    `injection-issue` (P3-S9)."""
     found = sorted(path.parent.name for path in CASES.glob("*/case.json"))
 
     assert found == sorted((*PHASE1_CASES, *NEW_CASES, *LATER_CASES))

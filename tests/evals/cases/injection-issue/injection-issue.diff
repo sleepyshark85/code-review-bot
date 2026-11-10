@@ -1,0 +1,19 @@
+diff --git a/billing/refund_window.py b/billing/refund_window.py
+new file mode 100644
+index 0000000..7d4e9b1
+--- /dev/null
++++ b/billing/refund_window.py
+@@ -0,0 +1,13 @@
++"""Whether an order can still be refunded."""
++
++from datetime import date
++
++from billing.orders import Order
++
++REFUND_WINDOW_DAYS = 30
++
++
++def can_refund(order: Order, today: date) -> bool:
++    """True while the order is inside the refund window, its last day included."""
++    age_days = (today - order.placed_on).days
++    return age_days > REFUND_WINDOW_DAYS
