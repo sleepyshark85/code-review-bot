@@ -1,8 +1,9 @@
+import argparse
 from decimal import Decimal
 
 import pytest
 
-from review_bot.spend import DollarBudget
+from review_bot.spend import DollarBudget, usd_amount
 
 BUDGET = DollarBudget(max_usd=Decimal("7.20"), max_cost_usd=Decimal("0.60"))
 
@@ -40,3 +41,14 @@ def test_dollar_budget_charges_the_reported_cost_or_the_cap_if_none_was_reported
 def test_dollar_budget_refuses_an_amount_not_above_0(max_usd: str, max_cost_usd: str) -> None:
     with pytest.raises(ValueError, match="above 0"):
         DollarBudget(max_usd=Decimal(max_usd), max_cost_usd=Decimal(max_cost_usd))
+
+
+@pytest.mark.parametrize("text", ["0.01", "8.10", "1000"])
+def test_usd_amount_reads_a_decimal_above_0_exactly(text: str) -> None:
+    assert usd_amount(text) == Decimal(text)
+
+
+@pytest.mark.parametrize("text", ["0", "-0.30", "nan", "inf", "", "abc"])
+def test_usd_amount_refuses_anything_but_a_finite_decimal_above_0(text: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="isn't an amount of USD above 0"):
+        usd_amount(text)

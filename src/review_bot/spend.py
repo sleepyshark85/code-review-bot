@@ -2,13 +2,29 @@
 
 Pure (ADR 0015): before any call, the planned calls at their cap must fit the allowance; during
 the run, a call starts only if one more at its cap still fits, and a call that reported no cost
-counts as its cap.
+counts as its cap. ``usd_amount`` reads either amount from a command-line flag.
 """
 
+import argparse
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
-__all__ = ["DollarBudget"]
+__all__ = ["DollarBudget", "usd_amount"]
+
+
+def usd_amount(text: str) -> Decimal:
+    """``text`` as an amount of USD above 0, for a flag's ``type``.
+
+    Raises:
+        argparse.ArgumentTypeError: If it isn't a finite decimal above 0.
+    """
+    try:
+        amount = Decimal(text)
+    except InvalidOperation:
+        amount = None
+    if amount is None or not amount.is_finite() or amount <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} isn't an amount of USD above 0, such as 7.20")
+    return amount
 
 
 @dataclass(frozen=True, slots=True)

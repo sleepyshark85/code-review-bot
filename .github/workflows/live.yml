@@ -14,6 +14,8 @@ on:
         options:
           - smoke
           - backfill
+          - evals-diff
+          - evals-context
 
 permissions:
   contents: read
@@ -145,5 +147,147 @@ jobs:
         with:
           name: live-backfill-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/live/
+          retention-days: 90
+          if-no-files-found: warn
+
+  evals-diff:
+    name: live evals, diff mode
+    if: github.ref == 'refs/heads/main' && inputs.step == 'evals-diff'
+    concurrency:
+      group: live
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: Install the bot
+        run: uv sync --locked --no-dev
+
+      - name: Record the new cases in diff mode (at most $2.70)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_BOT_MAX_RETRIES: "0"
+        run: |
+          out="$RUNNER_TEMP/live"
+          mkdir -p "$out"
+          status=0
+          uv run --no-sync python -m review_bot.evals live \
+            --cases tests/evals/cases \
+            --mode diff \
+            --runs 3 \
+            --max-calls 27 \
+            --max-usd 2.70 \
+            --max-cost-usd 0.10 \
+            --case sample-context \
+            --case clean-context \
+            --case injection-tool-result \
+            --case injection-instruction-context \
+            --case injection-canary-context \
+            --case injection-delimiter-context \
+            --case ticket-criteria \
+            --case injection-issue \
+            --case domain-money \
+            --allow-dispatch \
+            > "$out/stdout.txt" 2> "$out/stderr.txt" || status=$?
+          echo "evals live exited $status."
+          exit "$status"
+
+      - name: Upload the recordings, audit log and output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-evals-diff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/live/
+            tests/evals/cases/sample-context/recordings/live/
+            tests/evals/cases/clean-context/recordings/live/
+            tests/evals/cases/injection-tool-result/recordings/live/
+            tests/evals/cases/injection-instruction-context/recordings/live/
+            tests/evals/cases/injection-canary-context/recordings/live/
+            tests/evals/cases/injection-delimiter-context/recordings/live/
+            tests/evals/cases/ticket-criteria/recordings/live/
+            tests/evals/cases/injection-issue/recordings/live/
+            tests/evals/cases/domain-money/recordings/live/
+            .review-bot/eval-live-audit.jsonl
+          retention-days: 90
+          if-no-files-found: warn
+
+  evals-context:
+    name: live evals, context mode
+    if: github.ref == 'refs/heads/main' && inputs.step == 'evals-context'
+    concurrency:
+      group: live
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: Install the bot
+        run: uv sync --locked --no-dev
+
+      - name: Record the new cases in context mode (at most $8.10)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_BOT_MAX_RETRIES: "0"
+        run: |
+          out="$RUNNER_TEMP/live"
+          mkdir -p "$out"
+          status=0
+          uv run --no-sync python -m review_bot.evals live \
+            --cases tests/evals/cases \
+            --mode context \
+            --runs 3 \
+            --max-calls 27 \
+            --max-usd 8.10 \
+            --max-cost-usd 0.30 \
+            --case sample-context \
+            --case clean-context \
+            --case injection-tool-result \
+            --case injection-instruction-context \
+            --case injection-canary-context \
+            --case injection-delimiter-context \
+            --case ticket-criteria \
+            --case injection-issue \
+            --case domain-money \
+            --allow-dispatch \
+            > "$out/stdout.txt" 2> "$out/stderr.txt" || status=$?
+          echo "evals live exited $status."
+          exit "$status"
+
+      - name: Upload the recordings, audit log and output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-evals-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/live/
+            tests/evals/cases/sample-context/recordings/live-context/
+            tests/evals/cases/clean-context/recordings/live-context/
+            tests/evals/cases/injection-tool-result/recordings/live-context/
+            tests/evals/cases/injection-instruction-context/recordings/live-context/
+            tests/evals/cases/injection-canary-context/recordings/live-context/
+            tests/evals/cases/injection-delimiter-context/recordings/live-context/
+            tests/evals/cases/ticket-criteria/recordings/live-context/
+            tests/evals/cases/injection-issue/recordings/live-context/
+            tests/evals/cases/domain-money/recordings/live-context/
+            .review-bot/eval-live-audit.jsonl
           retention-days: 90
           if-no-files-found: warn

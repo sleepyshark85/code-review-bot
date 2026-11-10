@@ -1,11 +1,14 @@
 """The eval reports: one row per bug, each source's recall, and what a person should read.
 
-``replay`` scores past responses; ``live`` adds each case's run-to-run figures and the totals.
+``replay`` scores past responses; ``live`` adds each case's run-to-run figures and the totals,
+and with a dollar budget, each case's tool calls, cost and cap-hit runs, and the spend.
 """
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from typing import Final
+from decimal import Decimal
+from statistics import fmean
+from typing import TYPE_CHECKING, Final
 
 from review_bot.errors import ErrorCategory
 from review_bot.evals.formats import (
@@ -27,6 +30,10 @@ from review_bot.evals.score import (
 )
 from review_bot.findings import Source
 from review_bot.render import escape_unprintable
+from review_bot.spend import DollarBudget
+
+if TYPE_CHECKING:
+    from review_bot.evals.live import LiveRun
 
 __all__ = [
     "LIVE_NOTICE",
@@ -58,23 +65,70 @@ def render_replay(results: Sequence[CaseResult]) -> str:
     return "\n".join(lines)
 
 
-def render_live(results: Sequence[CaseResult]) -> str:
-    """The report of each case just recorded, with its run-to-run figures, then the totals."""
+def render_live(run: "LiveRun") -> str:
+    """The report of each case just recorded, with its run-to-run figures, then the totals.
+
+    With a dollar budget, each case adds its spend figures, and the report ends with what was
+    spent of ``--max-usd``, after ``stopped: budget`` if the budget stopped the run.
+    """
     lines = [LIVE_NOTICE]
     measured: list[LiveMetrics] = []
-    for result in results:
+    for result in run.results:
         figures: list[str] = []
         if result.score is not None and result.recording is not None:
             metrics = live_metrics(result.score, result.recording)
             measured.append(metrics)
             figures = _metrics_lines(metrics)
+            if run.budget is not None:
+                figures += _spend_lines(result.recording, run.budget)
         lines += ["", *_case_lines(result, figures)]
-    lines += ["", _totals_line(measured), _overall(results)]
+    lines += ["", _totals_line(measured), _result_line(passed=run.passed)]
+    if run.budget is not None:
+        if run.stopped_by_budget:
+            lines.append("stopped: budget")
+        lines.append(f"spent=${run.spent_usd} of --max-usd ${run.budget.max_usd}")
     return "\n".join(lines)
 
 
 def _overall(results: Sequence[CaseResult]) -> str:
-    return f"result: {'pass' if all(result.passed for result in results) else 'fail'}"
+    return _result_line(passed=all(result.passed for result in results))
+
+
+def _result_line(*, passed: bool) -> str:
+    return f"result: {'pass' if passed else 'fail'}"
+
+
+def _spend_lines(recording: Recording, budget: DollarBudget) -> list[str]:
+    """A case's tool calls per run in context mode, its cost towards --max-usd, and cap-hit runs."""
+    runs = recording.runs
+    lines = []
+    if recording.mode == "context":
+        lines.append(f"  tool calls per run: {_tool_call_figures(runs)}")
+    counted = sum((budget.charge(run.cost_usd) for run in runs), Decimal(0))
+    reported = [run.cost_usd for run in runs if run.cost_usd is not None]
+    if len(reported) == len(runs):
+        lines.append(f"  cost: ${counted}, reported by every run")
+    else:
+        lines.append(
+            f"  cost: ${counted}, of which ${sum(reported, Decimal(0))} reported by "
+            f"{len(reported)} of {len(runs)} runs, and {len(runs) - len(reported)} unreported "
+            f"counted at --max-cost-usd ${budget.max_cost_usd} each"
+        )
+    cap_hit = [f"run {number} ({run.cap})" for number, run in enumerate(runs, 1) if run.cap]
+    lines.append(f"  cap-hit runs: {', '.join(cap_hit) or 'none'}")
+    return lines
+
+
+def _tool_call_figures(runs: Sequence[RecordedRun]) -> str:
+    """The mean and largest tool call count of the runs that returned.
+
+    Failed runs are left out, as live records none of their calls.
+    """
+    counts = [len(run.tool_calls) for run in runs if run.error is None]
+    if not counts:
+        return "not measured, no run returned"
+    returned = count_noun(len(counts), "returned run")
+    return f"mean {fmean(counts):.1f}, largest {max(counts)}, over {returned}"
 
 
 def _case_lines(result: CaseResult, figures: Sequence[str] = ()) -> list[str]:

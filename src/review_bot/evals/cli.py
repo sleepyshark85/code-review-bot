@@ -15,13 +15,14 @@ from review_bot.errors import ConfigError
 from review_bot.evals.compare import compare_cases
 from review_bot.evals.compare_render import render_compare_json, render_compare_text
 from review_bot.evals.formats import EvalInputError
-from review_bot.evals.live import record_live
+from review_bot.evals.live import LiveRequest, LiveRun, record_live
 from review_bot.evals.render import render_live, render_replay
 from review_bot.evals.replay import replay_both_modes, replay_cases, require_live
 from review_bot.evals.score import CaseResult
 from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, take_github_token
+from review_bot.spend import usd_amount
 
 if TYPE_CHECKING:
     from review_bot.providers.claude_agent import SdkCall
@@ -50,6 +51,8 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     """Replay, record or compare every case under ``--cases``; return 0 pass, 1 fail, 2 usage.
 
     ``compare`` passes when every case with a ``repo`` or a context recording is paired.
+    ``live`` records only the cases ``--case`` names, if given, and fails if its dollar budget
+    stopped it before every case was recorded.
 
     Args:
         argv: The arguments; None means the process's own.
@@ -79,8 +82,8 @@ async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> tuple[st
     if args.command == "compare":
         return await _compare(args)
     if args.command == "live":
-        results = await _record(args, sdk_call)
-        return render_live(results), _exit_code(results)
+        run = await _record(args, sdk_call)
+        return render_live(run), _PASS if run.passed else _FAIL
     return await _replay(args)
 
 
@@ -103,15 +106,18 @@ def _exit_code(results: Sequence[CaseResult]) -> int:
     return _PASS if all(result.passed for result in results) else _FAIL
 
 
-async def _record(args: argparse.Namespace, sdk_call: "SdkCall | None") -> list[CaseResult]:
-    return await record_live(
+async def _record(args: argparse.Namespace, sdk_call: "SdkCall | None") -> LiveRun:
+    request = LiveRequest(
         args.cases,
         runs=args.runs,
         max_calls=args.max_calls,
-        environ=os.environ,
+        mode=args.mode,
+        case_ids=tuple(args.case_ids or ()),
+        max_usd=args.max_usd,
+        max_cost_usd=args.max_cost_usd,
         allow_dispatch=args.allow_dispatch,
-        sdk_call=sdk_call,
     )
+    return await record_live(request, environ=os.environ, sdk_call=sdk_call)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -146,11 +152,36 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     live.add_argument("--cases", type=Path, required=True, help="the eval cases directory")
     live.add_argument(
+        "--mode",
+        choices=("diff", "context"),
+        default="diff",
+        help="diff mode (the default), or context mode, with the tools reading each case's repo",
+    )
+    live.add_argument(
+        "--case",
+        dest="case_ids",
+        action="append",
+        help="a case to run, by its id; repeat it for more; without it, every case runs",
+    )
+    live.add_argument(
         "--runs", type=_positive_int, required=True, help="how many calls to make per case"
     )
-    # Not required by the parser, so its absence can be refused with the planned call count.
+    # This and the two amounts aren't required by the parser, so their absence can be refused
+    # with the planned call count.
     live.add_argument(
         "--max-calls", type=_positive_int, help="the most calls allowed in all; required"
+    )
+    live.add_argument(
+        "--max-usd",
+        type=usd_amount,
+        help="the most all calls may cost, in USD; required with --mode context and with "
+        "--max-cost-usd",
+    )
+    live.add_argument(
+        "--max-cost-usd",
+        type=usd_amount,
+        help="the most one call may cost, in USD, from 0.01 to 1000; required with --mode "
+        "context and with --max-usd",
     )
     live.add_argument(
         "--allow-dispatch",

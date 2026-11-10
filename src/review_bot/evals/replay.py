@@ -5,7 +5,8 @@ for the tools (``evals.fixture_repo``). In either mode, the domain rules that a
 ``.review-bot.toml`` at the root of the case's ``repo`` enables run, as a pull request's base
 commit's would. The repository and each pipeline run's audit log go to a temporary directory that
 is deleted afterwards, so replay writes nothing that outlives it. It also holds
-``check_sendable``, ``live``'s pre-flight check of each case.
+``check_sendable``, ``live``'s pre-flight check of each case, and what ``live`` reviews a case
+with in context mode: its built repository and its domain rules.
 """
 
 import dataclasses
@@ -57,6 +58,8 @@ from review_bot.settings import Settings
 from review_bot.verify import VerifyResult, verify_findings
 
 __all__ = [
+    "build_case_repo",
+    "case_domain_rules",
     "check_sendable",
     "freshness_fields",
     "replay_both_modes",
@@ -66,10 +69,9 @@ __all__ = [
 ]
 
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
-# ``live`` records diff mode only; P3-S6 adds recording context mode.
-_LIVE_CONTEXT_ADVICE: Final = (
-    "no command records a live context run yet (P3-S6); one goes in "
-    "recordings/live-context/recording.json"
+_LIVE_CONTEXT_COMMAND: Final = (
+    "python -m review_bot.evals live --cases DIR --mode context --runs N --max-calls M "
+    "--max-usd X --max-cost-usd Y"
 )
 
 
@@ -103,8 +105,8 @@ def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]
     if mode == "diff":
         return _case_freshness(loaded, None, ())
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
-        repo = _build_repo(loaded, Path(work_dir))
-        return _case_freshness(loaded, repo, _domain_rules(loaded))
+        repo = build_case_repo(loaded, Path(work_dir))
+        return _case_freshness(loaded, repo, case_domain_rules(loaded))
 
 
 def _case_freshness(
@@ -211,7 +213,8 @@ def require_live(result: CaseResult, default_model: str, *, mode: EvalMode) -> C
     ``mode`` is the replay's, so the advice says how to get a live recording of that mode.
     """
     recording = result.recording
-    advice = f"record one with {_LIVE_COMMAND}" if mode == "diff" else _LIVE_CONTEXT_ADVICE
+    command = _LIVE_COMMAND if mode == "diff" else _LIVE_CONTEXT_COMMAND
+    advice = f"record one with {command}"
     if recording is None or recording.kind != "live":
         problem = f"--require-live needs a live recording; {advice}"
     elif recording.model != default_model:
@@ -236,7 +239,7 @@ async def check_sendable(loaded: LoadedCase) -> None:
             it is skipped, naming the case.
     """
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
-        review = _CaseReview(context=None, domain_rules=_domain_rules(loaded))
+        review = _CaseReview(context=None, domain_rules=case_domain_rules(loaded))
         result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl", review)
     if not result.model_called:
         raise EvalInputError(
@@ -257,9 +260,9 @@ async def score_recording(
             ``.review-bot.toml``, or in context mode its repository can't be built.
     """
     case_id = loaded.case.id
-    domain_rules = _domain_rules(loaded)
+    domain_rules = case_domain_rules(loaded)
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
-        repo = None if mode == "diff" else _build_repo(loaded, Path(work_dir))
+        repo = None if mode == "diff" else build_case_repo(loaded, Path(work_dir))
         if recording is not None:
             today = _case_freshness(loaded, repo, domain_rules)
             stale = [name for name, value in today.items() if getattr(recording, name) != value]
@@ -277,7 +280,7 @@ async def score_recording(
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
 
 
-def _build_repo(loaded: LoadedCase, work_dir: Path) -> FixtureRepo:
+def build_case_repo(loaded: LoadedCase, work_dir: Path) -> FixtureRepo:
     """Build the case's ``repo``, or an empty repository without one, under ``work_dir``.
 
     Raises:
@@ -293,7 +296,7 @@ def _refresh_advice(recording: Recording) -> str:
     """How to make a stale ``recording`` fresh. The message names the stale fields already."""
     if recording.mode == "context":
         if recording.kind == "live":
-            return f"Record it again: {_LIVE_CONTEXT_ADVICE}"
+            return f"Record it again with {_LIVE_CONTEXT_COMMAND}"
         return (
             "Set its five freshness fields to today's values, from "
             'review_bot.evals.freshness_fields(case.json, "context")'
@@ -467,7 +470,7 @@ async def _review(
         raise _unreviewable(loaded, exc) from exc
 
 
-def _domain_rules(loaded: LoadedCase) -> tuple[DomainRule, ...]:
+def case_domain_rules(loaded: LoadedCase) -> tuple[DomainRule, ...]:
     """The domain rules the ``.review-bot.toml`` at the root of the case's ``repo`` enables.
 
     Empty without a ``repo``, or without that file in it.
