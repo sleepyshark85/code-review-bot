@@ -168,9 +168,7 @@ class RepoTools:  # the one real ToolExecutor
 class ReviewContext:
     repo: RepoRef
     is_diff_head: bool = False  # S4: the tools' commit is the diff's head (PR mode)
-    read_issues: Callable[[], tuple[LinkedIssue, ...]] = (
-        lambda: ()
-    )  # S9: called just before the model call, so a run with no model call reads none
+    read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()  # S9
 
 
 async def review_diff(  # adds the keyword-only context and domain_rules
