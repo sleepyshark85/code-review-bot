@@ -3,7 +3,8 @@ name: Review
 # Reviews every same-repo pull request in shadow mode (P2-S3) or with comments (P2-S6),
 # with repository context when REVIEW_BOT_CONTEXT=repo (P3-S14), and collects reactions as
 # labels when it closes (P2-S8). ADRs 0008 to 0012 and 0015.
-# The bot's code and settings come from the base commit; the PR supplies only its diff.
+# The bot's code and settings come from the base commit; the PR supplies its diff, and in
+# context mode its head commit's files and the issues its body closes.
 # Never a required check: branch protection requires only CI's "gate".
 
 on:
