@@ -18,7 +18,7 @@ from shadow_samples import entry, report
 from review_bot.pr.feedback import FeedbackLabel, FeedbackRecord, RejectReason
 from review_bot.pr.metrics import Prices
 from review_bot.pr.outcome import Outcome
-from review_bot.pr.run_metrics import OutcomeCount, Percentiles, TokenTotals
+from review_bot.pr.run_metrics import OutcomeCount, Percentiles, TokenTotals, duration_percentiles
 
 # --- Runs: outcomes, latency, tokens and cost ---------------------------------------------------
 
@@ -66,6 +66,10 @@ def test_latency_with_no_reviewed_run_is_none() -> None:
         Percentiles(0, None, None),
         Percentiles(0, None, None),
     )
+
+
+def test_duration_percentiles_are_nearest_rank_rounded_to_a_tenth_of_a_second() -> None:
+    assert duration_percentiles([1.04, 2.26, 3.0]) == Percentiles(3, 2.3, 3.0)
 
 
 def test_a_run_given_twice_is_counted_once() -> None:

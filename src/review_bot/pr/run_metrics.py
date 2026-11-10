@@ -33,7 +33,14 @@ from review_bot.pr.metrics import (
 from review_bot.pr.outcome import Outcome
 from review_bot.pr.units import ShadowEntry, ShadowFile, distinct_runs, would_be_comments
 
-__all__ = ["OutcomeCount", "Percentiles", "RunMetrics", "TokenTotals", "summarise_runs"]
+__all__ = [
+    "OutcomeCount",
+    "Percentiles",
+    "RunMetrics",
+    "TokenTotals",
+    "duration_percentiles",
+    "summarise_runs",
+]
 
 _SECONDS_PLACES: Final = 1
 _MEAN_PLACES: Final = 1
@@ -154,8 +161,12 @@ def summarise_runs(
         until=until,
         runs=len(window),
         outcomes=_outcomes(window),
-        end_to_end_s=_percentiles([_seconds(run.event_at, run.finished_at) for run in from_events]),
-        review_s=_percentiles([_seconds(run.started_at, run.finished_at) for run in reviewed]),
+        end_to_end_s=duration_percentiles(
+            [_seconds(run.event_at, run.finished_at) for run in from_events]
+        ),
+        review_s=duration_percentiles(
+            [_seconds(run.started_at, run.finished_at) for run in reviewed]
+        ),
         token_runs=len(usages),
         input_tokens=_token_totals(input_tokens),
         output_tokens=_token_totals(output_tokens),
@@ -315,7 +326,8 @@ def _seconds(start: datetime, end: datetime) -> float:
     return (end - start).total_seconds()
 
 
-def _percentiles(seconds: Sequence[float]) -> Percentiles:
+def duration_percentiles(seconds: Sequence[float]) -> Percentiles:
+    """How many durations there are, and their nearest-rank p50 and p95, rounded to 0.1 s."""
     p50, p95 = nearest_rank(seconds, 50), nearest_rank(seconds, 95)
     return Percentiles(len(seconds), _rounded(p50, _SECONDS_PLACES), _rounded(p95, _SECONDS_PLACES))
 

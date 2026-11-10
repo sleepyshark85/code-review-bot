@@ -1099,3 +1099,75 @@ Not tested:
 ### Coverage
 
 Not measured by the tester, who ran only these files, the changed suites and `tests/evals`. For coverage of `context.issues`, `pr.event`, `pr.rest_github`, `pr.runner`, `pr.shadow`, `prompt` and `evals.formats`, see the main session's `pytest --cov`.
+
+## P3-S13: Compare Phase 3 against Phase 2 on the labelled pull requests
+
+Spec: [p3-s13-compare-labelled-prs.md](slices/p3-s13-compare-labelled-prs.md). Tests: [`tests/integration/test_p3_s13_compare_labelled_prs.py`](../../../tests/integration/test_p3_s13_compare_labelled_prs.py), 81 cases. They were written from the spec's criteria, Limits and Interfaces, Phase 2's "How the gate is evidenced", Phase 3's Q3 and ADR 0016, while the developer built the slice and before any of its code was read.
+
+**Status: every criterion passes. All 81 cases pass, from this file alone, on the developer's uncommitted working tree** (base `2d823b9`).
+
+**On the way:**
+- When the file was first run, the developer's code had already landed. 69 of 73 passed. The 4 failures were all one reader: the JSON states "not decidable" as `decidable: false` with `reason` `coverage`, not as the string. The reader `is_not_decidable` now accepts both forms. The text still has to show `not decidable: coverage` word for word, and it does. No assertion was weakened.
+- The self-check first called `pr.reports.read_reports`, whose signature the developer changed during the build. It now reads each file through `read_report`.
+- 8 cases were added after that first run, and all of them passed against the code. One of them failed once on a test bug: two excluded entries for PR 2, in different repos, collapsed into one key. That test now reads the list directly.
+
+### Gate
+
+As the coordinator asked, only this file was run, with no parallel pytest and not the full suite. `ruff format --check`, `ruff check` and `mypy` are clean on it, and `pytest` gives 81 passed in about 14 s. Phase 2's `metrics` and `label` suites (`test_p2_s10_metrics.py`, `test_p2_s4_label_shadow_findings.py`), whose readers the developer changed, still pass: 89 passed. For the full gate, see the main session's run.
+
+### Seam and set-up
+
+- **The command** runs in process: `review_bot.pr.cli.main(["compare", "--baseline", DIR, "--candidate", DIR, "--labels", FILE, *flags])`, with stdout and stderr read through `capsys`.
+- **Reports** are written straight into `tmp_path` in `shadow/v1`'s current shape (`pr.shadow.render_shadow_json`'s keys).
+  - A baseline is a diff-mode event run: `p1-v1`, with `context` null.
+  - A candidate is a context-mode backfill: `p3-v5`, with `context.tool_calls` and `usage.cost_usd`.
+  - `phase2_shape=True` drops every key Phase 3 added (`context`, `issues`, `codeowners`, `report.mode`, `report.context` and `usage.cost_usd`), as the real Phase 2 artifacts lack them.
+  - Bodies, rationales and the summary carry marker text and `@user` names, which neither output may show.
+- **Labels** are `feedback/v1` shadow records, written in full as `pr label` writes them.
+- **Self-check:** Phase 2's own readers, `pr.reports.read_report` and `parse_labels`, accept every fixture in both shapes.
+- **`compare/v1`**, read only through the readers:
+  - `prs.compared[*]` holds `{repo, number, head_sha}`, and `prs.excluded[*]` holds `{repo, number, reason}`.
+  - Each side has:
+    - `units`: `total`, `judged`, `accepted`, `rejected` by reason, `unjudged` and `coverage`;
+    - `precision`: `share`, `wilson_low`, `wilson_high` and `lower_bound`;
+    - `recall`: `issues`, `pool` and `share`;
+    - `cost`: `basis`, `total_usd`, `mean_per_pr_usd` and `per_accepted_unit_usd`;
+    - `tokens`, `tool_calls` and `latency.review_s`.
+  - `pool` holds `issues`, `both`, `baseline_only` and `candidate_only`.
+  - `verdict` holds `decidable`, `reason`, `precision`, `recall` and `coverage` per side.
+  - The tests read money as any decimal under `cost`, and tokens, tool calls and latency as any number under their keys, so they don't depend on the inner key names.
+
+### Criteria
+
+Test names drop the `test_p3_s13_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_only_the_same_head_reports_of_pr_2_are_compared` (B compared, A not). `ac1_unpaired_prs_are_excluded_with_their_reason` ×3 (PR 3 at another head and PR 4 without a baseline: `no_same_head`; PR 5 without a candidate: `no_candidate`). `ac1_only_units_of_compared_reports_count` (A's, PR 3's, PR 4's and PR 5's accepted units count nowhere; the pool is 2). `ac1_a_report_that_is_not_reviewed_in_shadow_mode_does_not_pair` ×4 (baseline or candidate `failed`, or in `comment` mode: that PR is excluded and adds no unit). `ac1_a_candidate_at_another_head_of_a_compared_pr_does_not_count`. `ac1_the_same_pr_number_in_another_repo_does_not_pair`. `ac1_phase_2_shaped_baseline_reports_are_compared` (no skip line) | pass (12) |
+| AC2 | `ac2_each_side_shows_accepted_rejected_by_reason_and_unjudged` ×2. `ac2_each_side_shows_precision_wilson_lower_bound_and_coverage` ×2: the baseline is Phase 2's worked example over two PRs (34 units: 21/30, Wilson against an independent formula, lower bound 21/32, coverage 32/34); the candidate is 13 units (10/11, 10/12, 12/13). `ac2_phase_2s_worked_example_reads_as_its_spec_states` (70.0%, 52.1% to 83.3%, 65.6%, 94.1%). `ac2_two_entries_of_one_key_are_two_units_joined_by_index`. `ac2_label_joins_whatever_its_fingerprint`. `ac2_label_differing_in_one_key_field_does_not_join` ×5 (rule part, file, anchor, index, PR). `ac2_a_unit_on_both_sides_takes_its_one_label_on_each`. `ac2_a_report_downloaded_twice_counts_once` (same `run_id`) | pass (14) |
+| AC3 | `ac3_different_rule_parts_on_one_anchored_line_are_one_issue_found_by_both` (the spec's `ai:logic` and `ai:reliability` example). `ac3_pool_is_every_issue_either_side_accepted` (6 issues: rejected and unjudged units add none, two accepted units on one line are one issue, and the same anchor in another file or on another PR is another issue). `ac3_each_side_shows_recall_and_issues_only_it_found` ×2 (4/6 with 3 found only by the baseline; 3/6 with 2 found only by the candidate). `ac3_no_accepted_unit_gives_an_empty_pool_without_error` | pass (5) |
+| AC4 | `ac4_reported_costs_give_total_mean_and_cost_per_accepted_unit` ×2 (0.60, 0.20, 0.15 and 1.20, 0.40, 0.20). `ac4_reported_costs_win_over_prices`. `ac4_a_report_that_is_not_compared_does_not_force_an_estimate` (an uncosted baseline at another head). `ac4_without_costs_both_prices_estimate_from_tokens_in_decimal` (22.50 total, 11.25 mean, 2.50 per accepted unit, marked `estimated` in both formats). `ac4_baseline_without_costs_is_estimated_beside_a_costed_candidate` (Phase 2-shaped). `ac4_without_costs_or_prices_cost_is_not_available`. `ac4_no_accepted_unit_gives_no_cost_per_accepted_unit_without_error`. `ac4_tokens_tool_calls_and_review_time_are_always_shown` ×3, one per costing: mean tokens 3000 and 300; tool calls mean 4, largest 7; review p50 20 s and p95 300 s by nearest rank | pass (11) |
+| AC5 | `ac5_verdict_states_precision_and_recall_for_the_candidate` ×5 (`higher`/`lower`, `same`/`same`, equal at 100% is `same`, `lower`/`higher`, and a duplicate that doesn't lower precision), in JSON and on one text line each. `ac5_coverage_of_exactly_90_percent_is_decidable` (9/10). `ac5_coverage_below_90_percent_is_not_decidable_with_each_sides_coverage` ×3 (80%, 88.9%, nothing judged; no verdict word; each side's coverage in the JSON verdict and the text) | pass (9) |
+| AC6 | `ac6_labels_for_units_on_prs_not_compared_are_ignored` (later rejections of the excluded PRs' units change nothing). `ac6_the_latest_recorded_at_wins_whatever_the_file_order` ×2. `ac6_the_latest_label_wins_across_utc_offsets` (`10:00+02:00` is earlier than `09:00Z`) | pass (4) |
+| AC7 | `ac7_malformed_labels_line_exits_2_naming_the_line` ×3 (not JSON, another schema, not an object; `line 2`, nothing on stdout). `ac7_label_missing_a_key_exits_2_naming_the_line` (`line 3`). `ac7_unusable_report_is_skipped_with_one_stderr_line` ×6 (not JSON, `shadow/v2`, or 10,000,001 bytes, in either directory: exactly one stderr line names it, exit 0, its PR is excluded and its unit counts nowhere). `ac7_report_of_exactly_10_mb_is_read` (10,000,000 bytes, in under 60 s). `ac7_clean_inputs_exit_0_with_nothing_skipped` | pass (12) |
+| AC8 | `ac8_json_is_one_ascii_compare_v1_document_with_the_interface_keys` (every Interfaces key, top level and per side). `ac8_non_ascii_path_keeps_json_ascii` (`é` and U+202E). `ac8_json_holds_what_the_text_shows` (each excluded PR and reason, each compared head, and the verdict). `ac8_every_number_the_text_shows_is_in_the_json` (every number and percentage in the text, with prices, is a number in the JSON). `ac8_no_body_rationale_or_username_appears` ×2 (JSON, text; stdout and stderr) | pass (6) |
+| Interfaces | `interfaces_invalid_input_exits_2_naming_the_flag` ×4 (lone price, non-numeric price, missing `--baseline`, missing `--labels`; see Readings) | pass (4) |
+| Limits | `limits_many_prs_and_units_finish_in_bounded_time` (300 PRs × 10 units per side and 6,000 labels, under 60 s, about 3 s here, with exact counts). `limits_hostile_report_text_never_reaches_the_output_raw` (an ESC sequence, U+202E and a forged `verdict:` line in a path) | pass (2) |
+| Other | `selfcheck_wilson_matches_phase_2s_worked_example`. `selfcheck_fixtures_are_valid_phase_2_inputs` | pass (2) |
+
+### Failures
+
+None.
+
+### Readings for the designer
+
+1. **A verdict the spec doesn't name.** AC5 lists `higher`, `same` and `lower`, or `not decidable: coverage`. The developer's notes add `not measured` (JSON `null`) for a side with no precision denominator, or for an empty pool, and they count the coverage of a side with no units as met. The tests don't pin either case: `ac3_no_accepted_unit_gives_an_empty_pool_without_error` checks only that the command doesn't fail. The spec should say what the verdict is then, as P3-S7's amendment did for `evals compare`.
+2. **"Not decidable" in JSON** is `decidable: false`, `reason: "coverage"`, with null words. The text shows the literal `not decidable: coverage`. The tests accept that string or this object.
+3. **Cost basis per side.** AC4's "given every compared report holding `usage.cost_usd`" could be read across both sides together, which would make the costed candidate `estimated` too, or per side. The developer reads it per side, which is the only reading that works for Phase 2's uncosted baseline beside a costed candidate. `ac4_baseline_without_costs_is_estimated_beside_a_costed_candidate` asserts only the baseline's basis, so both readings pass it. The spec should name one.
+4. **Price and path errors** (`interfaces_*`) follow P2-S10 AC5 and P3-S7's amended AC4: a lone or non-numeric price exits 2 naming the flag. The S13 spec states only "exit codes 0 and 2".
+5. **Several reports per side at one head** (re-runs): the developer counts every compared report, summing tokens, tool calls and cost per side, then dividing by the compared PRs. The criteria don't say, and no test pins it beyond `run_id` dedupe.
+6. **Labels on other channels** (`reaction`, `resolution`) in `FILE` are ignored by the code (an uncovered branch). The criteria don't say, and it's untested.
+
+### Coverage
+
+From this file alone: `pr/compare.py` 98%. Its 2 uncovered lines are a reviewed shadow report without a PR (`origin` `local`) and a non-shadow label (Readings 6). The developer's unit tests cover the rest. `pr/reports.py` is 91% and `pr/units.py` 93%. `pr/cli.py` and `pr/metrics_report.py` serve other commands too, so their totals from this file (40% and 71%) aren't meaningful; see the main session's `pytest --cov`.

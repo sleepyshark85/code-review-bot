@@ -5,7 +5,8 @@ pull request in ``--out DIR/<number>``; ``label`` judges what downloaded shadow 
 post. ``collect`` writes ``feedback.jsonl`` in ``--out DIR``, from the reactions and resolutions
 on the bot's comments, with no model. ``baseline`` writes the ``baseline/v1`` document in
 ``--out FILE``, from a repository's merged pull requests, with no model. ``metrics`` shows
-the numbers of downloaded shadow reports and labels on stdout, offline.
+the numbers of downloaded shadow reports and labels on stdout, offline, and ``compare`` compares
+context reports with Phase 2's on the same pull requests and labels, offline.
 
 ``run --mode comment`` also posts on the pull request, and ``collect`` and ``baseline`` read
 GitHub, through its API with the token in ``GITHUB_TOKEN``; without it, they exit 2.
@@ -51,6 +52,8 @@ from review_bot.console import (
 )
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
+from review_bot.pr.compare import compare_runs
+from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.feedback import (
@@ -184,6 +187,15 @@ class _MetricsCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class _CompareCommand:
+    baseline_dir: Path
+    candidate_dir: Path
+    labels_path: Path
+    prices: Prices | None
+    as_json: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BaselineCommand:
     github_repo: str
     since: date
@@ -233,6 +245,9 @@ def main(
         ``GITHUB_TOKEN`` or ``GITHUB_API_URL``; and 18 for a failed GitHub call, which writes
         nothing. ``metrics`` returns 0 once the numbers are shown, and 2 for an invalid flag, a
         --reports that isn't a directory, an --until before --since, or only one price.
+        ``compare`` returns 0 once the comparison is shown, and 2 for an invalid flag, a
+        --baseline or --candidate that isn't a directory, an unusable --labels file, or only
+        one price.
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
@@ -243,7 +258,8 @@ def main(
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
         if isinstance(
-            command, _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand
+            command,
+            _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
         ):
             return _run_without_review(command, github, github_token)
         # Before --out is created: a CI run refused here touches nothing.
@@ -275,7 +291,7 @@ def main(
 
 
 def _run_without_review(
-    command: _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand,
+    command: _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
     github: GitHubClient | None,
     github_token: str | None,
 ) -> int:
@@ -291,6 +307,8 @@ def _run_without_review(
             return _baseline(command, client(command.github_repo))
         case _MetricsCommand():
             return _metrics(command)
+        case _CompareCommand():
+            return _compare(command)
 
 
 def _parse_args(
@@ -303,6 +321,7 @@ def _parse_args(
     | _CollectCommand
     | _BaselineCommand
     | _MetricsCommand
+    | _CompareCommand
 ):
     """Parse the command line into the subcommand, its paths and the settings.
 
@@ -417,9 +436,10 @@ def _parse_args(
     )
     _add_baseline_command(commands.add_parser)
     _add_metrics_command(commands.add_parser)
+    _add_compare_command(commands.add_parser)
     flags = vars(parser.parse_args(argv))
     name = flags.pop("command")
-    if name in ("label", "collect", "baseline", "metrics"):
+    if name in ("label", "collect", "baseline", "metrics", "compare"):
         return _command_without_review(name, flags)
     out_dir = flags.pop("out")
     if _AUDIT_LOG_VARIABLE not in os.environ:
@@ -447,7 +467,7 @@ def _command_without_review(
     name: str,
     # Any, as argparse's parsed values have no static type.
     flags: Mapping[str, Any],
-) -> _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand:
+) -> _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand:
     """The subcommand ``name``, one that reviews nothing, from its parsed ``flags``.
 
     Raises:
@@ -459,6 +479,8 @@ def _command_without_review(
         return _CollectCommand(flags["event"], flags["out"])
     if name == "baseline":
         return _baseline_command(flags["repo"], flags["since"], flags["until"], flags["out"])
+    if name == "compare":
+        return _compare_command(flags)
     return _metrics_command(flags)
 
 
@@ -565,6 +587,53 @@ def _metrics_command(flags: Mapping[str, Any]) -> _MetricsCommand:
     )
 
 
+def _compare_command(flags: Mapping[str, Any]) -> _CompareCommand:
+    """The ``compare`` command, once its prices are known to be in order.
+
+    Raises:
+        ConfigError: If only one price is given.
+    """
+    return _CompareCommand(
+        baseline_dir=flags["baseline"],
+        candidate_dir=flags["candidate"],
+        labels_path=flags["labels"],
+        prices=prices_from_flags(
+            flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]
+        ),
+        as_json=flags["format"] == "json",
+    )
+
+
+def _add_compare_command(add_parser: Callable[..., RaisingArgumentParser]) -> None:
+    compare = add_parser(
+        "compare",
+        help="compare context reports with Phase 2's on the same pull requests and labels, offline",
+        description="Pair each --candidate report with the --baseline report of the same pull "
+        "request and head SHA, and compare their precision, recall and cost, judged by the "
+        "feedback/v1 labels in --labels.",
+        allow_abbrev=False,
+    )
+    compare.add_argument(
+        "--baseline",
+        type=Path,
+        required=True,
+        help="the directory holding Phase 2's shadow.json files, at any depth",
+    )
+    compare.add_argument(
+        "--candidate",
+        type=Path,
+        required=True,
+        help="the directory holding the context reviews' shadow.json files, at any depth",
+    )
+    compare.add_argument(
+        "--labels", type=Path, required=True, help="the feedback/v1 JSONL file judging both"
+    )
+    add_price_arguments(compare)
+    compare.add_argument(
+        "--format", choices=["text", "json"], default="text", help="text (default) or json"
+    )
+
+
 def _iso_date(text: str) -> date:
     try:
         return date.fromisoformat(text)
@@ -648,9 +717,7 @@ def _metrics(command: _MetricsCommand) -> int:
     Raises:
         ConfigError: If ``--reports`` isn't a directory.
     """
-    reports, skipped = read_reports(command.reports_dir)
-    for path, problem in skipped:
-        write_diagnostic(skipped_line(path, problem))
+    reports = _readable_reports(command.reports_dir, flag="--reports")
     labels: list[FeedbackRecord] = []
     for path in command.labels_paths:
         records = read_labels(path)
@@ -669,6 +736,42 @@ def _metrics(command: _MetricsCommand) -> int:
         )
     write_output(render_metrics_json(metrics) if command.as_json else render_metrics_text(metrics))
     return 0
+
+
+def _compare(command: _CompareCommand) -> int:
+    """Show the comparison on stdout, as text or ``compare/v1`` JSON.
+
+    Each report left out gets one line on stderr.
+
+    Raises:
+        ConfigError: If ``--labels`` can't be used, checked first, or ``--baseline`` or
+            ``--candidate`` isn't a directory.
+    """
+    labels = read_labels(command.labels_path)
+    if isinstance(labels, str):
+        raise ConfigError(
+            f"The labels file --labels {redact(str(command.labels_path))} can't be used: "
+            f"{labels}. Fix it, then run compare again."
+        )
+    baseline = _readable_reports(command.baseline_dir, flag="--baseline")
+    candidate = _readable_reports(command.candidate_dir, flag="--candidate")
+    comparison = compare_runs(baseline, candidate, labels, command.prices)
+    write_output(
+        render_compare_json(comparison) if command.as_json else render_compare_text(comparison)
+    )
+    return 0
+
+
+def _readable_reports(directory: Path, *, flag: str) -> list[ShadowFile]:
+    """The reports under ``directory``, with one stderr line for each file left out.
+
+    Raises:
+        ConfigError: If ``directory``, named by ``flag``, isn't a directory.
+    """
+    reports, skipped = read_reports(directory, flag=flag)
+    for path, problem in skipped:
+        write_diagnostic(skipped_line(path, problem))
+    return reports
 
 
 def _labelled_line(result: LabellingResult) -> str:

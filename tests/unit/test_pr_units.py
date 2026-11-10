@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -7,7 +8,13 @@ from shadow_samples import K1, K2, K3, entry, report
 
 from review_bot.pr.cli import main
 from review_bot.pr.feedback import Unit
-from review_bot.pr.units import ShadowFile, WouldBeComment, distinct_runs, would_be_comments
+from review_bot.pr.units import (
+    ShadowFile,
+    WouldBeComment,
+    distinct_runs,
+    reviewed_shadow,
+    would_be_comments,
+)
 from review_bot.providers.mock import MockProvider
 
 
@@ -97,6 +104,25 @@ def test_would_be_comments_ignores_reports_that_are_not_reviewed_pr_shadow_runs(
     assert would_be_comments([parsed(report(entry(K1), **fields))]) == ()
 
 
+def test_reviewed_shadow_gives_the_pr_and_review_of_a_reviewed_pr_shadow_run() -> None:
+    shadow = parsed(report(entry(K1)))
+
+    assert reviewed_shadow(shadow) == (shadow.pr, shadow.report)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"mode": "comment"},
+        {"outcome": "skipped", "report": None},
+        {"outcome": "failed"},
+        {"origin": "local", "pr": None},
+    ],
+)
+def test_reviewed_shadow_is_none_for_any_other_report(fields: dict[str, Any]) -> None:
+    assert reviewed_shadow(parsed(report(entry(K1), **fields))) is None
+
+
 def test_would_be_comments_ignores_entries_whose_action_is_not_create() -> None:
     document = report(entry(K1, action="update"), entry(K2))
 
@@ -164,3 +190,48 @@ def test_distinct_runs_keeps_the_first_report_of_each_run_in_the_order_given() -
     again = parsed(report(run_id="a", number=2))
 
     assert distinct_runs([first, second, again]) == [first, second]
+
+
+def test_shadow_file_reads_the_head_sha_reported_cost_and_tool_calls() -> None:
+    review = {
+        "model": "claude-x",
+        "prompt_version": "p3-v1",
+        "usage": {"input_tokens": 1, "output_tokens": 2, "cost_usd": "0.0123"},
+        "context": {"commit": "2" * 40, "tool_calls": 4},
+    }
+
+    shadow = parsed(report(report=review))
+
+    assert shadow.pr is not None
+    assert shadow.report is not None
+    assert shadow.pr.head_sha == "1" * 40
+    assert shadow.report.usage.cost_usd == Decimal("0.0123")
+    assert shadow.report.context is not None
+    assert shadow.report.context.tool_calls == 4
+
+
+def test_shadow_file_of_a_phase_2_report_has_no_cost_or_tool_calls() -> None:
+    shadow = parsed(report())
+
+    assert shadow.report is not None
+    assert (shadow.report.usage.cost_usd, shadow.report.context) == (None, None)
+
+
+@pytest.mark.parametrize("cost_usd", ["-0.01", "NaN", "1000001"])
+def test_shadow_file_refuses_a_reported_cost_out_of_range(cost_usd: str) -> None:
+    review = {
+        "model": "claude-x",
+        "prompt_version": "p3-v1",
+        "usage": {"input_tokens": 1, "output_tokens": 2, "cost_usd": cost_usd},
+    }
+
+    with pytest.raises(ValueError, match="cost_usd"):
+        parsed(report(report=review))
+
+
+def test_shadow_file_needs_a_head_sha_of_40_hex_digits() -> None:
+    document = report()
+    document["pr"]["head_sha"] = "HEAD"
+
+    with pytest.raises(ValueError, match="head_sha"):
+        parsed(document)

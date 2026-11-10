@@ -29,18 +29,18 @@ __all__ = [
 MAX_FILE_BYTES: Final = 10_000_000
 
 
-def read_reports(directory: Path) -> tuple[list[ShadowFile], list[tuple[Path, str]]]:
+def read_reports(directory: Path, *, flag: str) -> tuple[list[ShadowFile], list[tuple[Path, str]]]:
     """Every ``*.json`` file under ``directory``, at any depth, as a report or with why not.
 
     Files are taken in path order, so reports finished at the same moment come in a repeatable
-    order.
+    order. ``flag`` is the option that named ``directory``, such as ``--reports``.
 
     Raises:
         ConfigError: If ``directory`` isn't a directory.
     """
     if not directory.is_dir():
         raise ConfigError(
-            f"--reports {redact(str(directory))} isn't a directory. Pass the directory you "
+            f"{flag} {redact(str(directory))} isn't a directory. Pass the directory you "
             "downloaded the shadow report artifacts to."
         )
     reports: list[ShadowFile] = []

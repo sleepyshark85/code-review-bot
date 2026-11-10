@@ -1,4 +1,4 @@
-"""Render ``RunMetrics`` as the ``metrics/v1`` JSON document, or as text for a person.
+"""Render ``RunMetrics`` as ``metrics/v1``: one JSON document, or text for a person.
 
 Pure. Text from reports, such as a reason or a rule part, is written only as JSON writes it.
 """
@@ -8,14 +8,18 @@ from typing import Final
 
 from review_bot.pr.feedback import RejectReason
 from review_bot.pr.metrics import Precision, Verdicts
-from review_bot.pr.run_metrics import Percentiles, RunMetrics, TokenTotals
+from review_bot.pr.report_format import (
+    fraction,
+    number_text,
+    percent_text,
+    percentiles_document,
+    percentiles_text,
+)
+from review_bot.pr.run_metrics import RunMetrics, TokenTotals
 
 __all__ = ["METRICS_SCHEMA", "render_metrics_json", "render_metrics_text"]
 
 METRICS_SCHEMA: Final = "metrics/v1"
-# JSON holds shares as fractions, as baseline/v1 does; text shows them as percentages.
-_FRACTION_PLACES: Final = 3
-_PERCENT_PLACES: Final = 1
 
 
 def render_metrics_json(metrics: RunMetrics) -> str:
@@ -40,8 +44,8 @@ def render_metrics_json(metrics: RunMetrics) -> str:
                 for count in metrics.outcomes
             ],
             "latency_s": {
-                "end_to_end": _percentiles_document(metrics.end_to_end_s),
-                "review": _percentiles_document(metrics.review_s),
+                "end_to_end": percentiles_document(metrics.end_to_end_s),
+                "review": percentiles_document(metrics.review_s),
             },
         },
         "tokens": {
@@ -72,8 +76,8 @@ def render_metrics_text(metrics: RunMetrics) -> str:
             f"reason={_quoted(count.reason)} count={count.count}"
             for count in metrics.outcomes
         ),
-        f"latency_s end_to_end {_percentiles_text(metrics.end_to_end_s)}",
-        f"latency_s review {_percentiles_text(metrics.review_s)}",
+        f"latency_s end_to_end {percentiles_text(metrics.end_to_end_s)}",
+        f"latency_s review {percentiles_text(metrics.review_s)}",
         f"tokens runs={metrics.token_runs} input {_tokens_text(metrics.input_tokens)} "
         f"output {_tokens_text(metrics.output_tokens)} over_budget={metrics.over_budget}",
         _cost_text(metrics),
@@ -82,14 +86,6 @@ def render_metrics_text(metrics: RunMetrics) -> str:
         f"orphans={len(metrics.orphans)}",
     ]
     return "\n".join(f"metrics: {line}" for line in lines)
-
-
-def _fraction(share: float | None) -> float | None:
-    return None if share is None else round(share, _FRACTION_PLACES)
-
-
-def _percentiles_document(percentiles: Percentiles) -> dict[str, float | None]:
-    return {"runs": percentiles.runs, "p50": percentiles.p50, "p95": percentiles.p95}
 
 
 def _tokens_document(tokens: TokenTotals) -> dict[str, float | None]:
@@ -111,7 +107,7 @@ def _verdicts_document(verdicts: Verdicts) -> dict[str, float | None]:
         "accepted": verdicts.accepted,
         "rejected": verdicts.rejected,
         "duplicates": verdicts.duplicates,
-        "precision": _fraction(verdicts.precision),
+        "precision": fraction(verdicts.precision),
     }
 
 
@@ -128,13 +124,13 @@ def _precision_document(precision: Precision) -> dict[str, object]:
     return {
         "units": precision.units,
         "judged": verdicts.judged,
-        "coverage": _fraction(precision.coverage),
+        "coverage": fraction(precision.coverage),
         **_verdicts_document(verdicts),
-        "wilson_low": _fraction(low),
-        "wilson_high": _fraction(high),
-        "lower_bound": _fraction(verdicts.lower_bound),
+        "wilson_low": fraction(low),
+        "wilson_high": fraction(high),
+        "lower_bound": fraction(verdicts.lower_bound),
         "prs": precision.pr_count,
-        "largest_pr_share": _fraction(precision.largest_pr_share),
+        "largest_pr_share": fraction(precision.largest_pr_share),
         "conflict": precision.conflicts,
         "resolved": precision.resolved,
         "splits": splits,
@@ -145,25 +141,8 @@ def _quoted(text: str | None) -> str:
     return json.dumps(text, ensure_ascii=True)
 
 
-def _number_text(value: float | None) -> str:
-    return "n/a" if value is None else str(value)
-
-
-def _percent_text(share: float | None) -> str:
-    return "n/a" if share is None else f"{share * 100:.{_PERCENT_PLACES}f}%"
-
-
-def _percentiles_text(percentiles: Percentiles) -> str:
-    return (
-        f"runs={percentiles.runs} p50={_number_text(percentiles.p50)} "
-        f"p95={_number_text(percentiles.p95)}"
-    )
-
-
 def _tokens_text(tokens: TokenTotals) -> str:
-    return (
-        f"total={tokens.total} mean={_number_text(tokens.mean)} max={_number_text(tokens.largest)}"
-    )
+    return f"total={tokens.total} mean={number_text(tokens.mean)} max={number_text(tokens.largest)}"
 
 
 def _cost_text(metrics: RunMetrics) -> str:
@@ -177,16 +156,16 @@ def _cost_text(metrics: RunMetrics) -> str:
 def _precision_text(name: str, precision: Precision) -> list[str]:
     verdicts = precision.verdicts
     interval = verdicts.wilson_95
-    wilson = "n/a" if interval is None else " to ".join(map(_percent_text, interval))
+    wilson = "n/a" if interval is None else " to ".join(map(percent_text, interval))
     reasons = " ".join(
         f"{reason}={precision.reject_reasons.get(reason, 0)}" for reason in RejectReason
     )
     return [
         f"{name} units={precision.units} judged={verdicts.judged} "
-        f"coverage={_percent_text(precision.coverage)} {_verdicts_text(verdicts)}",
-        f"{name} wilson_95={wilson} lower_bound={_percent_text(verdicts.lower_bound)} "
+        f"coverage={percent_text(precision.coverage)} {_verdicts_text(verdicts)}",
+        f"{name} wilson_95={wilson} lower_bound={percent_text(verdicts.lower_bound)} "
         f"({verdicts.accepted}/{verdicts.judged}) prs={precision.pr_count} "
-        f"largest_pr_share={_percent_text(precision.largest_pr_share)} "
+        f"largest_pr_share={percent_text(precision.largest_pr_share)} "
         f"conflict={precision.conflicts} resolved={precision.resolved}",
         *(
             f"{name} split {trait}={_quoted(value)} {_verdicts_text(split)}"
@@ -201,5 +180,5 @@ def _verdicts_text(verdicts: Verdicts) -> str:
     return (
         f"accepted={verdicts.accepted} rejected={verdicts.rejected} "
         f"duplicates={verdicts.duplicates} "
-        f"precision={_percent_text(verdicts.precision)} ({verdicts.accepted}/{verdicts.counted})"
+        f"precision={percent_text(verdicts.precision)} ({verdicts.accepted}/{verdicts.counted})"
     )
