@@ -1,0 +1,274 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "ticket-criteria",
+  "kind": "live",
+  "mode": "context",
+  "case_sha256": "5a9378364e1e7573d0ce50a0959d7a927a85e95d358ec0df322a1f7a1f8bec84",
+  "diff_sha256": "e97f52bcd9d4754c84816501af0dd7e7ffcf629d3f0d5bd6e6cfe34e3072fe3f",
+  "prompt_version": "p3-v5",
+  "prompt_sha256": "a777f9e5252be7aa569322a2a7310b39031eec6cb39313a4782040efc905c144",
+  "repo_tree": "7b8594b0383dc2d9ed8a2a82fa030ff3625ec071",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:06:36.514153Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 9,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "Issue #31 asks for the columns invoice_id, customer, subtotal, discount, total, in that order. The header leaves out discount, so finance can't check that subtotal minus discount equals total on each row. Add discount between subtotal and total.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 14,
+              "end_line": 14
+            }
+          ],
+          "suggestion": "HEADER = [\"invoice_id\", \"customer\", \"subtotal\", \"discount\", \"total\"]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "The row doesn't write invoice.discount, which issue #31 requires. Invoice already has a discount field, and total() returns subtotal minus discount. Add invoice.discount to the row, in the same place as in the header.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 14,
+              "end_line": 18
+            }
+          ],
+          "suggestion": "            row = [invoice.invoice_id, invoice.customer, invoice.subtotal, invoice.discount, invoice.total()]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "No tests come with export_csv. Add a test that checks the header, the column order and that subtotal - discount == total on every row.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 8177,
+        "output_tokens": 682,
+        "cost_usd": "0.024124600000000003"
+      },
+      "warnings": [],
+      "tool_calls": [
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 9,
+              "last_line": 9
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 14,
+              "last_line": 14
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 17,
+              "last_line": 17
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 18,
+              "last_line": 18
+            }
+          ],
+          "listed": [],
+          "result_bytes": 291
+        },
+        {
+          "tool": "glob",
+          "outcome": "ok",
+          "spans": [],
+          "listed": [],
+          "result_bytes": 16
+        }
+      ]
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 9,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "Issue #31 asks for these columns, in this order: invoice_id, customer, subtotal, discount, total. The header leaves out discount, so finance can't check that subtotal minus discount equals total on each row. Invoice already has a discount field. Add the column to the header, and add invoice.discount to each row (see the row line).",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 14,
+              "end_line": 18
+            }
+          ],
+          "suggestion": "HEADER = [\"invoice_id\", \"customer\", \"subtotal\", \"discount\", \"total\"]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "The row leaves out invoice.discount, which the issue requires between subtotal and total. Once discount is added to the header, each row must carry the matching value.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 14,
+              "end_line": 14
+            }
+          ],
+          "suggestion": "            row = [invoice.invoice_id, invoice.customer, invoice.subtotal, invoice.discount, invoice.total()]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "export_csv has no tests. Add a test that checks the header order and that subtotal minus discount equals total on each row, as the acceptance criteria require.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 8192,
+        "output_tokens": 694,
+        "cost_usd": "0.018886"
+      },
+      "warnings": [],
+      "tool_calls": [
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 9,
+              "last_line": 9
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 14,
+              "last_line": 14
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 17,
+              "last_line": 17
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 18,
+              "last_line": 18
+            }
+          ],
+          "listed": [],
+          "result_bytes": 291
+        },
+        {
+          "tool": "glob",
+          "outcome": "ok",
+          "spans": [],
+          "listed": [
+            "billing/__init__.py",
+            "billing/invoice.py"
+          ],
+          "result_bytes": 38
+        }
+      ]
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 9,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "Issue #31 asks for the columns invoice_id, customer, subtotal, discount, total, in that order, so finance can check that subtotal minus discount equals total. HEADER leaves out the discount column, so the export doesn't meet the acceptance criteria and the rows can't be reconciled. Add 'discount' between subtotal and total.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 11,
+              "end_line": 18
+            }
+          ],
+          "suggestion": "HEADER = [\"invoice_id\", \"customer\", \"subtotal\", \"discount\", \"total\"]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "Each row also leaves out invoice.discount, which Invoice provides. Without it the rows don't match the columns issue #31 requires. Put invoice.discount between subtotal and total so the row lines up with the corrected header.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 11,
+              "end_line": 18
+            }
+          ],
+          "suggestion": "            row = [invoice.invoice_id, invoice.customer, invoice.subtotal, invoice.discount, invoice.total()]"
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "export_csv is new and has no tests. Add a test that writes a few invoices and checks the header order, one row per invoice, and that subtotal minus discount equals total on every row. That test would have caught the missing column.",
+          "confidence": 0.7,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 12354,
+        "output_tokens": 725,
+        "cost_usd": "0.0207684"
+      },
+      "warnings": [],
+      "tool_calls": [
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 16,
+              "last_line": 16
+            }
+          ],
+          "listed": [],
+          "result_bytes": 53
+        },
+        {
+          "tool": "read",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 1,
+              "last_line": 18
+            }
+          ],
+          "listed": [],
+          "result_bytes": 500
+        }
+      ]
+    }
+  ]
+}

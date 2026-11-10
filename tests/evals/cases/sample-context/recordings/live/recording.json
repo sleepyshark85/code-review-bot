@@ -1,0 +1,180 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "sample-context",
+  "kind": "live",
+  "mode": "diff",
+  "case_sha256": "15a1565ae86386073e1c42945b9e5738473729aae85bc3a1c9e0a37d213da49c",
+  "diff_sha256": "0ccfe6b2edae500cb89af41186a6c97a7fbbc24ab52d4dbe79271578ee9bc028",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "50a20e5d391966e0357f4daa1104238550fd85188b9a3dcec7e6ef148d21da9f",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:02:45.206293Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "high",
+          "category": "reliability",
+          "rationale": "`except Exception: pass` silently discards every error from the discount calculation, such as a bad discount value, a missing attribute, or a type error in `total()`. The invoice is then left without the discount and nothing reports it, so billing errors go unnoticed. Remove the try/except, or catch only the specific exceptions you expect and log or re-raise them.",
+          "confidence": 0.95,
+          "rule": "swallowed-exception",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "`open(path, \"w\")` has no `encoding`, so the output encoding depends on the platform locale. Pass `encoding=\"utf-8\"`. For CSV output, also pass `newline=\"\"` (ideally with the `csv` module) so line endings are consistent.",
+          "confidence": 0.9,
+          "rule": "open-without-encoding",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 40,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "`export_csv` writes `self.total()`, which ignores any `total_override` set by `apply_discount`, so exported totals leave out applied discounts. The CSV is also built with an f-string and no quoting or escaping. Export the effective total (the override if set) and use `csv.writer`.",
+          "confidence": 0.55,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "`total()` now adds tax, which changes the result for every caller. Because `apply_discount` calls `total()`, the discount is now applied to the tax-inclusive amount, which may be the wrong order for your tax rules. The calculation also uses float arithmetic for money, which causes rounding errors. Use `Decimal` with explicit rounding, and confirm whether the discount should apply before or after tax.",
+          "confidence": 0.5,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 38,
+          "severity": "medium",
+          "category": "testing",
+          "rationale": "The diff adds no tests for the tax calculation in `total()`, for applying a discount after tax, or for `export_csv`. Add unit tests for zero, None and non-zero tax rates, invalid discount codes, and the exported content, including the discounted total.",
+          "confidence": 0.7,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1419,
+        "output_tokens": 1181,
+        "cost_usd": "0.0280928"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "medium",
+          "category": "reliability",
+          "rationale": "`except Exception: pass` silently discards any error raised while computing the discount, such as a bad tax_rate type or a malformed discount value. The invoice is then left without the discount and nobody is told. Catch only the exceptions you expect, and log or re-raise them; otherwise remove the try block.",
+          "confidence": 0.95,
+          "rule": "swallowed-exception",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "open() in text mode has no encoding argument, so the output depends on the platform's default locale encoding. Pass encoding=\"utf-8\". For CSV output, also pass newline=\"\" or use the csv module.",
+          "confidence": 0.9,
+          "rule": "open-without-encoding",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 40,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "export_csv writes self.total(), which ignores total_override. A discounted invoice is therefore exported at its undiscounted amount. Use the override when it is set.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "low",
+          "category": "logic",
+          "rationale": "Tax is applied as a float multiplication with no rounding. Money amounts will pick up floating-point artifacts, and these then appear in the CSV export. Use Decimal and round to currency precision.",
+          "confidence": 0.5,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 38,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The diff has no tests for the new tax calculation in total(), for how a discount interacts with tax, or for export_csv. Add unit tests that cover these.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1419,
+        "output_tokens": 973,
+        "cost_usd": "0.019929600000000002"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "medium",
+          "category": "reliability",
+          "rationale": "`except Exception: pass` silently discards any error while applying a discount, such as a bad `tax_rate` type or a failure in `total()`. The invoice is then left with no discount and nothing signals the failure. Remove the try/except, or catch only the specific expected exception and log or re-raise it.",
+          "confidence": 0.95,
+          "rule": "swallowed-exception",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "`open(path, \"w\")` uses text mode without an encoding, so output depends on the platform locale. Pass `encoding=\"utf-8\"`. For CSV output, also consider `newline=\"\"` with the `csv` module.",
+          "confidence": 0.9,
+          "rule": "open-without-encoding",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 40,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "`export_csv` writes `self.total()`, which recomputes from line items and ignores `self.total_override` set by `apply_discount`. Discounted invoices would export the undiscounted total. Use the override when it is present.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "medium",
+          "category": "testing",
+          "rationale": "Tax handling in `total()` changes invoice totals, and `export_csv` is new behavior. The diff adds no tests for tax, for discount after tax, or for CSV export. Add unit tests covering these paths.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1419,
+        "output_tokens": 880,
+        "cost_usd": "0.018067100000000003"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}
