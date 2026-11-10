@@ -17,6 +17,7 @@ from review_bot.pr.event import (
 
 BASE_SHA = "a" * 40
 HEAD_SHA = "b" * 40
+REPO = "owner/repo"
 CANARY = "canary-7f3e"
 _DELETE = object()
 
@@ -182,7 +183,7 @@ def pull(**changes: Any) -> dict[str, Any]:
 
 
 def test_read_pulls_keeps_each_merged_pull_request_in_file_order(tmp_path: Path) -> None:
-    pulls = read_pulls(write(tmp_path, [pull(), pull(number=3, isCrossRepository=True)]))
+    pulls = read_pulls(write(tmp_path, [pull(), pull(number=3, isCrossRepository=True)]), repo=REPO)
 
     assert pulls == (
         MergedPull(12, BASE_SHA, HEAD_SHA, datetime(2026, 11, 7, 8, 9, 10, tzinfo=UTC), False),
@@ -191,7 +192,7 @@ def test_read_pulls_keeps_each_merged_pull_request_in_file_order(tmp_path: Path)
 
 
 def test_merged_pull_ref_is_the_pull_request_as_its_merge_left_it(tmp_path: Path) -> None:
-    (merged,) = read_pulls(write(tmp_path, [pull(isCrossRepository=True)]))
+    (merged,) = read_pulls(write(tmp_path, [pull(isCrossRepository=True)]), repo=REPO)
 
     assert merged.ref("owner/repo") == PullRequestRef(
         repo="owner/repo",
@@ -222,8 +223,10 @@ def test_merged_pull_ref_is_the_pull_request_as_its_merge_left_it(tmp_path: Path
 def test_read_pulls_with_a_bad_entry_names_it_and_the_field_but_not_the_value(
     tmp_path: Path, entry: object, named: str
 ) -> None:
-    with pytest.raises(EventError, match=r"^The pulls file --pulls .*isCrossRepository\.$") as info:
-        read_pulls(write(tmp_path, [pull(), entry]))
+    with pytest.raises(
+        EventError, match=r"^The pulls file --pulls .*isCrossRepository,body\.$"
+    ) as info:
+        read_pulls(write(tmp_path, [pull(), entry]), repo=REPO)
 
     assert named in str(info.value)
     assert "abc" not in str(info.value)
@@ -231,20 +234,20 @@ def test_read_pulls_with_a_bad_entry_names_it_and_the_field_but_not_the_value(
 
 def test_read_pulls_that_isnt_a_list_says_so(tmp_path: Path) -> None:
     with pytest.raises(EventError, match="isn't a JSON list"):
-        read_pulls(write(tmp_path, {"number": 12}))
+        read_pulls(write(tmp_path, {"number": 12}), repo=REPO)
 
 
 def test_read_pulls_over_500_entries_is_refused(tmp_path: Path) -> None:
     entries = [pull(number=number) for number in range(1, MAX_PULLS + 2)]
 
     with pytest.raises(EventError, match=f"more than {MAX_PULLS} pull requests"):
-        read_pulls(write(tmp_path, entries))
+        read_pulls(write(tmp_path, entries), repo=REPO)
 
 
 def test_read_pulls_at_500_entries_is_read(tmp_path: Path) -> None:
     entries = [pull(number=number) for number in range(1, MAX_PULLS + 1)]
 
-    assert len(read_pulls(write(tmp_path, entries))) == MAX_PULLS
+    assert len(read_pulls(write(tmp_path, entries), repo=REPO)) == MAX_PULLS
 
 
 def test_read_pulls_over_10_mb_is_refused_before_parsing(tmp_path: Path) -> None:
@@ -252,13 +255,50 @@ def test_read_pulls_over_10_mb_is_refused_before_parsing(tmp_path: Path) -> None
     path.write_bytes(b"[" + b" " * MAX_EVENT_BYTES + b"]")
 
     with pytest.raises(EventError, match=f"--pulls .* is over {MAX_EVENT_BYTES} bytes"):
-        read_pulls(path)
+        read_pulls(path, repo=REPO)
 
 
 def test_read_pulls_that_isnt_json_or_is_missing_names_the_flag(tmp_path: Path) -> None:
     path = tmp_path / "pulls.json"
     with pytest.raises(EventError, match=r"^Can't read the pulls file --pulls "):
-        read_pulls(path)
+        read_pulls(path, repo=REPO)
     path.write_text("[{", encoding="utf-8")
     with pytest.raises(EventError, match=r"--pulls .* isn't JSON"):
-        read_pulls(path)
+        read_pulls(path, repo=REPO)
+
+
+# Linked issues (P3-S9).
+
+
+def test_read_event_keeps_the_issues_its_body_closes_but_not_the_body(tmp_path: Path) -> None:
+    body = f"Fixes #12, closes: #7 and RESOLVED owner/repo#9 {CANARY}"
+
+    pr = read_event(write(tmp_path, event(pull_request__body=body)))
+
+    assert pr.linked_issues == (12, 7, 9)
+    assert CANARY not in repr(pr)
+
+
+@pytest.mark.parametrize("body", [None, _DELETE])
+def test_read_event_with_a_null_or_missing_body_links_no_issue(
+    tmp_path: Path, body: object
+) -> None:
+    assert read_event(write(tmp_path, event(pull_request__body=body))).linked_issues == ()
+
+
+def test_read_event_with_a_body_that_isnt_text_names_the_field(tmp_path: Path) -> None:
+    with pytest.raises(EventError, match=r"pull_request\.body isn't text or null"):
+        read_event(write(tmp_path, event(pull_request__body=12)))
+
+
+def test_read_pulls_keeps_the_issues_each_body_closes_in_its_repository(tmp_path: Path) -> None:
+    entries = [
+        pull(body="Fixes #3 and fixes other/repo#4"),
+        pull(number=13, body=None),
+        pull(number=14),
+    ]
+
+    pulls = read_pulls(write(tmp_path, entries), repo=REPO)
+
+    assert [merged.linked_issues for merged in pulls] == [(3,), (), ()]
+    assert pulls[0].ref(REPO).linked_issues == (3,)

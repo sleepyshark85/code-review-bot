@@ -1,16 +1,18 @@
 """An in-memory GitHub for tests, in ``src/`` as ``MockProvider`` is (Phase 2 design, Module map).
 
 It holds one pull request's inline comments, each its own thread with who resolved it and the
-reactions on it, and the bot's summary comment; and for the value baseline, one repository's
-pull requests and issues. It records every call, and can be told to fail one operation by name.
-It doesn't work out where GitHub would show a comment after a push: a test moves its line, or
-marks it outdated.
+reactions on it, and the bot's summary comment; and for the value baseline and linked issues,
+one repository's pull requests and issues. It records every call, and can be told to fail one
+operation by name. It doesn't work out where GitHub would show a comment after a push: a test
+moves its line, or marks it outdated.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from typing import Final
 
+from review_bot.context.issues import IssueText
 from review_bot.errors import GitHubError
 from review_bot.pr.comments import (
     Marker,
@@ -45,6 +47,9 @@ __all__ = [
     "FakeReaction",
     "FakeReview",
 ]
+
+# An issue added with no creation time falls in no realistic baseline window.
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,11 +107,13 @@ class FakePull:
 
 @dataclass(frozen=True, slots=True)
 class FakeIssue:
-    """An issue of the repository, which is never a pull request: its label names, and when."""
+    """An issue of the repository, never a pull request: labels, creation time, title and body."""
 
     number: int
     labels: tuple[str, ...]
     created_at: datetime
+    title: str = ""
+    body: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,9 +172,17 @@ class FakeGitHubClient:
         """Add a pull request of the repository, open, closed or merged."""
         self.pulls.append(FakePull(number, title, created_at, closed_at, merged_at, commit_dates))
 
-    def add_issue(self, *, number: int, labels: tuple[str, ...], created_at: datetime) -> None:
-        """Add an issue of the repository, labelled with ``labels``."""
-        self.issues.append(FakeIssue(number, labels, created_at))
+    def add_issue(
+        self,
+        *,
+        number: int,
+        labels: tuple[str, ...] = (),
+        created_at: datetime = _EPOCH,
+        title: str = "",
+        body: str = "",
+    ) -> None:
+        """Add an issue of the repository, labelled with ``labels``, with its title and body."""
+        self.issues.append(FakeIssue(number, labels, created_at, title, body))
 
     def mark_outdated(self, comment_id: int) -> None:
         """Mark a comment outdated, as GitHub does when the diff around its line changes."""
@@ -273,6 +288,17 @@ class FakeGitHubClient:
             for issue in self.issues
             if label in issue.labels and in_window(issue.created_at, since, until)
         )
+
+    def read_issue(self, repo: str, number: int) -> IssueText | None:
+        """Return issue ``number``: an issue held, else a pull request held, else None."""
+        self._record("read_issue", repo, number)
+        issue = next((issue for issue in self.issues if issue.number == number), None)
+        if issue is not None:
+            return IssueText(issue.title, issue.body)
+        pull = next((pull for pull in self.pulls if pull.number == number), None)
+        if pull is not None:
+            return IssueText(pull.title, "", is_pull_request=True)
+        return None
 
     def _record(self, name: str, *args: object) -> None:
         self.calls.append(FakeCall(name, args))

@@ -4,9 +4,9 @@ It has its own module so the pure ``plan`` and ``shadow`` modules, which import 
 ``github``, never load the HTTP stack.
 
 Every request sends the token only in its ``Authorization`` header, has a 30-second socket
-timeout, follows no redirect and is never retried. A response is read up to 5 MB and parsed with
-a schema that ignores unknown fields. Any failure raises ``GitHubError``: one line naming the
-operation and the status or problem, never the token or the response's text.
+timeout, follows no redirect and is never retried. A response is read up to 5 MB, or 1 MB for an
+issue, and parsed with a schema that ignores unknown fields. Any failure raises ``GitHubError``:
+one line naming the operation and the status or problem, never the token or the response's text.
 """
 
 import json
@@ -31,6 +31,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
 from review_bot.pr.comments import (
     Marker,
@@ -66,7 +67,11 @@ __all__ = [
 API_URL_VARIABLE: Final = "GITHUB_API_URL"
 DEFAULT_API_URL: Final = "https://api.github.com"
 _TIMEOUT_S: Final = 30.0
-_MAX_RESPONSE_BYTES: Final = 5 * 1024 * 1024
+_MEGABYTE: Final = 1024 * 1024
+_MAX_RESPONSE_BYTES: Final = 5 * _MEGABYTE
+# An issue is read for its title and body, which are cut far below this (P3-S9 Limits).
+_MAX_ISSUE_BYTES: Final = _MEGABYTE
+_NOT_FOUND: Final = 404
 _PER_PAGE: Final = 100
 _MAX_PAGES: Final = 10
 _LOCAL_HOSTS: Final = frozenset({"127.0.0.1", "localhost"})
@@ -301,6 +306,13 @@ class _PullCommit(_RestSchema):
     commit: _GitCommit
 
 
+class _Issue(_RestSchema):
+    title: str
+    body: str | None
+    # Present, as an object, only when the issue is a pull request.
+    pull_request: dict[str, object] | None = None
+
+
 _REVIEW_COMMENTS: Final = TypeAdapter(list[_ReviewComment])
 _ISSUE_COMMENTS: Final = TypeAdapter(list[_IssueComment])
 _REACTIONS: Final = TypeAdapter(list[_Reaction])
@@ -311,6 +323,15 @@ _RESOLVE_DATA: Final = TypeAdapter(_ResolveData)
 _SEARCH_COUNT: Final = TypeAdapter(_SearchCount)
 _SEARCH_PAGE: Final = TypeAdapter(_SearchPage)
 _PULL_COMMITS: Final = TypeAdapter(list[_PullCommit])
+_ISSUE: Final = TypeAdapter(_Issue)
+
+
+class _StatusError(GitHubError):
+    """A call GitHub answered with an error status, so a caller can tell a 404 apart."""
+
+    def __init__(self, message: str, *, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -438,6 +459,22 @@ class RestGitHubClient:
         return self._search(
             "count_issues", query, page=1, per_page=1, schema=_SEARCH_COUNT
         ).total_count
+
+    def read_issue(self, repo: str, number: int) -> IssueText | None:
+        """Return issue ``number`` of ``repo``, this client's repository, or None on a 404.
+
+        The response is read up to 1 MB.
+        """
+        self._own(repo)
+        url = f"{self._repo_url}/issues/{number}"
+        try:
+            issue = self._send("read_issue", "GET", url, None, _ISSUE, max_bytes=_MAX_ISSUE_BYTES)
+        except _StatusError as exc:
+            if exc.status == _NOT_FOUND:
+                return None
+            raise
+        is_pull_request = issue.pull_request is not None
+        return IssueText(issue.title, issue.body or "", is_pull_request=is_pull_request)
 
     def _search_merged_pulls(self, operation: str, query: str) -> list[_SearchItem]:
         """Every pull request the search API matches ``query`` with, page by page, once each.
@@ -587,19 +624,22 @@ class RestGitHubClient:
         except ValidationError as exc:
             raise _schema_error(operation, exc) from exc
 
-    def _send[T](
+    def _send[T](  # noqa: PLR0913 - max_bytes is keyword-only
         self,
         operation: str,
         method: str,
         url: str,
         payload: Mapping[str, object] | None,
         schema: TypeAdapter[T],
+        *,
+        max_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> T:
-        """Make one request, and parse its JSON response with ``schema``.
+        """Make one request, and parse its JSON response, read up to ``max_bytes``, with ``schema``.
 
         Raises:
-            GitHubError: If the request fails, or the response is over 5 MB, isn't JSON or
-                doesn't match ``schema``.
+            GitHubError: If the request fails, or the response is over ``max_bytes``, isn't JSON
+                or doesn't match ``schema``; ``_StatusError`` if GitHub answered with an error
+                status.
         """
         request = urllib.request.Request(  # noqa: S310 - the URL's scheme is checked in _api_url
             url,
@@ -615,20 +655,21 @@ class RestGitHubClient:
         )
         try:
             with self._opener.open(request, timeout=self._timeout_s) as response:
-                body = response.read(_MAX_RESPONSE_BYTES + 1)
+                body = response.read(max_bytes + 1)
         except urllib.error.HTTPError as exc:
             exc.close()
-            raise GitHubError(
-                _status_message(operation, exc.code, exc.headers.get("X-RateLimit-Remaining"))
+            raise _StatusError(
+                _status_message(operation, exc.code, exc.headers.get("X-RateLimit-Remaining")),
+                status=exc.code,
             ) from exc
         except (OSError, HTTPException) as exc:
             raise GitHubError(
                 f"GitHub {operation} failed: {self._transport_problem(exc)}. {_RETRY_ADVICE}"
             ) from exc
-        if len(body) > _MAX_RESPONSE_BYTES:
+        if len(body) > max_bytes:
             raise GitHubError(
-                f"GitHub {operation} failed: the response is over 5 MB, the most read. "
-                f"{_RETRY_ADVICE}"
+                f"GitHub {operation} failed: the response is over {max_bytes // _MEGABYTE} MB, "
+                f"the most read. {_RETRY_ADVICE}"
             )
         try:
             return schema.validate_json(body)

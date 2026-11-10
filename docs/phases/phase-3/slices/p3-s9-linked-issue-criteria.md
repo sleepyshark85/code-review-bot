@@ -1,6 +1,6 @@
 # P3-S9: Review against the acceptance criteria of linked issues
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S5, P3-S8
 - **Touches:** `context.issues`, `pr` (`event`, `github`, `rest_github`, `fake_github`, `runner`, `cli`, `shadow`), `prompt` (next context version), `review`, `evals` (`formats`, `replay`), `tests/evals/cases/`
 
@@ -32,3 +32,10 @@ The body is parsed in linear time with no backtracking pattern, from an event fi
 
 ## Notes
 - **README (main session):** describe linked issues, and `body` in backfill's `gh pr list` fields.
+- **Build choices (developer):**
+  - Parsing: a keyword word, then the next whitespace-separated word as `#N` or `owner/name#N` (trailing `.,;:!?)` dropped; repo compared case-insensitively). At most 50 distinct numbers are kept per body, so `issues` and the audit log stay bounded; the 4th to 50th are `over_limit`.
+  - The text sent is the title, a blank line, then the body; a cut part ends `[title cut: over 256 characters]` or `[body cut: over 8,000 characters]`. The secret scan covers the whole title and body as read, not only the part sent.
+  - `GitHubClient` extends `IssueReader`; `pr.cli.main(github=...)` is also the issue reader of `run` (either mode) and `backfill` with `--context repo`. Without `github`, a `RestGitHubClient` is built from `GITHUB_TOKEN` only in context mode; a set but malformed token exits 2, as comment mode's does. A failed read writes one stderr line naming the error.
+  - Issues are read once the base config is valid, before the diff, so a context run that then has nothing to review still lists them. Each `context` `issue` record (`number`, `status`, `bytes_sent`: UTF-8 bytes of the text sent, 0 if none) is written just before the model call; a review stopped before it writes none.
+  - `read_pulls` takes the repository (`--github-repo`), since `owner/name#N` links only the PR's own repository. `FakeGitHubClient.add_issue` takes `title` and `body`; a held pull request's number reads as `is_pull_request`.
+  - Eval cases: `issues` is relative to the case file, validated strictly (unique positive numbers), capped and scanned as above, and sent in context mode only.

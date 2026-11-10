@@ -1,0 +1,20 @@
+{
+  "schema": "eval-case/v1",
+  "id": "ticket-criteria",
+  "diff": "ticket-criteria.diff",
+  "repo": "repo",
+  "issues": "issues.json",
+  "bugs": [
+    {
+      "id": "discount-column-missing",
+      "source": "ai",
+      "file": "billing/export.py",
+      "lines": [[9, 9], [18, 18]],
+      "keywords": [
+        ["discount", "discounts"],
+        ["column", "columns", "header", "csv", "export", "exported", "missing", "omits", "omitted", "drops", "dropped", "lacks", "without"]
+      ],
+      "min_runs_caught": 2
+    }
+  ]
+}

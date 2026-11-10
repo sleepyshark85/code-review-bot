@@ -724,3 +724,51 @@ def test_freshness_fields_in_diff_mode_ignore_the_domain_rules(tmp_path: Path) -
     without = freshness_fields(money_case(tmp_path / "b", config=""))
 
     assert with_rules["prompt_sha256"] == without["prompt_sha256"]
+
+
+# --- P3-S9: linked issues in a case ---------------------------------------------------------------
+
+ISSUES = [{"number": 12, "title": "Export totals", "body": "The CSV must include the discount."}]
+
+
+def case_with_issues(cases_dir: Path, issues: list[dict[str, Any]]) -> Path:
+    case_file = write_case(cases_dir, repo="repo", issues="issues.json")
+    write_repo(case_file, {UTIL: UTIL_TEXT})
+    write_json(case_file.parent / "issues.json", issues)
+    return case_file
+
+
+def test_freshness_fields_in_context_mode_follow_the_issues_file_but_not_diff_modes(
+    tmp_path: Path,
+) -> None:
+    case_file = case_with_issues(tmp_path, ISSUES)
+    before = (freshness_fields(case_file), freshness_fields(case_file, "context"))
+
+    write_json(case_file.parent / "issues.json", [ISSUES[0] | {"body": "Drop the discount."}])
+    after = (freshness_fields(case_file), freshness_fields(case_file, "context"))
+
+    assert after[0] == before[0]
+    assert after[1] == before[1] | {"prompt_sha256": after[1]["prompt_sha256"]}
+    assert after[1]["prompt_sha256"] != before[1]["prompt_sha256"]
+
+
+def test_replay_cases_in_context_mode_sends_the_cases_issues_and_diff_mode_doesnt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case_with_issues(tmp_path, ISSUES)
+    sent: list[str] = []
+
+    class RecordingProvider(MockProvider):
+        async def review(self, request: Any) -> Any:
+            sent.append(request.user_prompt)
+            return await super().review(request)
+
+    monkeypatch.setattr(replay_module, "MockProvider", RecordingProvider)
+
+    replay_one(tmp_path, mode="context")
+    replay_one(tmp_path)
+
+    context_prompt, diff_prompt = sent
+    assert "linked issue #12\n" in context_prompt
+    assert "The CSV must include the discount." in context_prompt
+    assert "linked issue" not in diff_prompt

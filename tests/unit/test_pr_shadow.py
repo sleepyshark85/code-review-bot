@@ -13,6 +13,7 @@ from review_bot.context.codeowners import (
     CodeOwnersStatus,
     parse_codeowners,
 )
+from review_bot.context.issues import IssueStatus, LinkedIssue
 from review_bot.diff_parser import parse_diff
 from review_bot.errors import (
     DiffEmptyError,
@@ -126,6 +127,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "config",
         "codeowners",
         "context",
+        "issues",
     ]
     assert document["schema"] == "shadow/v1"
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
@@ -875,3 +877,36 @@ def test_build_shadow_report_keeps_the_reviews_reported_cost_and_none_for_an_err
 
     assert cost_of(costing("0.25")) == Decimal("0.25")
     assert cost_of(ProviderError(ErrorCategory.PERMANENT, "Failed.")) is None
+
+
+def test_render_shadow_json_lists_each_linked_issue_by_number_and_status_only() -> None:
+    issues = [
+        LinkedIssue(12, IssueStatus.INCLUDED, "Issue text canary-4b1d"),
+        LinkedIssue(4, IssueStatus.OVER_LIMIT),
+    ]
+    shadow = build_shadow_report(
+        result(reviewed(2)),
+        mode=Mode.SHADOW,
+        existing=(),
+        settings=SETTINGS,
+        config=DEFAULT_REPO_CONFIG,
+        run_id="run-1",
+        started_at=STARTED,
+        finished_at=STARTED,
+        origin=Origin.EVENT,
+        pr=PR,
+        issues=issues,
+    )
+
+    text = render_shadow_json(shadow)
+
+    assert json.loads(text)["issues"] == [
+        {"number": 12, "status": "included"},
+        {"number": 4, "status": "over_limit"},
+    ]
+    assert "canary-4b1d" not in text
+    assert "canary-4b1d" not in render_shadow_markdown(shadow)
+
+
+def test_render_shadow_json_without_linked_issues_lists_none() -> None:
+    assert build(result(reviewed(2)))["issues"] == []

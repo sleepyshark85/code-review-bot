@@ -22,10 +22,12 @@ from pydantic import (
     Field,
     NonNegativeInt,
     PositiveInt,
+    RootModel,
     ValidationError,
     model_validator,
 )
 
+from review_bot.context.issues import IssueText, LinkedIssue, linked_issue, read_linked_issues
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.errors import ErrorCategory, ProviderCap, ReviewBotError
 from review_bot.findings import Category, Finding, Severity, Source
@@ -36,6 +38,7 @@ __all__ = [
     "MAX_REPO_FILES",
     "MODES",
     "Bug",
+    "CaseIssue",
     "EvalCase",
     "EvalInputError",
     "EvalMode",
@@ -139,8 +142,9 @@ class EvalCase(_Strict):
     """A diff, the bugs planted in it, the checks each run must meet, and how many runs must pass.
 
     ``diff`` is relative to the case file, and so is ``repo``, the directory a context review's
-    tools read, as one commit; without it they read an empty repository. A run passes if it
-    didn't fail with an error and meets the case's ``noise_budget`` and ``injection`` checks
+    tools read, as one commit; without it they read an empty repository. So is ``issues``, a
+    JSON list of the issues a context review is given as linked (``CaseIssue``). A run passes if
+    it didn't fail with an error and meets the case's ``noise_budget`` and ``injection`` checks
     (``evals.score``); ``min_passing_runs`` of a recording's runs must pass.
     """
 
@@ -148,6 +152,7 @@ class EvalCase(_Strict):
     id: _Text
     diff: _Text
     repo: _Text | None = None
+    issues: _Text | None = None
     bugs: tuple[Bug, ...]
     noise_budget: NoiseBudget | None = None
     injection: Injection | None = None
@@ -167,6 +172,25 @@ class EvalCase(_Strict):
             raise ValueError(
                 "min_passing_runs must be at least 1 for a case with a noise_budget or injection"
             )
+        return self
+
+
+class CaseIssue(_Strict):
+    """One issue in a case's issues file, as a pull request's body would link it (P3-S9)."""
+
+    number: PositiveInt
+    title: str
+    body: str
+
+
+class _CaseIssues(RootModel[tuple[CaseIssue, ...]]):
+    model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        numbers = [issue.number for issue in self.root]
+        if len(set(numbers)) != len(numbers):
+            raise ValueError("issue numbers must be unique")
         return self
 
 
@@ -337,6 +361,8 @@ class LoadedCase:
     """A valid case, its file, the SHA-256 of that file's bytes, its diff's path, and its repo.
 
     ``repo_files`` are the files of the case's ``repo``, sorted by path; none without one.
+    ``issues`` are the issues of its ``issues`` file, in order, each as a context review sends
+    it, or why it doesn't; none without one.
     """
 
     case: EvalCase
@@ -344,6 +370,7 @@ class LoadedCase:
     case_sha256: str
     diff_path: Path
     repo_files: tuple[FixtureFile, ...] = ()
+    issues: tuple[LinkedIssue, ...] = ()
 
     def live_recording_path(self, mode: EvalMode) -> Path:
         """Where the case's live recording of ``mode`` is, whether or not it exists."""
@@ -371,11 +398,12 @@ def find_case_files(cases_dir: Path) -> list[Path]:
 
 
 def load_case(case_file: Path) -> LoadedCase:
-    """Read and validate a case file, check that its diff exists, and read its repo.
+    """Read and validate a case file, check that its diff exists, and read its repo and issues.
 
     Raises:
         EvalInputError: If the file is unreadable or invalid, its ``id`` isn't its directory's
-            name, its diff is missing, or its repo breaks a rule of ``_read_repo``.
+            name, its diff is missing, its repo breaks a rule of ``_read_repo``, or its issues
+            file is unreadable or invalid.
     """
     raw = _read(case_file)
     case = _validate(EvalCase, raw, case_file, "case file")
@@ -391,7 +419,22 @@ def load_case(case_file: Path) -> LoadedCase:
             "which is relative to the case file."
         )
     repo_files = () if case.repo is None else _read_repo(case_file, case.repo)
-    return LoadedCase(case, case_file, hashlib.sha256(raw).hexdigest(), diff_path, repo_files)
+    issues = () if case.issues is None else _read_issues(case_file.parent / case.issues)
+    case_sha256 = hashlib.sha256(raw).hexdigest()
+    return LoadedCase(case, case_file, case_sha256, diff_path, repo_files, issues)
+
+
+def _read_issues(path: Path) -> tuple[LinkedIssue, ...]:
+    """The issues in the issues file at ``path``, each as a context review sends it, or why not.
+
+    They are capped and scanned as a pull request's linked issues are (``linked_issue``).
+
+    Raises:
+        EvalInputError: If the file is unreadable or invalid.
+    """
+    issues = _validate(_CaseIssues, _read(path), path, "issues file").root
+    texts = {issue.number: IssueText(issue.title, issue.body) for issue in issues}
+    return read_linked_issues(texts, lambda number: linked_issue(number, texts[number]))
 
 
 def load_recording(path: Path) -> Recording:

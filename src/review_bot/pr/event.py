@@ -1,7 +1,8 @@
 """The pull requests a run is about: from a ``pull_request`` event, or a pulls file of merged ones.
 
 Only SHAs, numbers, names, flags and times are kept. No free text, such as a pull request's
-title or body, goes any further (Phase 2 design, Safety on the PR path).
+title or body, goes any further (Phase 2 design, Safety on the PR path): of the body, only the
+numbers of the issues it closes are kept (P3-S9).
 """
 
 import json
@@ -12,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
+from review_bot.context.issues import linked_issue_numbers
 from review_bot.errors import EventError
 from review_bot.secret_scan import redact
 
@@ -36,7 +38,7 @@ _ACTION: Final = re.compile(r"[a-z_]{1,50}")
 _ADVICE: Final = "Pass the pull_request event file GitHub Actions writes to GITHUB_EVENT_PATH."
 _PULLS_ADVICE: Final = (
     "Write it with gh pr list --state merged --json "
-    "number,baseRefOid,headRefOid,mergedAt,isCrossRepository."
+    "number,baseRefOid,headRefOid,mergedAt,isCrossRepository,body."
 )
 # The action of a merged pull request's last event.
 _MERGED_ACTION: Final = "closed"
@@ -50,6 +52,7 @@ class PullRequestRef:
     ``is_fork`` is true unless the head repository is that repository itself. ``event_at``
     is the pull request's ``updated_at``, and ``action`` the event's action, such as ``opened``;
     for a merged pull request from the pulls file, they are its ``mergedAt`` and ``closed``.
+    ``linked_issues`` are the issues of ``repo`` its body closes (``linked_issue_numbers``).
     """
 
     repo: str
@@ -60,6 +63,7 @@ class PullRequestRef:
     is_draft: bool
     event_at: datetime
     action: str
+    linked_issues: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,7 @@ class MergedPull:
     """One merged pull request from the pulls file, which doesn't name its repository.
 
     The SHAs are 40 lowercase hex digits, and ``merged_at`` names its time zone.
+    ``linked_issues`` are the issues its body closes, of the repository the file was read for.
     """
 
     number: int
@@ -74,6 +79,7 @@ class MergedPull:
     head_sha: str
     merged_at: datetime
     is_cross_repository: bool
+    linked_issues: tuple[int, ...] = ()
 
     def ref(self, repo: str) -> PullRequestRef:
         """The pull request in ``repo``, as its merge left it."""
@@ -86,6 +92,7 @@ class MergedPull:
             is_draft=False,
             event_at=self.merged_at,
             action=_MERGED_ACTION,
+            linked_issues=self.linked_issues,
         )
 
 
@@ -103,8 +110,11 @@ def read_event(path: Path) -> PullRequestRef:
     return _pull_request_ref(_Fields(event, f"The {name}", _ADVICE))
 
 
-def read_pulls(path: Path) -> tuple[MergedPull, ...]:
+def read_pulls(path: Path, *, repo: str) -> tuple[MergedPull, ...]:
     """Read the pulls file at ``path``, as ``gh pr list --state merged --json`` writes it.
+
+    ``repo`` is the repository the pull requests belong to, whose issues an entry's ``body``
+    may close. An entry without a ``body``, or with a null one, closes none.
 
     Raises:
         EventError: If the file can't be read, is over 10 MB, isn't a JSON list of at most 500
@@ -123,7 +133,7 @@ def read_pulls(path: Path) -> tuple[MergedPull, ...]:
         where = f"The {name}, entry {position}"
         if not isinstance(entry, Mapping):
             raise EventError(f"{where} isn't a JSON object. {_PULLS_ADVICE}")
-        pull = _merged_pull(_Fields(entry, where, _PULLS_ADVICE))
+        pull = _merged_pull(_Fields(entry, where, _PULLS_ADVICE), repo)
         # Each pull request's report has its own directory, so a repeat would overwrite one.
         if pull.number in numbers:
             raise EventError(f"{where} repeats the number of an earlier entry. {_PULLS_ADVICE}")
@@ -204,6 +214,19 @@ class _Fields:
             raise self._invalid(path, "true or false")
         return value
 
+    def optional_text(self, path: str) -> str:
+        """The string at ``path``; empty if its object lacks it or it is null.
+
+        GitHub writes an empty pull request body as null.
+        """
+        parent, _, key = path.rpartition(".")
+        value = (self.find(parent) if parent else self._document).get(key)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise self._invalid(path, "text or null")
+        return value
+
     def timestamp(self, path: str) -> datetime:
         """The ISO 8601 time at ``path``, which must name its time zone."""
         value = self._value(path)
@@ -250,14 +273,16 @@ def _pull_request_ref(fields: _Fields) -> PullRequestRef:
         is_draft=fields.flag("pull_request.draft"),
         event_at=fields.timestamp("pull_request.updated_at"),
         action=fields.matching("action", _ACTION, "an action name such as opened"),
+        linked_issues=linked_issue_numbers(fields.optional_text("pull_request.body"), repo),
     )
 
 
-def _merged_pull(fields: _Fields) -> MergedPull:
+def _merged_pull(fields: _Fields, repo: str) -> MergedPull:
     return MergedPull(
         number=fields.positive_integer("number"),
         base_sha=fields.matching("baseRefOid", _SHA, "a 40-hex-digit SHA").lower(),
         head_sha=fields.matching("headRefOid", _SHA, "a 40-hex-digit SHA").lower(),
         merged_at=fields.timestamp("mergedAt"),
         is_cross_repository=fields.boolean("isCrossRepository"),
+        linked_issues=linked_issue_numbers(fields.optional_text("body"), repo),
     )

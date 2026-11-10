@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Final
 
 from review_bot.audit import AuditLog, Stage
+from review_bot.console import write_diagnostic
 from review_bot.context.codeowners import (
     CODEOWNERS_PATHS,
     MAX_CODEOWNERS_BYTES,
@@ -23,6 +24,7 @@ from review_bot.context.codeowners import (
     CodeOwnersStatus,
     parse_codeowners,
 )
+from review_bot.context.issues import IssueStatus, LinkedIssue, linked_issue, read_linked_issues
 from review_bot.context.tools import RepoRef
 from review_bot.diff_parser import ParsedDiff, parse_diff
 from review_bot.errors import (
@@ -45,7 +47,7 @@ from review_bot.pr.config import (
     with_repo_threshold,
 )
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BotComment, GitHubClient, NewComment
+from review_bot.pr.github import BotComment, GitHubClient, IssueReader, NewComment
 from review_bot.pr.incremental import changed_hunks
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.plan import Action
@@ -82,6 +84,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     git: GitRepo,
     make_provider: Callable[[], LLMProvider],
     github: GitHubClient | None,
+    issue_reader: IssueReader | None,
     settings: Settings,
     audit: AuditLog,
     environ: Mapping[str, str],
@@ -95,9 +98,10 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     policy is read from the base commit's ``.review-bot.toml`` (``_repo_config``): if it is
     invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
     provider is made, and called at most once. With ``settings.context`` ``repo``, the model's
-    tools read the head commit through git objects, never a checkout (``_review_context``). A run
-    that plans comments reads the base commit's CODEOWNERS too (``_code_owners``), to name the
-    owners of each finding.
+    tools read the head commit through git objects, never a checkout, and the issues the pull
+    request closes are read with ``issue_reader`` (``_review_context``). A run that plans
+    comments reads the base commit's CODEOWNERS too (``_code_owners``), to name the owners of
+    each finding.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -111,6 +115,8 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         git: The clone holding its base and head commits.
         make_provider: Makes the provider, only once the run isn't refused.
         github: The GitHub client in comment mode; None in shadow mode.
+        issue_reader: Reads a context review's linked issues; None without a token, so each
+            is ``no_token``.
         settings: The run's settings.
         audit: Where the run's records go; its end is the caller's to record.
         environ: The environment, read for ``CI`` and ``ANTHROPIC_API_KEY``.
@@ -132,6 +138,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         git=git,
         make_provider=make_provider,
         github=github,
+        issue_reader=issue_reader,
         settings=settings,
         audit=audit,
         clock=clock,
@@ -143,6 +150,7 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
     *,
     git: GitRepo,
     make_provider: Callable[[], LLMProvider],
+    issue_reader: IssueReader | None,
     settings: Settings,
     audit: AuditLog,
     clock: Callable[[], datetime],
@@ -158,6 +166,8 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
         pr: The pull request, from the pulls file.
         git: The clone that should hold its base and head commits.
         make_provider: Makes the provider, only once the run isn't refused.
+        issue_reader: Reads a context review's linked issues; None without a token, so each
+            is ``no_token``.
         settings: The run's settings.
         audit: Where the run's records go; its end is the caller's to record.
         clock: Returns the current time, timezone-aware.
@@ -175,6 +185,7 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
         git=git,
         make_provider=make_provider,
         github=None,
+        issue_reader=issue_reader,
         settings=settings,
         audit=audit,
         clock=clock,
@@ -190,6 +201,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
     git: GitRepo,
     make_provider: Callable[[], LLMProvider],
     github: GitHubClient | None,
+    issue_reader: IssueReader | None,
     settings: Settings,
     audit: AuditLog,
     clock: Callable[[], datetime],
@@ -206,6 +218,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         {"repo": pr.repo, "number": pr.number, "base_sha": pr.base_sha, "head_sha": pr.head_sha},
     )
     config: RepoConfig | None = None
+    context: ReviewContext | None = None
     if refusal is not None:
         audit.record(Stage.RUN, "refused", {"reason": refusal})
         review = _Review(refusal)
@@ -221,7 +234,8 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
             review = _Review(exc, recorded)
         else:
             settings = with_repo_threshold(settings, config)
-            review = await _review(pr, git, github, make_provider, settings, config, audit)
+            context = await asyncio.to_thread(_review_context, pr, git, settings, issue_reader)
+            review = await _review(pr, git, github, make_provider, settings, config, context, audit)
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
     if review.plans_comments:
@@ -242,6 +256,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         since=review.since,
         incremental=review.incremental,
         codeowners=codeowners,
+        issues=() if context is None else context.issues,
     )
     # A skip posts and edits nothing (Phase 2 design, Comment state).
     if github is None or shadow.outcome is Outcome.SKIPPED:
@@ -355,12 +370,14 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
     config: RepoConfig,
+    context: ReviewContext | None,
     audit: AuditLog,
 ) -> _Review:
     """Diff the pull request and review it: all of it, or only what changed since last time.
 
     The review runs under ``config``: files matching an ``exclude`` glob are skipped, as the
-    built-in skips are, and its domain rules run with the built-in rules.
+    built-in skips are, and its domain rules run with the built-in rules. ``context`` is what
+    the model may look up; None reviews in diff mode.
 
     The PR diff comes first, so a diff that can't be reviewed, or whose files are all skipped,
     is reported with no GitHub call. Otherwise, in comment mode, the bot's summary says the
@@ -381,7 +398,7 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         make_provider=make_provider,
         settings=settings,
         config=config,
-        context=_review_context(pr, git, settings),
+        context=context,
         audit=audit,
     )
     if github is None or parsed is None:
@@ -404,15 +421,51 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     return _Review(result, recorded, incremental)
 
 
-def _review_context(pr: PullRequestRef, git: GitRepo, settings: Settings) -> ReviewContext | None:
-    """The commit the model's tools read in context mode: the head, which the diff ends at.
+def _review_context(
+    pr: PullRequestRef, git: GitRepo, settings: Settings, issue_reader: IssueReader | None
+) -> ReviewContext | None:
+    """What the model may look up in context mode: the head commit, and the issues ``pr`` closes.
 
-    The tools read it through git objects only, never a checkout, so no filter, hook or
-    attribute driver from the pull request runs (ADR 0013). None in diff mode.
+    The tools read the head, which the diff ends at, through git objects only, never a
+    checkout, so no filter, hook or attribute driver from the pull request runs (ADR 0013). The
+    issues are read with ``issue_reader`` (``_linked_issues``). None in diff mode, which reads
+    no issue.
     """
     if settings.context == "off":
         return None
-    return ReviewContext(repo=RepoRef(git=git, commit=pr.head_sha), is_diff_head=True)
+    return ReviewContext(
+        repo=RepoRef(git=git, commit=pr.head_sha),
+        is_diff_head=True,
+        issues=_linked_issues(pr, issue_reader),
+    )
+
+
+def _linked_issues(pr: PullRequestRef, issue_reader: IssueReader | None) -> tuple[LinkedIssue, ...]:
+    """Each issue ``pr`` closes, read and made safe to send, or why it isn't sent.
+
+    As many are read as ``read_linked_issues`` allows. With no ``issue_reader`` each is
+    ``no_token``. An issue whose read fails is ``unavailable``, with a line on stderr saying
+    why; the review goes on without it.
+    """
+    if issue_reader is None:
+        return read_linked_issues(
+            pr.linked_issues, lambda number: LinkedIssue(number, IssueStatus.NO_TOKEN)
+        )
+    return read_linked_issues(
+        pr.linked_issues, functools.partial(_read_linked_issue, pr.repo, issue_reader)
+    )
+
+
+def _read_linked_issue(repo: str, issue_reader: IssueReader, number: int) -> LinkedIssue:
+    try:
+        issue = issue_reader.read_issue(repo, number)
+    except GitHubError as exc:
+        write_diagnostic(
+            f"review-bot pr: linked issue #{number} wasn't read, so the review goes on without "
+            f"it: {exc}"
+        )
+        return LinkedIssue(number, IssueStatus.UNAVAILABLE)
+    return linked_issue(number, issue)
 
 
 async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only

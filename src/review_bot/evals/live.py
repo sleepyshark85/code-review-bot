@@ -355,7 +355,7 @@ async def _record_case(
             # As replay reviews it: the repo is the diff's base, so not its head.
             in_repo = replace(
                 reviewer,
-                context=ReviewContext(repo=repo.repo),
+                context=ReviewContext(repo=repo.repo, issues=loaded.issues),
                 domain_rules=case_domain_rules(loaded),
             )
             recorded_runs = await _record_runs(loaded, request.runs, in_repo, spend)

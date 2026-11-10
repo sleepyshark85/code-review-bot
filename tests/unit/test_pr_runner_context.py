@@ -74,6 +74,7 @@ def run(  # noqa: PLR0913 - keyword-only, each a separate input of the run
     provider: MockProvider,
     settings: Settings = CONTEXT,
     github: FakeGitHubClient | None = None,
+    issue_reader: FakeGitHubClient | None = None,
 ) -> ShadowReport:
     return asyncio.run(
         run_pull_request(
@@ -81,6 +82,7 @@ def run(  # noqa: PLR0913 - keyword-only, each a separate input of the run
             mode=Mode.SHADOW if github is None else Mode.COMMENT,
             git=GitRepo(repo, timeout_s=60),
             make_provider=lambda: provider,
+            issue_reader=issue_reader,
             github=github,
             settings=settings,
             audit=audit,
@@ -224,6 +226,7 @@ def test_backfill_pull_request_in_context_mode_reads_the_head_commit(
             pull.ref,
             git=GitRepo(pull.repo, timeout_s=60),
             make_provider=lambda: provider,
+            issue_reader=None,
             settings=CONTEXT,
             audit=audit,
             clock=lambda: NOW,
@@ -234,3 +237,137 @@ def test_backfill_pull_request_in_context_mode_reads_the_head_commit(
     assert shadow.cost_usd == Decimal("0.25")
     report: Any = shadow.report
     assert report["context"]["commit"] == pull.head
+
+
+# Linked issues (P3-S9).
+
+
+def linking(pull: PullRequest, *numbers: int) -> PullRequestRef:
+    return dataclasses.replace(pull.ref, linked_issues=numbers)
+
+
+def issue_reads(reader: FakeGitHubClient) -> list[tuple[object, ...]]:
+    return [call.args for call in reader.calls if call.name == "read_issue"]
+
+
+def statuses(shadow: ShadowReport) -> list[tuple[int, str]]:
+    return [(issue.number, issue.status) for issue in shadow.issues]
+
+
+def test_run_pull_request_in_context_mode_sends_each_linked_issue_it_reads(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    reader = FakeGitHubClient()
+    reader.add_issue(number=12, title="Export totals", body="Include the discount.")
+    provider = MockProvider(findings=[])
+
+    shadow = run(linking(pull, 12), pull.repo, audit, provider=provider, issue_reader=reader)
+
+    assert issue_reads(reader) == [("owner/repo", 12)]
+    assert statuses(shadow) == [(12, "included")]
+    (request,) = provider.requests
+    assert "linked issue #12\n" in request.user_prompt
+    assert "Export totals\n\nInclude the discount." in request.user_prompt
+
+
+def test_run_pull_request_reads_three_linked_issues_and_lists_the_rest_unread(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    reader = FakeGitHubClient()
+
+    shadow = run(
+        linking(pull, 1, 2, 3, 4), pull.repo, audit, provider=MockProvider(), issue_reader=reader
+    )
+
+    assert [number for _repo, number in issue_reads(reader)] == [1, 2, 3]
+    assert statuses(shadow) == [
+        (1, "not_found"),
+        (2, "not_found"),
+        (3, "not_found"),
+        (4, "over_limit"),
+    ]
+
+
+def test_run_pull_request_says_which_linked_issue_is_a_pull_request(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    reader = FakeGitHubClient()
+    reader.add_pull_request(
+        number=8, title="A pull", created_at=NOW, closed_at=None, merged_at=None
+    )
+
+    shadow = run(linking(pull, 8), pull.repo, audit, provider=MockProvider(), issue_reader=reader)
+
+    assert statuses(shadow) == [(8, "is_pull_request")]
+
+
+def test_run_pull_request_without_an_issue_reader_marks_each_issue_no_token(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    shadow = run(linking(pull, 12, 7), pull.repo, audit, provider=MockProvider())
+
+    assert shadow.outcome is Outcome.REVIEWED
+    assert statuses(shadow) == [(12, "no_token"), (7, "no_token")]
+
+
+def test_run_pull_request_with_a_failed_issue_read_goes_on_without_it(
+    pull: PullRequest, audit: AuditLog, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reader = FakeGitHubClient()
+    reader.fail_on("read_issue")
+
+    shadow = run(linking(pull, 12), pull.repo, audit, provider=MockProvider(), issue_reader=reader)
+
+    assert (shadow.outcome, shadow.error) == (Outcome.REVIEWED, None)
+    assert statuses(shadow) == [(12, "unavailable")]
+    assert "linked issue #12 wasn't read" in capsys.readouterr().err
+
+
+def test_run_pull_request_in_diff_mode_reads_no_linked_issue(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    reader = FakeGitHubClient()
+    reader.add_issue(number=12, title="Export totals", body="Include the discount.")
+
+    shadow = run(
+        linking(pull, 12),
+        pull.repo,
+        audit,
+        provider=MockProvider(),
+        settings=DIFF_MODE,
+        issue_reader=reader,
+    )
+
+    assert reader.calls == []
+    assert shadow.issues == ()
+
+
+def test_run_pull_request_refused_reads_no_linked_issue(pull: PullRequest, audit: AuditLog) -> None:
+    reader = FakeGitHubClient()
+    pr = dataclasses.replace(linking(pull, 12), is_fork=True)
+
+    shadow = run(pr, pull.repo, audit, provider=MockProvider(), issue_reader=reader)
+
+    assert reader.calls == []
+    assert shadow.issues == ()
+
+
+def test_backfill_pull_request_in_context_mode_reads_linked_issues(
+    pull: PullRequest, audit: AuditLog
+) -> None:
+    reader = FakeGitHubClient()
+    reader.add_issue(number=12, title="Export totals", body="Include the discount.")
+
+    shadow = asyncio.run(
+        backfill_pull_request(
+            linking(pull, 12),
+            git=GitRepo(pull.repo, timeout_s=60),
+            make_provider=MockProvider,
+            issue_reader=reader,
+            settings=CONTEXT,
+            audit=audit,
+            clock=lambda: NOW,
+        )
+    )
+
+    assert statuses(shadow) == [(12, "included")]

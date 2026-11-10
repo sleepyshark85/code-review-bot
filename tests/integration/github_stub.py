@@ -21,6 +21,9 @@ more fields than a client needs, so a client that ignores unknown fields reads t
   `since`; pull requests included, as GitHub does) and `GET /search/issues` (`q` with `is:` or
   `type:`, `label:`, `created:`, `merged:` and `closed:`): PR history, for the baseline (P2-S11).
   All are paged as above.
+- `GET  /repos/{o}/{r}/issues/{n}`: one issue, as linked from a PR body (P3-S9). Each number's
+  answer is seeded as raw bytes with its status, so a test can serve a malformed or oversized
+  one; an unseeded number is a 404.
 
 Every request is recorded with its headers and body. `fail(route, kind)` makes every request to
 one route fail the same way, so a retry would be seen and counted.
@@ -100,6 +103,8 @@ class State:
     pulls: list[dict[str, Any]] = field(default_factory=list)
     pull_commits: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     issues: list[dict[str, Any]] = field(default_factory=list)
+    # P3-S9: `GET /issues/{n}`'s answer per number, as (status, raw body).
+    issue_answers: dict[int, tuple[int, bytes]] = field(default_factory=dict)
 
 
 def user(login: str, user_type: str) -> dict[str, Any]:
@@ -358,6 +363,26 @@ class GitHubStub:
             )
         )
 
+    def add_linked_issue(
+        self, number: int, *, title: str, body: str | None, is_pull: bool = False
+    ) -> None:
+        """An issue `GET /issues/{n}` serves, with GitHub's fields; a PR's has `pull_request`."""
+        item = issue(
+            number,
+            title=title,
+            labels=(),
+            created_at="2026-11-01T09:00:00Z",
+            closed_at=None,
+            merged_at=None,
+            is_pull=is_pull,
+        )
+        item["body"] = body
+        self.answer_issue(number, 200, json.dumps(item).encode("utf-8"))
+
+    def answer_issue(self, number: int, status: int, raw: bytes) -> None:
+        """Serve `raw` with `status` for `GET /issues/{number}` (P3-S9)."""
+        self.state.issue_answers[number] = (status, raw)
+
     def fail(self, route: str, kind: str) -> None:
         assert kind in FAILURE_KINDS, kind
         self.state.failures[route] = kind
@@ -368,7 +393,8 @@ class GitHubStub:
         return [request for request in self.requests if request.route == route]
 
     def writes(self) -> list[Request]:
-        return [request for request in self.requests if not request.route.startswith("list_")]
+        reads = ("list_", "read_")
+        return [request for request in self.requests if not request.route.startswith(reads)]
 
     def all_text(self) -> Iterator[tuple[str, str]]:
         """Each part of each request but the `Authorization` header, as (where, text)."""
@@ -401,6 +427,7 @@ _ROUTES = (
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls"), "list_pulls"),
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/pulls/\d+/commits"), "list_pull_commits"),
     ("GET", re.compile(r"/repos/[^/]+/[^/]+/issues"), "list_issues"),
+    ("GET", re.compile(r"/repos/[^/]+/[^/]+/issues/\d+"), "read_issue"),
     ("GET", re.compile(r"/search/issues"), "list_search_issues"),
 )
 
@@ -443,6 +470,9 @@ def _handler_for(stub: GitHubStub) -> type[BaseHTTPRequestHandler]:
             failure = stub.state.failures.get(route)
             if failure is not None:
                 self._fail(failure, request)
+                return
+            if route == "read_issue":
+                self._send(*_issue_answer(stub, request), {})
                 return
             status, payload, headers = _respond(stub, request)
             self._send(status, json.dumps(payload).encode("utf-8"), headers)
@@ -541,6 +571,12 @@ def _respond(stub: GitHubStub, request: Request) -> tuple[int, Any, dict[str, st
     if respond is None:
         return 404, {"message": "Not Found", "documentation_url": "https://x.invalid"}, {}
     return respond()
+
+
+def _issue_answer(stub: GitHubStub, request: Request) -> tuple[int, bytes]:
+    number = int(request.path.rsplit("/", 1)[1])
+    not_found = {"message": "Not Found", "documentation_url": "https://x.invalid"}
+    return stub.state.issue_answers.get(number, (404, json.dumps(not_found).encode("utf-8")))
 
 
 def _created_issue_comment(state: State, request: Request) -> dict[str, Any]:

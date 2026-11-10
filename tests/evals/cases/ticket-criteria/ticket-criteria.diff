@@ -1,0 +1,25 @@
+diff --git a/billing/export.py b/billing/export.py
+new file mode 100644
+index 0000000..3c1f0a2
+--- /dev/null
++++ b/billing/export.py
+@@ -0,0 +1,19 @@
++"""Export invoices as CSV for the finance team."""
++
++import csv
++from collections.abc import Iterable
++from pathlib import Path
++
++from billing.invoice import Invoice
++
++HEADER = ["invoice_id", "customer", "subtotal", "total"]
++
++
++def export_csv(invoices: Iterable[Invoice], path: Path) -> None:
++    """Write one row per invoice, after a header row."""
++    with path.open("w", encoding="utf-8", newline="") as handle:
++        writer = csv.writer(handle)
++        writer.writerow(HEADER)
++        for invoice in invoices:
++            row = [invoice.invoice_id, invoice.customer, invoice.subtotal, invoice.total()]
++            writer.writerow(row)
