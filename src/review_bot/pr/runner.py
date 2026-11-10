@@ -99,9 +99,9 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
     provider is made, and called at most once. With ``settings.context`` ``repo``, the model's
     tools read the head commit through git objects, never a checkout, and the issues the pull
-    request closes are read with ``issue_reader`` (``_review_context``). A run that plans
-    comments reads the base commit's CODEOWNERS too (``_code_owners``), to name the owners of
-    each finding.
+    request closes are read with ``issue_reader`` (``_LinkedIssues``), only once the review will
+    call the model. A run that plans comments reads the base commit's CODEOWNERS too
+    (``_code_owners``), to name the owners of each finding.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -218,7 +218,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         {"repo": pr.repo, "number": pr.number, "base_sha": pr.base_sha, "head_sha": pr.head_sha},
     )
     config: RepoConfig | None = None
-    context: ReviewContext | None = None
+    issues: _LinkedIssues | None = None
     if refusal is not None:
         audit.record(Stage.RUN, "refused", {"reason": refusal})
         review = _Review(refusal)
@@ -234,7 +234,10 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
             review = _Review(exc, recorded)
         else:
             settings = with_repo_threshold(settings, config)
-            context = await asyncio.to_thread(_review_context, pr, git, settings, issue_reader)
+            context = None
+            if settings.context != "off":
+                issues = _LinkedIssues(pr, issue_reader)
+                context = _review_context(pr, git, issues)
             review = await _review(pr, git, github, make_provider, settings, config, context, audit)
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
@@ -256,7 +259,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         since=review.since,
         incremental=review.incremental,
         codeowners=codeowners,
-        issues=() if context is None else context.issues,
+        issues=() if issues is None else issues.read,
     )
     # A skip posts and edits nothing (Phase 2 design, Comment state).
     if github is None or shadow.outcome is Outcome.SKIPPED:
@@ -421,38 +424,43 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     return _Review(result, recorded, incremental)
 
 
-def _review_context(
-    pr: PullRequestRef, git: GitRepo, settings: Settings, issue_reader: IssueReader | None
-) -> ReviewContext | None:
+class _LinkedIssues:
+    """Reads the issues a pull request closes when the review asks, and keeps what it read.
+
+    The review asks only once it will call the model, so ``read`` stays empty in a run that
+    never gets there.
+    """
+
+    def __init__(self, pr: PullRequestRef, issue_reader: IssueReader | None) -> None:
+        self._pr = pr
+        self._issue_reader = issue_reader
+        self.read: tuple[LinkedIssue, ...] = ()
+
+    def __call__(self) -> tuple[LinkedIssue, ...]:
+        """Each issue the pull request closes, read and made safe to send, or why it isn't sent.
+
+        As many are read as ``read_linked_issues`` allows. With no ``issue_reader`` each is
+        ``no_token``. An issue whose read fails is ``unavailable``, with a line on stderr saying
+        why; the review goes on without it.
+        """
+        read_one: Callable[[int], LinkedIssue]
+        if self._issue_reader is None:
+            read_one = functools.partial(LinkedIssue, status=IssueStatus.NO_TOKEN)
+        else:
+            read_one = functools.partial(_read_linked_issue, self._pr.repo, self._issue_reader)
+        self.read = read_linked_issues(self._pr.linked_issues, read_one)
+        return self.read
+
+
+def _review_context(pr: PullRequestRef, git: GitRepo, issues: _LinkedIssues) -> ReviewContext:
     """What the model may look up in context mode: the head commit, and the issues ``pr`` closes.
 
     The tools read the head, which the diff ends at, through git objects only, never a
     checkout, so no filter, hook or attribute driver from the pull request runs (ADR 0013). The
-    issues are read with ``issue_reader`` (``_linked_issues``). None in diff mode, which reads
-    no issue.
+    review reads the issues through ``issues``.
     """
-    if settings.context == "off":
-        return None
     return ReviewContext(
-        repo=RepoRef(git=git, commit=pr.head_sha),
-        is_diff_head=True,
-        issues=_linked_issues(pr, issue_reader),
-    )
-
-
-def _linked_issues(pr: PullRequestRef, issue_reader: IssueReader | None) -> tuple[LinkedIssue, ...]:
-    """Each issue ``pr`` closes, read and made safe to send, or why it isn't sent.
-
-    As many are read as ``read_linked_issues`` allows. With no ``issue_reader`` each is
-    ``no_token``. An issue whose read fails is ``unavailable``, with a line on stderr saying
-    why; the review goes on without it.
-    """
-    if issue_reader is None:
-        return read_linked_issues(
-            pr.linked_issues, lambda number: LinkedIssue(number, IssueStatus.NO_TOKEN)
-        )
-    return read_linked_issues(
-        pr.linked_issues, functools.partial(_read_linked_issue, pr.repo, issue_reader)
+        repo=RepoRef(git=git, commit=pr.head_sha), is_diff_head=True, read_issues=issues
     )
 
 

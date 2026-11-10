@@ -352,6 +352,31 @@ def test_run_pull_request_refused_reads_no_linked_issue(pull: PullRequest, audit
     assert shadow.issues == ()
 
 
+@pytest.mark.parametrize(
+    ("head_files", "outcome"),
+    [
+        ({"app.py": HEAD_TEXT + "key = 'AKIA" + "ABCDEFGHIJKLMNOP'\n"}, Outcome.BLOCKED_SECRET),
+        ({"README.md": "Only docs.\n"}, Outcome.SKIPPED),
+    ],
+    ids=["secret_in_diff", "all_files_skipped"],
+)
+def test_run_pull_request_that_calls_no_model_reads_no_linked_issue(
+    pull: PullRequest, audit: AuditLog, head_files: dict[str, str], outcome: Outcome
+) -> None:
+    head = commit(pull.repo, head_files)
+    pr = dataclasses.replace(linking(pull, 12), head_sha=head)
+    reader = FakeGitHubClient()
+    reader.add_issue(number=12, title="Export totals", body="Include the discount.")
+    provider = MockProvider()
+
+    shadow = run(pr, pull.repo, audit, provider=provider, issue_reader=reader)
+
+    assert (shadow.outcome, provider.requests) == (outcome, [])
+    assert issue_reads(reader) == []
+    assert shadow.issues == ()
+    assert [r for r in read_records(audit.path) if r["event"] == "issue"] == []
+
+
 def test_backfill_pull_request_in_context_mode_reads_linked_issues(
     pull: PullRequest, audit: AuditLog
 ) -> None:

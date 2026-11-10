@@ -131,12 +131,14 @@ class FakeGitHubClient:
     the body of the bot's summary comment as posted, its marker last, or None before one is
     written; a test may set it to any body. ``reviews`` are the reviews the bot
     posted, and ``calls`` every call made through ``GitHubClient``, in order. ``pulls`` and
-    ``issues`` are the repository's, in the order added; they are read whatever repository a
-    call names.
+    ``issues`` are those of ``repo``, in the order added. ``read_issue`` refuses another
+    repository, as ``RestGitHubClient`` does; the other calls read them whatever repository
+    they name.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, repo: str = "owner/repo") -> None:
         """Start with no comments, no summary, no calls and no failing operation."""
+        self.repo = repo
         self.comments: list[FakeComment] = []
         self.summary: str | None = None
         self.reviews: list[FakeReview] = []
@@ -290,8 +292,14 @@ class FakeGitHubClient:
         )
 
     def read_issue(self, repo: str, number: int) -> IssueText | None:
-        """Return issue ``number``: an issue held, else a pull request held, else None."""
+        """Return issue ``number``: an issue held, else a pull request held, else None.
+
+        Raises:
+            ValueError: If ``repo`` isn't this client's repository.
+        """
         self._record("read_issue", repo, number)
+        if repo != self.repo:
+            raise ValueError(f"This client is for {self.repo}, not {repo}.")
         issue = next((issue for issue in self.issues if issue.number == number), None)
         if issue is not None:
             return IssueText(issue.title, issue.body)

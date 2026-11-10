@@ -908,7 +908,7 @@ def test_run_pipeline_with_linked_issues_sends_each_sent_one_after_the_diff(
     tmp_path: Path,
 ) -> None:
     provider = MockProvider(findings=[])
-    context = dataclasses.replace(context_repo(tmp_path), issues=ISSUES)
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=lambda: ISSUES)
 
     run_with_context(tmp_path, provider, context)
 
@@ -920,7 +920,7 @@ def test_run_pipeline_with_linked_issues_sends_each_sent_one_after_the_diff(
 def test_run_pipeline_records_each_linked_issue_with_the_bytes_sent_but_not_its_text(
     tmp_path: Path,
 ) -> None:
-    context = dataclasses.replace(context_repo(tmp_path), issues=ISSUES)
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=lambda: ISSUES)
 
     run_with_context(tmp_path, MockProvider(findings=[]), context)
 
@@ -931,3 +931,18 @@ def test_run_pipeline_records_each_linked_issue_with_the_bytes_sent_but_not_its_
         {"number": 404, "status": "not_found", "bytes_sent": 0},
     ]
     assert "discount" not in log.read_text(encoding="ascii")
+
+
+def test_run_pipeline_stopped_before_the_model_call_reads_no_linked_issue(tmp_path: Path) -> None:
+    def read_issues() -> tuple[LinkedIssue, ...]:
+        raise AssertionError("issues read before the review knew it would call the model")
+
+    context = dataclasses.replace(context_repo(tmp_path), read_issues=read_issues)
+    provider = MockProvider(findings=[])
+
+    with pytest.raises(DiffTooLargeError):
+        run_with_context(tmp_path, provider, context, max_review_bytes=1)
+
+    assert provider.requests == []
+    log = tmp_path / "audit.jsonl"
+    assert [r for r in read_records(log) if r["event"] == "issue"] == []

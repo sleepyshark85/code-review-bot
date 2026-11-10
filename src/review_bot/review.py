@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import os
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import version
@@ -73,13 +73,15 @@ class ReviewContext:
     """What a context review may look up: the commit its tools read, and the issues it closes.
 
     ``is_diff_head`` says that commit is the one the diff ends at, as in PR mode, so the lines
-    the tools return count as evidence in the files the diff changes too. ``issues`` are the
-    linked issues, already read: those whose text is sent follow the diff in the prompt.
+    the tools return count as evidence in the files the diff changes too. ``read_issues``
+    returns the linked issues; the review calls it only once the model will be called, so a
+    review stopped before then reads none. Those whose text is sent follow the diff in the
+    prompt.
     """
 
     repo: RepoRef
     is_diff_head: bool = False
-    issues: tuple[LinkedIssue, ...] = ()
+    read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()
 
 
 async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-only
@@ -133,8 +135,9 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
         name: How messages name the diff; it must already be redacted.
         exclude: Globs whose matching files are skipped too, as ``parse_diff`` matches them.
         context: The commit the model's tools read, within the settings' tool caps, and the
-            linked issues sent after the diff, with the context prompt; None reviews in diff
-            mode, with no tools.
+            linked issues sent after the diff, with the context prompt, read only once the diff
+            has passed every check before the model call; None reviews in diff mode, with no
+            tools.
         domain_rules: The domain rules the repository enables, which run with the built-in
             rules, and in context mode are named in the prompt too.
 
@@ -181,15 +184,16 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
     if context is None:
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
+        issues = await asyncio.to_thread(context.read_issues)
         tools = RepoTools(context.repo, caps=tool_caps(settings))
         request = build_context_request(
             parsed.reviewable_text,
             model=settings.model,
             tools=tools,
             domain_rules=domain_rules,
-            issues=context.issues,
+            issues=issues,
         )
-        _record_issues(context.issues, audit)
+        _record_issues(issues, audit)
     try:
         response = await _call_provider(provider, request, diff, audit)
     finally:

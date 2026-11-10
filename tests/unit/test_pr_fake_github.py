@@ -334,3 +334,11 @@ def test_a_failing_read_issue_raises_github_error() -> None:
 
     with pytest.raises(GitHubError, match="read_issue"):
         github.read_issue("owner/repo", 12)
+
+
+def test_read_issue_refuses_another_repository_as_the_rest_client_does() -> None:
+    github = FakeGitHubClient("owner/repo")
+    github.add_issue(number=12, title="Export", body="Discount.")
+
+    with pytest.raises(ValueError, match=r"for owner/repo, not other/repo"):
+        github.read_issue("other/repo", 12)

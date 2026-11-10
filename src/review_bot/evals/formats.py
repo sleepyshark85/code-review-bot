@@ -434,7 +434,8 @@ def _read_issues(path: Path) -> tuple[LinkedIssue, ...]:
     """
     issues = _validate(_CaseIssues, _read(path), path, "issues file").root
     texts = {issue.number: IssueText(issue.title, issue.body) for issue in issues}
-    return read_linked_issues(texts, lambda number: linked_issue(number, texts[number]))
+    numbers = [issue.number for issue in issues]
+    return read_linked_issues(numbers, lambda number: linked_issue(number, texts[number]))
 
 
 def load_recording(path: Path) -> Recording:

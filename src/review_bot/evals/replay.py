@@ -279,7 +279,11 @@ async def score_recording(
                 )
                 return CaseResult(case_id, recording, None, (problem,))
         # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
-        context = None if repo is None else ReviewContext(repo=repo.repo, issues=loaded.issues)
+        context = (
+            None
+            if repo is None
+            else ReviewContext(repo=repo.repo, read_issues=lambda: loaded.issues)
+        )
         review = _CaseReview(context=context, domain_rules=domain_rules)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
