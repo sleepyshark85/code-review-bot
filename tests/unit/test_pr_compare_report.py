@@ -6,8 +6,8 @@ from metrics_samples import PRICES, key, parsed, shadow_label
 from shadow_samples import entry
 
 from review_bot.pr.compare import Comparison, compare_runs
+from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.feedback import FeedbackLabel, FeedbackRecord, RejectReason
-from review_bot.pr.metrics_report import render_compare_json, render_compare_text
 
 
 def comparison(*, judged: int = 2) -> Comparison:

@@ -2,7 +2,7 @@
 
 - **Status:** Done
 - **Depends on:** P3-S8
-- **Touches:** `pr` (`compare`, `cli`, `units`, `reports`, `metrics_report`)
+- **Touches:** `pr` (`compare`, `compare_report`, `report_format`, `cli`, `units`, `reports`, `run_metrics`, `metrics_report`)
 
 ## Value
 The user sees, on the same pull requests, whether the context review is more precise and finds more accepted issues than the Phase 2 review, at what cost.
@@ -34,4 +34,4 @@ Reports and labels are downloaded files, so untrusted: each report at most 10 MB
   - A candidate PR with reports at several heads that a baseline shares is compared at the head of its latest such report. Reports that aren't `reviewed` shadow reports of a PR are ignored on both sides, as `label` and `metrics` ignore them.
   - Every compared report at the compared head counts, re-runs included: tokens, tool calls and cost are summed per side and divided by the compared PRs; review time is per report. Cost basis is per side (Phase 2 reports have no `cost_usd`, so the baseline is `estimated` with prices). Money is shown to 4 decimal places, half-even, as `evals compare` does.
   - Coverage of a side with no units counts as met (nothing is left to judge). A decidable change is `not measured` (JSON `null`) when either side has nothing to measure it on: no precision denominator, or an empty pool.
-  - The pure comparison is `pr.compare.compare_runs`; its `compare/v1` and text renderers are in `pr.metrics_report`, beside `metrics/v1`'s, sharing its formatting. `pr.cli` reads the files and maps an unusable `--labels` to exit 2.
+  - The pure comparison is `pr.compare.compare_runs`; its `compare/v1` and text renderers are in `pr.compare_report`. The formatting it shares with `metrics/v1` (shares, percentages, missing numbers, percentiles) moved from `pr.metrics_report` to `pr.report_format`. Compare reuses `pr.run_metrics.duration_percentiles` for review time and `pr.units.reviewed_shadow` to pick the reports both count; the latter returns the report's PR and review, not a bool, so callers get them typed as present. `pr.cli` reads the files and maps an unusable `--labels` to exit 2.

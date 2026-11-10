@@ -3,7 +3,7 @@
 Pure. Each candidate (context) report is paired with the baseline (Phase 2) report of the same
 repo, PR and head SHA. On the paired reports, each side's would-be comments (``pr.units``) are
 judged by the latest label for each, as Phase 2 measures precision; recall is relative to the
-pool of accepted issues either side found. ``pr.metrics_report`` renders the result.
+pool of accepted issues either side found. ``pr.compare_report`` renders the result.
 """
 
 from collections import Counter, defaultdict
@@ -20,10 +20,9 @@ from review_bot.pr.feedback import (
     ShadowFeedback,
     Unit,
 )
-from review_bot.pr.metrics import Prices, Verdicts, nearest_rank, ratio, token_cost_usd
-from review_bot.pr.outcome import Outcome
-from review_bot.pr.run_metrics import Percentiles
-from review_bot.pr.units import ShadowFile, distinct_runs, would_be_comments
+from review_bot.pr.metrics import Prices, Verdicts, ratio, token_cost_usd
+from review_bot.pr.run_metrics import Percentiles, duration_percentiles
+from review_bot.pr.units import ShadowFile, distinct_runs, reviewed_shadow, would_be_comments
 
 __all__ = [
     "COVERAGE_NEEDED",
@@ -52,7 +51,6 @@ type _IssueKey = tuple[str, int, str, str]
 
 # Both sides must be judged to at least this share of their units for a verdict (design, Q3).
 COVERAGE_NEEDED: Final = Fraction(9, 10)
-_SECONDS_PLACES: Final = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,11 +228,10 @@ def _reviewed(reports: Iterable[ShadowFile]) -> list[_Run]:
     """The reviewed shadow mode reports of a pull request, each run once."""
     runs: list[_Run] = []
     for report in distinct_runs(reports):
-        pr, review = report.pr, report.report
-        if report.mode != "shadow" or report.outcome is not Outcome.REVIEWED:
+        reviewed = reviewed_shadow(report)
+        if reviewed is None:
             continue
-        if pr is None or review is None:
-            continue
+        pr, review = reviewed
         usage, context = review.usage, review.context
         runs.append(
             _Run(
@@ -323,7 +320,7 @@ def _side(runs: Sequence[_Run], judged: _Judged, pr_count: int, prices: Prices |
         mean_output_tokens=ratio(sum(run.output_tokens for run in runs), pr_count),
         mean_tool_calls=ratio(tool_calls.total(), pr_count),
         most_tool_calls=max(tool_calls.values(), default=0),
-        review_s=_percentiles([run.review_s for run in runs]),
+        review_s=duration_percentiles([run.review_s for run in runs]),
     )
 
 
@@ -342,15 +339,6 @@ def _cost(runs: Sequence[_Run], pr_count: int, accepted: int, prices: Prices | N
     else:
         return None
     return Cost(basis, total, total / pr_count, total / accepted if accepted else None)
-
-
-def _percentiles(seconds: Sequence[float]) -> Percentiles:
-    p50, p95 = nearest_rank(seconds, 50), nearest_rank(seconds, 95)
-    return Percentiles(
-        len(seconds),
-        None if p50 is None else round(p50, _SECONDS_PLACES),
-        None if p95 is None else round(p95, _SECONDS_PLACES),
-    )
 
 
 def _verdict(baseline: Side, candidate: Side, pool: Pool) -> Verdict:

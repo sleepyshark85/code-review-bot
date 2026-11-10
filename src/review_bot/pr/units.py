@@ -19,7 +19,14 @@ from review_bot.pr.feedback import Hex16, RepoName, Text, Unit
 from review_bot.pr.outcome import Outcome
 from review_bot.pr.plan import Action
 
-__all__ = ["ShadowEntry", "ShadowFile", "WouldBeComment", "distinct_runs", "would_be_comments"]
+__all__ = [
+    "ShadowEntry",
+    "ShadowFile",
+    "WouldBeComment",
+    "distinct_runs",
+    "reviewed_shadow",
+    "would_be_comments",
+]
 
 # Far above any one review's cost, so a reported cost can always be summed and shown.
 _MOST_REPORTED_COST_USD: Final = Decimal(1_000_000)
@@ -148,6 +155,18 @@ def distinct_runs(reports: Iterable[ShadowFile]) -> list[ShadowFile]:
     return list(runs.values())
 
 
+def reviewed_shadow(report: ShadowFile) -> tuple[_PullRequest, _Review] | None:
+    """The pull request and review of a ``reviewed`` shadow mode report of a pull request.
+
+    None for any other report: comment mode, another outcome, or a local run with no PR.
+    """
+    if report.mode != "shadow" or report.outcome is not Outcome.REVIEWED:
+        return None
+    if report.pr is None or report.report is None:
+        return None
+    return report.pr, report.report
+
+
 def would_be_comments(reports: Iterable[ShadowFile]) -> tuple[WouldBeComment, ...]:
     """Group the reports' ``create`` entries into would-be comments.
 
@@ -160,11 +179,10 @@ def would_be_comments(reports: Iterable[ShadowFile]) -> tuple[WouldBeComment, ..
     latest: dict[Unit, tuple[ShadowEntry, str, _Review]] = {}
     counts: Counter[Unit] = Counter()
     for report in sorted(distinct_runs(reports), key=lambda report: report.finished_at):
-        pr, review = report.pr, report.report
-        if report.mode != "shadow" or report.outcome is not Outcome.REVIEWED:
+        reviewed = reviewed_shadow(report)
+        if reviewed is None:
             continue
-        if pr is None or review is None:
-            continue
+        pr, review = reviewed
         for unit, entry in _indexed(pr, report.comments):
             counts[unit] += 1
             latest[unit] = (entry, report.run_id, review)

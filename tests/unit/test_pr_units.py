@@ -8,7 +8,13 @@ from shadow_samples import K1, K2, K3, entry, report
 
 from review_bot.pr.cli import main
 from review_bot.pr.feedback import Unit
-from review_bot.pr.units import ShadowFile, WouldBeComment, distinct_runs, would_be_comments
+from review_bot.pr.units import (
+    ShadowFile,
+    WouldBeComment,
+    distinct_runs,
+    reviewed_shadow,
+    would_be_comments,
+)
 from review_bot.providers.mock import MockProvider
 
 
@@ -96,6 +102,25 @@ def test_would_be_comments_ignores_reports_that_are_not_reviewed_pr_shadow_runs(
     fields: dict[str, Any],
 ) -> None:
     assert would_be_comments([parsed(report(entry(K1), **fields))]) == ()
+
+
+def test_reviewed_shadow_gives_the_pr_and_review_of_a_reviewed_pr_shadow_run() -> None:
+    shadow = parsed(report(entry(K1)))
+
+    assert reviewed_shadow(shadow) == (shadow.pr, shadow.report)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"mode": "comment"},
+        {"outcome": "skipped", "report": None},
+        {"outcome": "failed"},
+        {"origin": "local", "pr": None},
+    ],
+)
+def test_reviewed_shadow_is_none_for_any_other_report(fields: dict[str, Any]) -> None:
+    assert reviewed_shadow(parsed(report(entry(K1), **fields))) is None
 
 
 def test_would_be_comments_ignores_entries_whose_action_is_not_create() -> None:

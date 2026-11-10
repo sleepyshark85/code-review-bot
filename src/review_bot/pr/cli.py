@@ -53,6 +53,7 @@ from review_bot.console import (
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
 from review_bot.pr.compare import compare_runs
+from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
 from review_bot.pr.event import REPO_NAME, PullRequestRef, read_event, read_pulls
 from review_bot.pr.feedback import (
@@ -69,12 +70,7 @@ from review_bot.pr.metrics import (
     render_baseline_text,
     summarise_baseline,
 )
-from review_bot.pr.metrics_report import (
-    render_compare_json,
-    render_compare_text,
-    render_metrics_json,
-    render_metrics_text,
-)
+from review_bot.pr.metrics_report import render_metrics_json, render_metrics_text
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.reports import read_labels, read_report, read_reports, skipped_line
 from review_bot.pr.rest_github import (
@@ -484,15 +480,7 @@ def _command_without_review(
     if name == "baseline":
         return _baseline_command(flags["repo"], flags["since"], flags["until"], flags["out"])
     if name == "compare":
-        return _CompareCommand(
-            baseline_dir=flags["baseline"],
-            candidate_dir=flags["candidate"],
-            labels_path=flags["labels"],
-            prices=prices_from_flags(
-                flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]
-            ),
-            as_json=flags["format"] == "json",
-        )
+        return _compare_command(flags)
     return _metrics_command(flags)
 
 
@@ -592,6 +580,23 @@ def _metrics_command(flags: Mapping[str, Any]) -> _MetricsCommand:
         labels_paths=tuple(flags["labels"]),
         since=since,
         until=until,
+        prices=prices_from_flags(
+            flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]
+        ),
+        as_json=flags["format"] == "json",
+    )
+
+
+def _compare_command(flags: Mapping[str, Any]) -> _CompareCommand:
+    """The ``compare`` command, once its prices are known to be in order.
+
+    Raises:
+        ConfigError: If only one price is given.
+    """
+    return _CompareCommand(
+        baseline_dir=flags["baseline"],
+        candidate_dir=flags["candidate"],
+        labels_path=flags["labels"],
         prices=prices_from_flags(
             flags["price_input_usd_per_mtok"], flags["price_output_usd_per_mtok"]
         ),

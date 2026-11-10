@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 
 from compare_samples import HEAD_A, HEAD_B, HEAD_C, pr_report
-from metrics_samples import PRICES, RECORDED, key, parsed, shadow_label
+from metrics_samples import PRICES, RECORDED, key, parsed, shadow_label, signal_label
 from shadow_samples import entry
 
 from review_bot.pr.compare import ComparedPr, Comparison, ExcludedPr, compare_runs
@@ -102,6 +102,21 @@ def test_compare_ignores_labels_of_prs_not_compared_and_keeps_the_latest_per_uni
     side = compare([pr_report(2, HEAD_A, entry(key(1)))], [pr_report(2, HEAD_A)], labels).baseline
 
     assert (side.verdicts.accepted, side.verdicts.rejected, side.units) == (1, 0, 1)
+
+
+def test_compare_ignores_reaction_and_resolution_labels() -> None:
+    labels: list[FeedbackRecord] = [shadow_label(key(1), REJECT, RejectReason.WRONG, pr=2)]
+    later = RECORDED + timedelta(hours=1)
+    same_line = {"pr": 2, "anchor": key(1)[2]}
+    signals: list[FeedbackRecord] = [
+        signal_label("1" * 16, ACCEPT, recorded_at=later).model_copy(update=same_line),
+        signal_label(
+            "1" * 16, FeedbackLabel.RESOLVED, channel="resolution", recorded_at=later
+        ).model_copy(update=same_line),
+    ]
+    reports = [pr_report(2, HEAD_A, entry(key(1)))], [pr_report(2, HEAD_A, entry(key(1)))]
+
+    assert compare(*reports, labels + signals) == compare(*reports, labels)
 
 
 def test_compare_pools_accepted_units_on_one_anchored_line_across_rule_parts() -> None:
