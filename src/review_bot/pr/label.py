@@ -92,7 +92,7 @@ def run_labelling(
         for record in _parse_labels(existing, labels_path)
         if isinstance(record, ShadowFeedback)
     }
-    reports, skipped_files = read_reports(reports_dir)
+    reports, skipped_files = read_reports(reports_dir, flag="--reports")
     for path, problem in skipped_files:
         write_line(escape_unprintable(skipped_line(path, problem)))
     comments = [comment for comment in would_be_comments(reports) if comment.unit not in labelled]

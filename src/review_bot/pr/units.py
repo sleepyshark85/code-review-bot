@@ -9,7 +9,8 @@ here, and any text from them must be escaped before it is shown.
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Annotated, Literal, Self
+from decimal import Decimal
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -19,6 +20,9 @@ from review_bot.pr.outcome import Outcome
 from review_bot.pr.plan import Action
 
 __all__ = ["ShadowEntry", "ShadowFile", "WouldBeComment", "distinct_runs", "would_be_comments"]
+
+# Far above any one review's cost, so a reported cost can always be summed and shown.
+_MOST_REPORTED_COST_USD: Final = Decimal(1_000_000)
 
 
 class _ReportPart(BaseModel):
@@ -47,23 +51,36 @@ class ShadowEntry(_ReportPart):
 class _PullRequest(_ReportPart):
     repo: RepoName
     number: Annotated[int, Field(ge=1)]
+    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
 
 class _Usage(_ReportPart):
+    """Tokens, and the cost the provider reported, which reports from before P3-S8 lack."""
+
     input_tokens: Annotated[int, Field(ge=0)]
     output_tokens: Annotated[int, Field(ge=0)]
+    cost_usd: (
+        Annotated[Decimal, Field(ge=0, le=_MOST_REPORTED_COST_USD, allow_inf_nan=False)] | None
+    ) = None
+
+
+class _ToolContext(_ReportPart):
+    """A context review's tool calls; diff mode reports, and those from before P3-S1, have none."""
+
+    tool_calls: Annotated[int, Field(ge=0)]
 
 
 class _Review(_ReportPart):
-    """The fields of the embedded ``report/v1`` object that labels and metrics use."""
+    """The fields of the embedded ``report/v1`` object that labels, metrics and compare use."""
 
     model: Text
     prompt_version: Text
     usage: _Usage
+    context: _ToolContext | None = None
 
 
 class ShadowFile(_ReportPart):
-    """The fields of a ``shadow/v1`` report that would-be comments and metrics need.
+    """The fields of a ``shadow/v1`` report that would-be comments, metrics and compare need.
 
     ``comments`` holds only the ``create`` entries: the only ones that are units, and the ones
     that post a comment in comment mode.

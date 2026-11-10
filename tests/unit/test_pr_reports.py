@@ -45,7 +45,7 @@ def test_read_reports_reads_json_files_at_any_depth_and_says_why_others_are_skip
     (tmp_path / "broken.json").write_text("{", encoding="ascii")
     (tmp_path / "shadow.md").write_text("not read", encoding="ascii")
 
-    reports, skipped = read_reports(tmp_path)
+    reports, skipped = read_reports(tmp_path, flag="--reports")
 
     assert [type(item) for item in reports] == [ShadowFile]
     assert skipped == [(tmp_path / "broken.json", "not JSON")]
@@ -53,7 +53,7 @@ def test_read_reports_reads_json_files_at_any_depth_and_says_why_others_are_skip
 
 def test_read_reports_of_a_missing_directory_raises_naming_reports(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="--reports"):
-        read_reports(tmp_path / "missing")
+        read_reports(tmp_path / "missing", flag="--reports")
 
 
 def test_read_report_over_10_mb_is_refused(tmp_path: Path) -> None:

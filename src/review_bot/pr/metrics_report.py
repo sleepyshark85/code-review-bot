@@ -1,21 +1,38 @@
-"""Render ``RunMetrics`` as the ``metrics/v1`` JSON document, or as text for a person.
+"""Render ``RunMetrics`` as ``metrics/v1``, and a ``Comparison`` as ``compare/v1``.
 
-Pure. Text from reports, such as a reason or a rule part, is written only as JSON writes it.
+Each as one JSON document, or as text for a person. Pure. Text from reports, such as a reason
+or a rule part, is written only as JSON writes it.
 """
 
 import json
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final
 
+from review_bot.pr.compare import Comparison, Cost, Side
 from review_bot.pr.feedback import RejectReason
 from review_bot.pr.metrics import Precision, Verdicts
 from review_bot.pr.run_metrics import Percentiles, RunMetrics, TokenTotals
 
-__all__ = ["METRICS_SCHEMA", "render_metrics_json", "render_metrics_text"]
+__all__ = [
+    "COMPARE_SCHEMA",
+    "METRICS_SCHEMA",
+    "render_compare_json",
+    "render_compare_text",
+    "render_metrics_json",
+    "render_metrics_text",
+]
 
 METRICS_SCHEMA: Final = "metrics/v1"
+COMPARE_SCHEMA: Final = "compare/v1"
 # JSON holds shares as fractions, as baseline/v1 does; text shows them as percentages.
 _FRACTION_PLACES: Final = 3
 _PERCENT_PLACES: Final = 1
+_MEAN_PLACES: Final = 1
+# Compare shows money to a hundredth of a cent, as evals compare does: a diff review can cost
+# less than a cent.
+_USD_PLACES: Final = Decimal("0.0001")
+_NOT_AVAILABLE: Final = "not available"
+_NOT_MEASURED: Final = "not measured"
 
 
 def render_metrics_json(metrics: RunMetrics) -> str:
@@ -203,3 +220,181 @@ def _verdicts_text(verdicts: Verdicts) -> str:
         f"duplicates={verdicts.duplicates} "
         f"precision={_percent_text(verdicts.precision)} ({verdicts.accepted}/{verdicts.counted})"
     )
+
+
+def render_compare_json(comparison: Comparison) -> str:
+    """The ``compare/v1`` document, as one line of ASCII JSON.
+
+    Shares are fractions rounded to 3 places, means to 1, and money is a string of USD to 4
+    places. A change or share with nothing to measure it on is null.
+    """
+    verdict = comparison.verdict
+    document = {
+        "schema": COMPARE_SCHEMA,
+        "prs": {
+            "compared": [
+                {"repo": pr.repo, "number": pr.number, "head_sha": pr.head_sha}
+                for pr in comparison.compared
+            ],
+            "excluded": [
+                {"repo": pr.repo, "number": pr.number, "reason": pr.reason}
+                for pr in comparison.excluded
+            ],
+        },
+        "baseline": _side_document(comparison, comparison.baseline),
+        "candidate": _side_document(comparison, comparison.candidate),
+        "pool": {
+            "issues": comparison.pool.issues,
+            "both": comparison.pool.both,
+            "baseline_only": comparison.pool.baseline_only,
+            "candidate_only": comparison.pool.candidate_only,
+        },
+        "verdict": {
+            "decidable": verdict.is_decidable,
+            "reason": None if verdict.is_decidable else "coverage",
+            "precision": verdict.precision,
+            "recall": verdict.recall,
+            "coverage": {
+                "baseline": _fraction(comparison.baseline.coverage),
+                "candidate": _fraction(comparison.candidate.coverage),
+            },
+        },
+    }
+    return json.dumps(document, ensure_ascii=True, allow_nan=False)
+
+
+def render_compare_text(comparison: Comparison) -> str:
+    """The same figures as ``render_compare_json``, as ``name=value`` lines for a person.
+
+    Shares are percentages, a missing number reads ``n/a``, a change with nothing to measure it
+    on ``not measured``, and cost with neither reported costs nor prices ``not available``.
+    """
+    pool = comparison.pool
+    lines = [
+        f"prs compared={len(comparison.compared)} excluded={len(comparison.excluded)}",
+        *(
+            f"compared repo={pr.repo} number={pr.number} head_sha={pr.head_sha}"
+            for pr in comparison.compared
+        ),
+        *(
+            f"excluded repo={pr.repo} number={pr.number} reason={pr.reason}"
+            for pr in comparison.excluded
+        ),
+        *_side_text("baseline", comparison, comparison.baseline),
+        *_side_text("candidate", comparison, comparison.candidate),
+        f"pool issues={pool.issues} both={pool.both} baseline_only={pool.baseline_only} "
+        f"candidate_only={pool.candidate_only}",
+        _compare_verdict_text(comparison),
+    ]
+    return "\n".join(f"compare: {line}" for line in lines)
+
+
+def _side_document(comparison: Comparison, side: Side) -> dict[str, object]:
+    verdicts = side.verdicts
+    low, high = verdicts.wilson_95 or (None, None)
+    return {
+        "units": {
+            "total": side.units,
+            "judged": verdicts.judged,
+            "accepted": verdicts.accepted,
+            "rejected": {reason: side.reject_reasons[reason] for reason in RejectReason},
+            "unjudged": side.unjudged,
+            "coverage": _fraction(side.coverage),
+        },
+        "precision": {
+            "accepted": verdicts.accepted,
+            "counted": verdicts.counted,
+            "share": _fraction(verdicts.precision),
+            "wilson_low": _fraction(low),
+            "wilson_high": _fraction(high),
+            "lower_bound": _fraction(verdicts.lower_bound),
+        },
+        "recall": {
+            "issues": side.issues,
+            "pool": comparison.pool.issues,
+            "share": _fraction(comparison.recall(side)),
+        },
+        "cost": _compare_cost_document(side.cost),
+        "tokens": {
+            "mean_input_per_pr": _mean(side.mean_input_tokens),
+            "mean_output_per_pr": _mean(side.mean_output_tokens),
+        },
+        "tool_calls": {
+            "mean_per_pr": _mean(side.mean_tool_calls),
+            "max_per_pr": side.most_tool_calls,
+        },
+        "latency": {"review_s": _percentiles_document(side.review_s)},
+    }
+
+
+def _compare_cost_document(cost: Cost | None) -> dict[str, str | None]:
+    if cost is None:
+        return {
+            "basis": _NOT_AVAILABLE,
+            "total_usd": None,
+            "mean_per_pr_usd": None,
+            "per_accepted_unit_usd": None,
+        }
+    per_accepted = cost.per_accepted_unit_usd
+    return {
+        "basis": cost.basis,
+        "total_usd": str(_usd(cost.total_usd)),
+        "mean_per_pr_usd": str(_usd(cost.mean_per_pr_usd)),
+        "per_accepted_unit_usd": None if per_accepted is None else str(_usd(per_accepted)),
+    }
+
+
+def _side_text(name: str, comparison: Comparison, side: Side) -> list[str]:
+    verdicts = side.verdicts
+    interval = verdicts.wilson_95
+    wilson = "n/a" if interval is None else " to ".join(map(_percent_text, interval))
+    reasons = " ".join(f"{reason}={side.reject_reasons[reason]}" for reason in RejectReason)
+    return [
+        f"{name} units={side.units} judged={verdicts.judged} accepted={verdicts.accepted} "
+        f"rejected {reasons} unjudged={side.unjudged} coverage={_percent_text(side.coverage)}",
+        f"{name} precision={_percent_text(verdicts.precision)} "
+        f"({verdicts.accepted}/{verdicts.counted}) wilson_95={wilson} "
+        f"lower_bound={_percent_text(verdicts.lower_bound)} "
+        f"({verdicts.accepted}/{verdicts.judged})",
+        f"{name} recall={_percent_text(comparison.recall(side))} "
+        f"({side.issues}/{comparison.pool.issues})",
+        f"{name} {_compare_cost_text(side.cost)}",
+        f"{name} tokens_per_pr mean_input={_number_text(_mean(side.mean_input_tokens))} "
+        f"mean_output={_number_text(_mean(side.mean_output_tokens))}",
+        f"{name} tool_calls_per_pr mean={_number_text(_mean(side.mean_tool_calls))} "
+        f"max={side.most_tool_calls}",
+        f"{name} latency_s review {_percentiles_text(side.review_s)}",
+    ]
+
+
+def _compare_cost_text(cost: Cost | None) -> str:
+    if cost is None:
+        return f"cost={_NOT_AVAILABLE}"
+    per_accepted = cost.per_accepted_unit_usd
+    per_accepted_text = "n/a" if per_accepted is None else f"{_usd(per_accepted)} USD"
+    return (
+        f"cost total={_usd(cost.total_usd)} USD mean_per_pr={_usd(cost.mean_per_pr_usd)} USD "
+        f"per_accepted_unit={per_accepted_text} basis={cost.basis}"
+    )
+
+
+def _compare_verdict_text(comparison: Comparison) -> str:
+    verdict = comparison.verdict
+    if not verdict.is_decidable:
+        return (
+            "verdict=not decidable: coverage "
+            f"baseline_coverage={_percent_text(comparison.baseline.coverage)} "
+            f"candidate_coverage={_percent_text(comparison.candidate.coverage)}"
+        )
+    return (
+        f"verdict precision={verdict.precision or _NOT_MEASURED} "
+        f"recall={verdict.recall or _NOT_MEASURED}"
+    )
+
+
+def _mean(value: float | None) -> float | None:
+    return None if value is None else round(value, _MEAN_PLACES)
+
+
+def _usd(amount: Decimal) -> Decimal:
+    return amount.quantize(_USD_PLACES, rounding=ROUND_HALF_EVEN)
