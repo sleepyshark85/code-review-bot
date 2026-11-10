@@ -269,7 +269,7 @@ def test_a_run_cut_short_by_the_budget_keeps_the_old_recording_and_exits_1(
     assert err.endswith(
         "live: case calc-2 run 1/3 ... ok\n"
         "live: stopped: 2.0 USD spent leaves less than --max-cost-usd 0.30 of --max-usd 1.80, "
-        "so no further call started. Not recorded, so each keeps its old recording: calc-2. "
+        "so no further call started. Not recorded, so each keeps any old recording: calc-2. "
         "Record them with --case and an approved budget.\n"
     )
     assert "case calc-2" not in out
@@ -294,7 +294,7 @@ def test_a_diff_mode_case_cut_short_keeps_its_old_recording(
 
     assert len(sdk.options) == 2
     assert old.read_text(encoding="utf-8") == old_text
-    assert "keeps its old recording: calc." in err
+    assert "keeps any old recording: calc." in err
     assert out.endswith("stopped: budget\nspent=$1.0 of --max-usd $0.90\n")
     assert exit_code == 1
 
@@ -418,7 +418,7 @@ def test_context_report_shows_tool_calls_per_run_and_the_spend(
     exit_code, out, _ = context_live(capsys, sdk, tmp_path / "cases", "--runs", 2)
 
     assert exit_code == 0
-    assert "  tool calls per run: mean 2.0, largest 3\n" in out
+    assert "  tool calls per run: mean 2.0, largest 3, over 2 returned runs\n" in out
     assert "  cost: $0.50, reported by every run\n  cap-hit runs: none\n" in out
     assert out.endswith("result: pass\nspent=$0.50 of --max-usd $8.10\n")
 
@@ -438,3 +438,63 @@ def test_context_mode_still_refuses_in_ci_and_over_max_calls(
     assert (short_exit, ci_exit, sdk.options) == (2, 2, [])
     assert "would make 2 calls (1 case x 2 runs), more than --max-calls 1" in short_err
     assert "live runs in CI only from a workflow_dispatch run" in ci_err
+
+
+def test_tool_calls_per_run_count_only_the_runs_that_returned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    context_case(tmp_path / "cases")
+    sdk = ToolUsingSdk(0.25, "error_max_turns", reads=[(NOTES_FILE,) * 3, (NOTES_FILE,)])
+
+    _, out, _ = context_live(capsys, sdk, tmp_path / "cases", "--runs", 2)
+
+    assert "  tool calls per run: mean 3.0, largest 3, over 1 returned run\n" in out
+
+
+def test_tool_calls_per_run_are_not_measured_when_no_run_returned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    context_case(tmp_path / "cases")
+
+    _, out, _ = context_live(capsys, ToolUsingSdk("error_max_turns"), tmp_path / "cases")
+
+    assert "  tool calls per run: not measured, no run returned\n" in out
+
+
+def test_a_run_with_more_tool_calls_than_a_recording_holds_fails_keeping_its_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = tmp_path / "cases"
+    first, second = context_case(cases, "calc"), context_case(cases, "calc-2")
+    # Past the 12th call each is refused, but still recorded: 31 is one more than a run holds.
+    sdk = ToolUsingSdk(0.25, reads=[(NOTES_FILE,) * 31, (NOTES_FILE,)])
+
+    exit_code, out, err = context_live(capsys, sdk, cases)
+
+    [over] = load_recording(context_path(first)).runs
+    assert (over.error_category, over.cost_usd, over.tool_calls) == (
+        "internal",
+        Decimal("0.25"),
+        (),
+    )
+    assert len(load_recording(context_path(second)).runs[0].tool_calls) == 1
+    assert "live: case calc run 1/1 ... failed (internal)" in err
+    assert "case calc-2" in out
+    assert out.endswith("spent=$0.50 of --max-usd $8.10\n")
+    assert exit_code == 1
+    records = [json.loads(line) for line in LIVE_AUDIT.read_text(encoding="ascii").splitlines()]
+    failed = [record["data"] for record in records if record["event"] == "failed"]
+    assert failed == [{"category": "internal", "error": "ValidationError"}]
+
+
+def test_live_runs_the_tools_at_replays_caps_whatever_their_variables_say(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case_file = context_case(tmp_path / "cases")
+    monkeypatch.setenv("REVIEW_BOT_MAX_TOOL_CALLS", "1")
+    sdk = ToolUsingSdk(0.25, reads=[(NOTES_FILE, NOTES_FILE)])
+
+    context_live(capsys, sdk, tmp_path / "cases")
+
+    [run] = load_recording(context_path(case_file)).runs
+    assert [(call.outcome, call.reason) for call in run.tool_calls] == [("ok", None)] * 2

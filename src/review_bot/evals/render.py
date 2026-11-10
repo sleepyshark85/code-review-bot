@@ -103,8 +103,7 @@ def _spend_lines(recording: Recording, budget: DollarBudget) -> list[str]:
     runs = recording.runs
     lines = []
     if recording.mode == "context":
-        counts = [len(run.tool_calls) for run in runs]
-        lines.append(f"  tool calls per run: mean {fmean(counts):.1f}, largest {max(counts)}")
+        lines.append(f"  tool calls per run: {_tool_call_figures(runs)}")
     counted = sum((budget.charge(run.cost_usd) for run in runs), Decimal(0))
     reported = [run.cost_usd for run in runs if run.cost_usd is not None]
     if len(reported) == len(runs):
@@ -118,6 +117,18 @@ def _spend_lines(recording: Recording, budget: DollarBudget) -> list[str]:
     cap_hit = [f"run {number} ({run.cap})" for number, run in enumerate(runs, 1) if run.cap]
     lines.append(f"  cap-hit runs: {', '.join(cap_hit) or 'none'}")
     return lines
+
+
+def _tool_call_figures(runs: Sequence[RecordedRun]) -> str:
+    """The mean and largest tool call count of the runs that returned.
+
+    Failed runs are left out, as live records none of their calls.
+    """
+    counts = [len(run.tool_calls) for run in runs if run.error is None]
+    if not counts:
+        return "not measured, no run returned"
+    returned = count_noun(len(counts), "returned run")
+    return f"mean {fmean(counts):.1f}, largest {max(counts)}, over {returned}"
 
 
 def _case_lines(result: CaseResult, figures: Sequence[str] = ()) -> list[str]:

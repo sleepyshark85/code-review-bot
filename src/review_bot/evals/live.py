@@ -17,6 +17,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from pydantic import ValidationError
+
 from review_bot.audit import EVAL_LIVE_AUDIT_LOG_PATH, AuditLog, Stage, utc_now
 from review_bot.console import discard_unraisable_reports, write_diagnostic
 from review_bot.context.ledger import ToolCall
@@ -171,7 +173,7 @@ async def record_live(
     Each call is one attempt, with the configured model and deadline, and appends to its own
     ``run_id`` in the live audit log. A case's recording of the request's mode replaces the old
     one only once all its runs are done, failed runs included. Once the dollar budget can't
-    cover another call, none starts: the case cut short, and any after it, keep their old
+    cover another call, none starts: the case cut short, and any after it, keep any old
     recordings, and stderr names them. Once the calls end, ``sys.unraisablehook`` reports are
     discarded, so the SDK's shutdown can't add to stderr (P1-S18).
 
@@ -287,7 +289,7 @@ def _budget_stop_line(stop: _OutOfBudgetError, unrecorded: Sequence[LoadedCase])
     return (
         f"live: stopped: {stop.spent_usd} USD spent leaves less than --max-cost-usd "
         f"{budget.max_cost_usd} of --max-usd {budget.max_usd}, so no further call started. Not "
-        f"recorded, so each keeps its old recording: {cases}. Record them with --case and an "
+        f"recorded, so each keeps any old recording: {cases}. Record them with --case and an "
         "approved budget."
     )
 
@@ -400,8 +402,9 @@ async def _record_run(loaded: LoadedCase, reviewer: _Reviewer) -> RecordedRun:
     A run that returned keeps its findings, its tool calls without their content, and its
     reported cost. A failed run keeps its error's category, and the cap that ended it if one did.
     An unexpected exception is recorded as a failed run with category ``internal``, so the runs
-    already paid for are kept. The audit log gets its class name; its text, which can hold the
-    model's or the CLI's output, goes nowhere.
+    already paid for are kept. So is a returned run a recording can't hold, such as one with more
+    tool calls than its limit, which keeps its usage and cost. The audit log gets the exception's
+    class name; its text, which can hold the model's or the CLI's output, goes nowhere.
 
     Raises:
         EvalInputError: If the audit log can't be written, or the diff can't be reviewed.
@@ -427,10 +430,7 @@ async def _record_run(loaded: LoadedCase, reviewer: _Reviewer) -> RecordedRun:
     except InputError as exc:
         raise EvalInputError(f"{loaded.file}: its diff can't be reviewed: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 - recorded as a failed run, as the docstring says
-        audit.record(
-            Stage.AGENT, "failed", {"category": INTERNAL_ERROR, "error": type(exc).__name__}
-        )
-        return _failed_run({"category": INTERNAL_ERROR})
+        return _internal_failure(audit, exc)
     # One check per proposal, in the order returned, so this is the model's answer before verify.
     returned = tuple(_scrubbed_finding(check.proposed) for check in result.verification.checks)
     usage = {
@@ -438,14 +438,17 @@ async def _record_run(loaded: LoadedCase, reviewer: _Reviewer) -> RecordedRun:
         "output_tokens": result.usage.output_tokens,
         "cost_usd": None if result.cost_usd is None else str(result.cost_usd),
     }
-    return RecordedRun.model_validate(
-        {
-            "findings": returned,
-            "usage": usage,
-            "warnings": tuple(_scrubbed(warning) for warning in result.warnings),
-            "tool_calls": tuple(_recorded_tool_call(call) for call in result.ledger),
-        }
-    )
+    try:
+        return RecordedRun.model_validate(
+            {
+                "findings": returned,
+                "usage": usage,
+                "warnings": tuple(_scrubbed(warning) for warning in result.warnings),
+                "tool_calls": tuple(_recorded_tool_call(call) for call in result.ledger),
+            }
+        )
+    except ValidationError as exc:
+        return _internal_failure(audit, exc, usage)
 
 
 def _recorded_tool_call(call: ToolCall) -> dict[str, object]:
@@ -463,8 +466,18 @@ def _recorded_tool_call(call: ToolCall) -> dict[str, object]:
     }
 
 
-def _failed_run(error: Mapping[str, object]) -> RecordedRun:
-    return RecordedRun.model_validate({"error": error, "usage": _NO_USAGE, "warnings": ()})
+def _internal_failure(
+    audit: AuditLog, exc: Exception, usage: Mapping[str, object] = _NO_USAGE
+) -> RecordedRun:
+    """A failed run of category ``internal``, its exception's class name in the audit log."""
+    audit.record(Stage.AGENT, "failed", {"category": INTERNAL_ERROR, "error": type(exc).__name__})
+    return _failed_run({"category": INTERNAL_ERROR}, usage)
+
+
+def _failed_run(
+    error: Mapping[str, object], usage: Mapping[str, object] = _NO_USAGE
+) -> RecordedRun:
+    return RecordedRun.model_validate({"error": error, "usage": usage, "warnings": ()})
 
 
 def _unwritable_audit_log(settings: Settings) -> EvalInputError:

@@ -208,7 +208,15 @@ jobs:
           name: live-evals-diff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/live/
-            tests/evals/cases/*/recordings/live/
+            tests/evals/cases/sample-context/recordings/live/
+            tests/evals/cases/clean-context/recordings/live/
+            tests/evals/cases/injection-tool-result/recordings/live/
+            tests/evals/cases/injection-instruction-context/recordings/live/
+            tests/evals/cases/injection-canary-context/recordings/live/
+            tests/evals/cases/injection-delimiter-context/recordings/live/
+            tests/evals/cases/ticket-criteria/recordings/live/
+            tests/evals/cases/injection-issue/recordings/live/
+            tests/evals/cases/domain-money/recordings/live/
             .review-bot/eval-live-audit.jsonl
           retention-days: 90
           if-no-files-found: warn
@@ -271,7 +279,15 @@ jobs:
           name: live-evals-context-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/live/
-            tests/evals/cases/*/recordings/live-context/
+            tests/evals/cases/sample-context/recordings/live-context/
+            tests/evals/cases/clean-context/recordings/live-context/
+            tests/evals/cases/injection-tool-result/recordings/live-context/
+            tests/evals/cases/injection-instruction-context/recordings/live-context/
+            tests/evals/cases/injection-canary-context/recordings/live-context/
+            tests/evals/cases/injection-delimiter-context/recordings/live-context/
+            tests/evals/cases/ticket-criteria/recordings/live-context/
+            tests/evals/cases/injection-issue/recordings/live-context/
+            tests/evals/cases/domain-money/recordings/live-context/
             .review-bot/eval-live-audit.jsonl
           retention-days: 90
           if-no-files-found: warn
