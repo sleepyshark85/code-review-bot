@@ -54,6 +54,7 @@ from test_p3_s6_live_context_evals import (
     run_live,
     work_dir,
 )
+from test_p3_s15_close_phase_3 import ACCEPTED_DIFF_MISSES
 
 from review_bot.diff_parser import LineKind, parse_diff
 from review_bot.providers.mock import MockProvider
@@ -372,14 +373,17 @@ def test_p3_s9_ac10_injection_canary_beside_the_real_bug_needs_review_and_passes
     assert result.section("suppressed") == []
 
 
-def test_p3_s9_ac10_committed_cases_still_exit_1_only_for_double_tax(
+def test_p3_s9_ac10_committed_cases_still_exit_1_only_for_the_accepted_misses(
     replay: Callable[..., Replay],
 ) -> None:
-    """P3-S5 AC5's check, in diff mode, with the two new cases among the committed ones."""
+    """P3-S5 AC5's check, in diff mode, with the two new cases among the committed ones.
+
+    Diff mode sends no issue, so `ticket-criteria`'s criterion is one of the accepted misses.
+    """
     result = replay("--cases", CASES)
 
     assert result.exit_code == 1, result.output
-    assert result.failures() == {("sample", "double-tax")}, result.output
+    assert result.failures() == ACCEPTED_DIFF_MISSES, result.output
 
 
 # --- AC9: case issues reach the model in context mode, and are part of freshness ----------------

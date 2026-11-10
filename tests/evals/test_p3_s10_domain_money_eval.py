@@ -24,6 +24,7 @@ from test_p3_s5_context_eval_cases import (
     copy_cases,
     diff_text,
 )
+from test_p3_s15_close_phase_3 import ACCEPTED_DIFF_MISSES
 
 from review_bot.evals import main
 
@@ -209,14 +210,17 @@ def test_p3_s10_ac9_phase_1_cases_score_as_before(
     assert not result.failures(), result.output
 
 
-def test_p3_s10_ac9_committed_cases_still_exit_1_only_for_double_tax(
+def test_p3_s10_ac9_committed_cases_still_exit_1_only_for_the_accepted_misses(
     replay: Callable[..., Replay],
 ) -> None:
-    """P3-S5 AC5's check, on the committed cases, with `domain-money` among them."""
+    """P3-S5 AC5's check, on the committed cases, with `domain-money` among them.
+
+    `domain-money` isn't among the misses: its rule bug is caught from the case's config.
+    """
     result = replay("--cases", CASES)
 
     assert result.exit_code == 1, result.output
-    assert result.failures() == {("sample", "double-tax")}, result.output
+    assert result.failures() == ACCEPTED_DIFF_MISSES, result.output
 
 
 def test_p3_s10_ac9_phase_1_cases_name_no_domain_rule() -> None:

@@ -1243,7 +1243,7 @@ The slice changes no code under `src/`, so there is no module coverage to report
 
 ## P3-S15: Close Phase 3 (in progress)
 
-**Status:** partial. AC1, AC2 and AC4 so far are below. AC3 and AC7 wait for Phase 2's labelled set (#67). The `sample-context` misses below wait for the user's decision, with no re-run (ADR 0007). AC5, AC6 and AC9 follow those.
+**Status:** partial. AC1, AC2, AC4, AC6 and AC8 are below; the user accepted the eval misses on 2026-11-10. AC3 and AC7 wait for Phase 2's labelled set (#67). AC5 and AC9 follow those.
 
 ### AC1: caps check and the eval dispatches
 
@@ -1317,6 +1317,51 @@ verdict:
 ```
 
 **Misses (for the user):** in context mode, `sample-context`'s `tax-discount-ordering` and `float-money` were caught in 0 of 3 runs (diff mode: 2 of 3 each), and `discount-dropped-on-export` in 2 of 3 (diff mode: 3 of 3). Context mode catches `double-tax` in 3 of 3 runs (diff mode: 1 of 3; Phase 1's accepted miss) and `ticket-criteria`'s criterion in 3 of 3 (diff mode: 0 of 3).
+
+**User decision (2026-11-10):** the user accepted these as documented misses. Nothing was re-run, and no threshold changed ([ADR 0007](../../adr/0007-evals-replay-and-live.md)).
+
+| Mode | Case | Bug | Runs caught | Needs | Why it's accepted |
+|---|---|---|---|---|---|
+| context | `sample-context` | `tax-discount-ordering` | 0 of 3 | 2 | Accepted miss (diff mode: 2 of 3) |
+| context | `sample-context` | `float-money` | 0 of 3 | 2 | Accepted miss (diff mode: 2 of 3) |
+| diff | `sample-context` | `double-tax` | 1 of 3 | 2 | Phase 1's accepted miss (2026-11-07), on the same diff |
+| diff | `ticket-criteria` | `discount-column-missing` | 0 of 3 | 2 | Diff mode sends no issue, so it can't see the criterion. That's the point of the comparison. |
+| diff | `sample` | `double-tax` | 0 of 5 | 3 | Phase 1's accepted miss (2026-11-07), unchanged |
+
+In context mode, `discount-dropped-on-export` (2 of 3) still meets its bar of 2, but `compare` lists it under `smaller_share` because diff mode caught it in 3 of 3. The tests below expect exactly these misses, so a new failure, or an accepted miss that starts passing, turns them red.
+
+### AC6 and AC8: tests
+
+All are in `tests/evals/test_p3_s15_close_phase_3.py`. They replay the committed recordings in process with `main`, call no model, and run with `claude` off PATH and no key. The 9 cases are those in AC1. "Copy" means a temporary copy of those cases with their recordings, and with any sibling diff a case points at.
+
+| Criterion | Test(s) | Result |
+|---|---|---|
+| AC6: a fresh live-context recording of the default model per case | `ac6_each_case_has_a_fresh_live_context_recording_of_the_default_model` ×9 | pass |
+| AC6: `replay --mode context --require-live` on the 9 cases exits 1, and only for the accepted misses | `ac6_require_live_context_replay_fails_only_on_the_accepted_misses`, `ac6_holds_without_claude_on_path_or_a_key` | pass |
+| AC6: reproduces AC2's per-bug numbers (context column) | `ac6_context_replay_reproduces_ac2s_per_bug_numbers` | pass |
+| AC6: nothing else hides among the accepted misses | `ac6_a_missing_…`, `ac6_a_stale_…` (`repo_tree`), `ac6_another_models_live_context_recording_is_not_an_accepted_miss`, `ac6_a_bug_falling_below_its_threshold_is_not_an_accepted_miss` (`ticket-criteria` cut to 1 of 3) | pass (4) |
+| AC2: the diff column, from diff-mode `replay --require-live` on the 9 cases | `ac2_diff_replay_of_the_9_cases_reproduces_ac2s_diff_numbers` (fails only on `sample-context`/`double-tax` and `ticket-criteria`) | pass |
+| AC2: `compare --format json` on the committed cases | `ac2_compare_on_the_committed_cases_gives_the_recorded_numbers_and_verdict`: 9 cases, all paired, exit 0; each bug's runs caught per mode; 27 runs, no failed run and no cap hit per mode; precision 23/68 (diff) and 28/57 (context); verdict `higher`, the three `smaller_share` bugs, every context injection run passed | pass |
+| AC2: the report's output is today's | `ac2_report_holds_compares_text_output_verbatim`: the block above equals `compare`'s text output | pass |
+| AC8: diff-mode `replay` on the Phase 1 cases exits 1 only for `double-tax` | `ac8_diff_replay_of_the_phase_1_cases_exits_1_only_for_double_tax` ×3 (no `--mode`, `--mode diff`, `--require-live`) | pass (3) |
+| AC8: diff mode over every committed case | `ac8_diff_replay_of_every_committed_case_fails_only_on_the_accepted_misses` | pass |
+
+**Earlier suites changed.** Six tests pinned the state before S15's recordings. Each now expects the new truth, and keeps what it protected. The accepted diff-mode misses are one set, `ACCEPTED_DIFF_MISSES`, which the S15 file owns.
+
+| Test | Before | Now |
+|---|---|---|
+| `test_p3_s5_…::ac5_committed_cases_without_mode_exit_1_only_for_the_accepted_misses` (was `…_only_for_double_tax`) | failures = `sample`/`double-tax` | failures = `ACCEPTED_DIFF_MISSES` |
+| `test_p3_s9_…::ac10_committed_cases_still_exit_1_only_for_the_accepted_misses` (renamed the same way) | same | same |
+| `test_p3_s10_…::ac9_committed_cases_still_exit_1_only_for_the_accepted_misses` (renamed the same way) | same | same |
+| `test_p3_s5_…::committed_cases_in_context_mode_with_no_live_context_recording_exit_0` | copied every case: no live-context recording existed | copies every case without its `live-context/` folders. Diff-mode and synthetic recordings stay. It still exits 0 with no failure, and it now also checks that no AI bug is scored, so neither of those recordings is read in context mode. |
+| `test_p3_s7_…::ac7_synthetic_recordings_dont_pair_a_case` | copied `sample-context/recordings/`, which held only synthetic controls | copies only `recordings/synthetic/`, and writes a live diff-mode recording, so reading a control as the context recording would pair the case. The test expects it unpaired, with a reason naming `context`. |
+| `test_p3_s7_…::ac7_committed_cases_with_repo_are_all_paired_so_exit_0` (was `…_have_no_live_context_recordings_so_exit_1`) | every case with `repo` unpaired, exit 1 | every case with `repo` listed and paired, exit 0. The unpaired cases are still covered by the other AC7 tests on copies. |
+
+**Readings for the designer.**
+1. **AC8's "the Phase 1 and Phase 2 suites pass unchanged since P3-S5"** isn't literally true. Since P3-S5 (`33330c5`), later slices edited `tests/evals/test_p1_s14_eval_sample.py` (P3-S10: rules scoped to the sample's two, and `run_rules` takes options), `tests/evals/test_p1_s16_eval_live_command.py` (P3-S16: the CI refusal's wording loosened to "names CI"), `tests/integration/test_p1_s10_json_output.py` (P3-S12: two new JSON keys), and the P2-S1, P2-S3, P2-S4 and P2-S6 integration suites. Each change came from a later approved spec, not from S15. No test can check "unchanged" offline (CI's checkout is shallow), so this is evidenced here and not pinned. The Phase 1 eval cases and their recordings haven't changed since P3-S5.
+2. `tests/evals/test_p1_s17_measure_real_model.py`'s docstring still says Phase 3's cases have no diff-mode live recording "until P3-S15". It's left unedited, because AC8 asks for the Phase 1 suites unchanged. Its check is scoped to the Phase 1 cases and still holds.
+
+**Coverage.** S15 adds no code under `src/`. These tests exercise `review_bot.evals` (`replay`, `compare`) on the committed recordings. CI's `pytest --cov` reports the module total.
 
 ### AC4: every dispatch of `live.yml`
 
