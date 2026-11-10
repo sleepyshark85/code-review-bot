@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
@@ -98,7 +98,7 @@ from review_bot.settings import (
     load_settings,
     take_github_token,
 )
-from review_bot.spend import DollarBudget
+from review_bot.spend import DollarBudget, usd_amount
 
 __all__ = ["main"]
 
@@ -371,7 +371,7 @@ def _parse_args(
     )
     backfill.add_argument(
         "--max-usd",
-        type=_dollars,
+        type=usd_amount,
         help="the most all calls may cost, in USD; required with --context repo, with "
         "--max-cost-usd, and checked against each call's --max-cost-usd before and during the run",
     )
@@ -575,16 +575,6 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
         "list the pull request's head commit",
     )
     add_tool_cap_arguments(parser)
-
-
-def _dollars(text: str) -> Decimal:
-    try:
-        amount = Decimal(text)
-    except InvalidOperation:
-        amount = None
-    if amount is None or not amount.is_finite() or amount <= 0:
-        raise argparse.ArgumentTypeError(f"{text!r} isn't an amount of USD above 0, such as 7.20")
-    return amount
 
 
 def _whole_number(text: str) -> int:

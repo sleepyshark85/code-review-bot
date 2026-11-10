@@ -61,9 +61,9 @@ CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 READ_ONLY = {"contents": "read"}
 SMOKE = "smoke"
 BACKFILL = "backfill"
-# This slice's choice, then later slices': P3-S8 AC11 adds `backfill`; S6 adds evals-diff and
-# evals-context.
-CHOICES = [SMOKE, BACKFILL]
+# This slice's choice, then later slices': P3-S8 AC11 adds `backfill`; P3-S6 AC10 adds
+# `evals-diff` and `evals-context`.
+CHOICES = [SMOKE, BACKFILL, "evals-diff", "evals-context"]
 # P3-S8 AC11: the backfill job also reads issues (for S9), so S16 AC3's `contents: read` alone
 # holds for every other job.
 BACKFILL_PERMISSIONS = {"contents": "read", "issues": "read"}
@@ -304,7 +304,7 @@ def test_p3_s16_ac1_every_choice_an_if_compares_is_an_option(workflow):
     assert compared <= set(CHOICES)
 
 
-@pytest.mark.parametrize("step", ["", "evals-diff", "backfill-x", "SMOKE-x", "smoke "])
+@pytest.mark.parametrize("step", ["", "evals", "backfill-x", "SMOKE-x", "smoke ", "evals-diff "])
 def test_p3_s16_ac1_no_job_runs_for_a_value_that_isnt_an_option(workflow, step):
     for name, job in jobs_of(workflow).items():
         assert not job_runs(job, ref=MAIN_REF, step=step), name

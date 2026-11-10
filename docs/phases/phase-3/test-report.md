@@ -907,3 +907,90 @@ Nothing in the job contradicts AC11. Notes:
 ### Coverage
 
 Pending the finished tree.
+
+## P3-S6: Record live context evals within a dollar cap
+
+Spec: [p3-s6-live-context-evals.md](slices/p3-s6-live-context-evals.md). Tests: [`tests/evals/test_p3_s6_live_context_evals.py`](../../../tests/evals/test_p3_s6_live_context_evals.py) (AC1 to AC9, 37 cases) and [`tests/integration/test_p3_s6_live_evals_workflow.py`](../../../tests/integration/test_p3_s6_live_evals_workflow.py) (AC10 and AC11, 33 cases). They were written from the spec's criteria, Limits and Interfaces, design.md (Spend and caps) and ADR 0015, while the developer built the slice and before any of its code was read. No test makes a live call.
+
+**Status: pending implementation.** These results come from the tree before the developer's code:
+- The 33 workflow cases run against the main session's `live.yml`. 31 pass. AC11's 2 fail because `evals live` doesn't accept `--mode`, `--max-usd`, `--max-cost-usd` or `--case` yet.
+- In the evals file, 27 of 37 fail for the same reason. Of the 10 that pass, one is AC6's P1-S16 control. The other 9 expect a usage error, which today's parser gives for a different reason, so they mean something only once the flags exist.
+
+Re-run on the finished tree before the PR.
+
+### Gate
+
+Pending the finished tree. So far:
+- `ruff format --check` and `ruff check`: clean on the new and changed test files.
+- `uv run pytest tests/evals -q`: 613 passed, 3 skipped, 27 failed. All 27 are this slice's, as above.
+- The changed P3-S16 suite, with P3-S8's workflow tests: 93 passed.
+
+### Seam and set-up (assumed)
+
+- **`evals live`**, in process through `review_bot.evals.main(argv, sdk_call=fake)`, P1-S16's seam. Each test runs from a temporary working directory with `CI` and `GITHUB_EVENT_NAME` unset.
+- **Cases:** `tmp_path` copies of `sample-context`, `clean-context` and `injection-tool-result`, without recordings. They come from P3-S5's `copy_cases`, which also copies a sibling diff named by a relative path.
+- **The fake** picks its script from the file the case's diff names. In context mode it plays the CLI as P3-S3's suite does:
+  - the init message, listing the three tools;
+  - tool calls through the provider's in-process `repo` server (`fake_mcp.tool_call`);
+  - a result with `total_cost_usd`, or with none for AC4.
+
+  A cap hit is a result with subtype `error_max_budget_usd` or `error_max_turns`.
+- **AC10 and AC11** read `.github/workflows/live.yml` as P3-S16's and P3-S8's suites do. Each job's live step is run with bash and a fake `uv` that records its argv and environment.
+- **AC11** passes the recorded argv to the real `evals` CLI in an empty directory, with `CI` set and `GITHUB_EVENT_NAME=push`.
+  - A parse that succeeds stops at the CI guard: exit 2, the refusal message, no call, and the directory left empty.
+  - `tests/evals/cases` doesn't exist there, so no case is loaded, and S9's case IDs don't matter.
+  - A control (`--no-such-flag`) gives a different message.
+
+### Criteria
+
+Test names drop the `test_p3_s6_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_two_cases_three_runs_write_fresh_context_recordings`: mode `context`, kind `live`, 3 runs each with one `read` tool call and `usage.cost_usd` `"0.05"`, freshness fields equal to `freshness_fields(..., mode="context")` (`repo_tree` included), and no diff-mode file. `ac1_replay_in_context_mode_scores_the_recording_without_a_stale_problem`. `ac1_cap_hit_run_is_recorded_with_its_cap` ×2 (`{"category": "permanent", "cap": "cost"}`, and `"turns"`). `ac1_failed_run_without_a_cap_records_no_cap` (a transient failure records exactly `{"category": "transient"}`) | pending (5) |
+| AC2 | `ac2_context_mode_refuses_before_any_call` ×3 (no `--max-usd`; no `--max-cost-usd`; 6 × 0.30 > 1.50): no call, no recording, no audit log. `ac2_over_plan_refusal_names_planned_calls_cap_and_allowance` (`6 calls`, `--max-cost-usd 0.30`, `--max-usd 1.50`). `ac2_plan_exactly_at_the_allowance_runs` (6 × 0.25 = 1.50). `ac2_interfaces_money_flags_must_be_decimals_above_0` ×8 (`0`, `-1`, `abc` and `nan` for each flag). `ac2_ci_set_still_refuses`. `ac2_short_max_calls_still_refuses` | pending (14) |
+| AC3 | `ac3_budget_stops_further_calls_and_keeps_the_cut_short_cases_old_file`: each call reports $0.50 against a $0.30 cap and $1.80, so 4 calls are made. The first case is written, and the second's old file is unchanged byte for byte. Stdout has `stopped: budget`, the exit is 1, and stderr names the case cut short. `ac3_a_case_cut_short_without_an_old_file_writes_none`. `ac3_costs_within_the_cap_never_stop_the_run` (control) | pending (3) |
+| AC4 | `ac4_unreported_cost_counts_as_max_cost_usd` ×3: an unreported second cost stops the run after 2 calls; a reported 0.10 lets the third call start (control); a negative cost, which P3-S3 AC6 reads as none, stops it after 2 | pending (3) |
+| AC5 | `ac5_only_the_named_cases_run_and_are_planned` (3 cases under `--cases`, `--max-calls 2`). `ac5_unknown_case_id_exits_2_naming_it` | pending (2) |
+| AC6 | `ac6_diff_mode_over_its_allowance_refuses_before_any_call`. `ac6_diff_mode_with_the_flags_writes_the_diff_recording_capped` (`recordings/live/`, `max_budget_usd` 0.10). `ac6_diff_mode_stops_on_budget_too`. `ac6_diff_mode_without_the_flags_is_p1_s16s_command`: no budget passed to the CLI, no stop, no `spent=`. The P1-S16 and P3-S16 eval suites pass unchanged | pending (4) |
+| AC7 | `ac7_every_call_has_retries_0_and_the_per_call_budget`: `CLAUDE_CODE_MAX_RETRIES` is `0` and `max_budget_usd` 0.30, with `REVIEW_BOT_MAX_RETRIES=5` and `REVIEW_BOT_MAX_COST_USD=9.99` set. `ac7_live_audit_log_records_each_calls_cost` (the `agent` `called` records hold `"0.05"`, `"0.1234"` and null) | pending (2) |
+| AC8 | `ac8_report_shows_tool_calls_cost_cap_hits_and_ends_with_spent`. In `sample-context`, runs of 1, 2 and 3 tool calls give a mean of 2 and a largest of 3, and the case costs $0.30. `clean-context` has one cap-hit run and costs $0.50. The last stdout line is `spent=$0.80 of --max-usd $1.80`. `ac8_cap_hit_count_is_zero_when_no_run_hit_a_cap` | pending (2) |
+| AC9 | `ac9_file_text_the_model_read_is_not_in_the_recording`: a sentinel appended to the repository file is in the tool result the fake received. Neither it nor the grep literal is in the recording. Each tool call holds only P3-S5's keys, and each span only `path`, `first_line` and `last_line` | pending (1) |
+| AC10 | `ac10_step_choice_adds_evals_diff_and_evals_context`. `ac10_live_step_runs_exactly_the_spec_arguments` ×2: the recorded argv equals the spec's list, with the 9 IDs in the design table's order. `ac10_planned_calls_times_the_cap_is_the_design_tables_allowance` ×2. `ac10_live_step_runs_with_retries_0` ×2. `ac10_amounts_are_literals_on_the_command_line` ×2. P3-S16 AC3 to AC6, per job: `ac10_s16_ac3_job_runs_on_main_only_read_only_and_bounded` ×2, `ac10_s16_ac3_evals_jobs_share_the_other_jobs_concurrency_group`, `ac10_s16_ac4_api_key_reaches_only_the_live_step` ×2, `ac10_s16_ac4_choice_is_read_only_in_the_jobs_if` ×2, `ac10_s16_ac5_upload_runs_always_and_is_kept_90_days` ×2, `ac10_s16_ac5_artifact_holds_the_captured_stdout_and_stderr` ×2, `ac10_s16_ac5_artifact_holds_every_recording_written` ×2, `ac10_s16_ac5_artifact_holds_the_live_audit_log` ×2, `ac10_s16_ac5_each_mode_uploads_its_own_recordings_only`, `ac10_s16_ac5_a_failed_run_fails_the_step_and_keeps_its_output` ×2, `ac10_s16_ac6_job_isnt_named_gate` ×2. P3-S16's own suite also runs over every job | pass (29) |
+| AC11 | `ac11_real_parser_accepts_the_steps_arguments_with_no_call_or_case_loaded` ×2. `ac11_control_an_argument_the_parser_rejects_isnt_the_ci_refusal` ×2 | fail (2), pending implementation; pass (2) |
+
+### Failures
+
+None besides the missing implementation. To be confirmed on the finished tree.
+
+### Earlier suites changed
+
+No assertion was weakened.
+
+- **`tests/integration/test_p3_s16_live_workflow.py`**, for S16 AC1 as completed by S6 AC10:
+  - `CHOICES` is now `smoke, backfill, evals-diff, evals-context`, so the AC1 option-list test and the AC3 off-`main` tests cover the new choices.
+  - In the non-option cases, `evals-diff` is an option now, so it is replaced with `evals` and `evals-diff ` (with a trailing space).
+
+### Readings for the designer
+
+1. **AC3, "less than":** a call starts while `--max-usd`, less the spend counted so far, is at least `--max-cost-usd`. So with exactly one cap left, one more call starts, as in P3-S8 AC8. Every reported cost up to the cap fits the pre-flight plan, so the stop is reached only by a call that overshoots its cap (the CLI's one-turn overshoot) or by unreported costs. The tests use overshoots.
+2. **AC3, "stderr names it":** read as a stderr line naming the case cut short, other than its `run 1/3` progress line. The wording isn't pinned.
+3. **AC8's formats aren't given.** In each case's stdout block, the tests look for:
+   - a `tool calls` line with `mean` 2 and `largest` 3;
+   - the case's cost, as `$0.30` or `$0.3`;
+   - a `cap-hit` line with a count or a run number.
+
+   `spent=$S` is read as the sum of reported costs, printed as `0.8` or `0.80`. The spec doesn't say whether S counts an unreported cost at the full cap, so no test pins that.
+4. **AC6, one dollar flag only, in diff mode:** the spec doesn't say whether `--max-usd` without `--max-cost-usd` (or the reverse) refuses in diff mode, as it does in context mode. Not tested.
+5. **AC1, a cap hit's category:** read as `permanent`, per P3-S3 AC5 and ADR 0015.
+6. **AC2, the message for a missing flag:** the tests require only the missing flag's name. The planned calls, the cap and the allowance are required in the over-plan message.
+
+### On live.yml's `evals-diff` and `evals-context` jobs (main session)
+
+Nothing contradicts AC10 or P3-S16 AC3 to AC6. Two observations:
+- The `evals-diff` upload's `tests/evals/cases/*/recordings/live/` also matches the Phase 1 cases' committed diff-mode recordings, which this run doesn't write. So the artifact holds every recording written, plus those.
+- Neither job's checkout sets `fetch-depth: 0`. Neither AC10 nor S16 AC3 needs it, because each case's `repo` is built from its own directory.
+
+### Coverage
+
+Pending the finished tree.

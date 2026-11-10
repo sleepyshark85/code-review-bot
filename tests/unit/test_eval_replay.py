@@ -342,16 +342,15 @@ def test_require_live_fails_anything_else(result: CaseResult, expected: str) -> 
     [CaseResult("calc", None, None), live_result(model="claude-other")],
     ids=["no_recording", "other_model"],
 )
-def test_require_live_in_context_mode_says_where_a_live_context_recording_goes(
+def test_require_live_in_context_mode_names_the_command_that_records_one(
     result: CaseResult,
 ) -> None:
     [problem] = require_live(result, "claude-opus-5-5", mode="context").problems
 
     assert problem.endswith(
-        "; no command records a live context run yet (P3-S6); one goes in "
-        "recordings/live-context/recording.json"
+        "; record one with python -m review_bot.evals live --cases DIR --mode context --runs N "
+        "--max-calls M --max-usd X --max-cost-usd Y"
     )
-    assert "evals live" not in problem
 
 
 def test_freshness_fields_name_a_case_whose_diff_cant_be_reviewed(tmp_path: Path) -> None:
@@ -555,8 +554,8 @@ def test_replay_cases_tells_how_to_replace_a_stale_live_context_recording(tmp_pa
     [problem] = replay_one(tmp_path, mode="context").problems
 
     assert problem.endswith(
-        "Record it again: no command records a live context run yet (P3-S6); one goes in "
-        "recordings/live-context/recording.json"
+        "Record it again with python -m review_bot.evals live --cases DIR --mode context "
+        "--runs N --max-calls M --max-usd X --max-cost-usd Y"
     )
 
 

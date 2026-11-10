@@ -1,6 +1,6 @@
 # P3-S6: Record live context evals within a dollar cap
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P3-S3, P3-S5, P3-S16
 - **Touches:** `evals` (`live`, `cli`, `render`), `audit`, `.github/workflows/live.yml` (main session, from this spec: the `evals-diff` and `evals-context` choices), `tests/` (the tester parses the workflow)
 
@@ -32,3 +32,4 @@ As P1-S16: sequential calls, each one attempt. Spend is bounded by `--max-usd`, 
 
 ## Notes
 - **README (main session):** describe `--mode context`, `--case`, `--max-usd` and `--max-cost-usd`.
+- **Build choices, developer, 2026-11-10:** diff mode takes both amounts or neither (one alone exits 2). `live` runs the tools at the default caps, as replay does, ignoring their variables, and takes the cost cap only from `--max-cost-usd`. Recordings now always hold `mode`, and `usage.cost_usd` whenever reported, in diff mode too. The flags' USD parser moved from `pr` to `spend` for both commands. A failed run holds no `tool_calls` and no cost, since `ProviderError` carries neither, so it counts at the cap.
