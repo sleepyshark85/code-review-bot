@@ -1,6 +1,6 @@
 # P3-S17: Let this repository's own pull requests reach a shadow review
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** none
 - **Touches:** `tests/integration/` (six files' stand-in credentials; the guard and AC tests), `.review-bot.toml` (new, repository root), README, `CONVENTIONS.md`. `src/` is unchanged.
 
@@ -32,7 +32,7 @@ None new. The secret scan and its limits are unchanged ([P1-S3 Limits](../../pha
 - Excluding large test files: they are code, so a PR still over the cap stays `too_large`.
 - Proving that the Q1 sample is reached: P2-S12 measures it (#67).
 - **Review check, not a test:** no file under `tests/evals/cases/**` or `tests/fixtures/**` changes; they stay byte-identical to `main`.
-- **Still blocked, by design:** removed and context lines are scanned ([P1-S3 AC2](../../phase-1/slices/p1-s3-secret-block.md#acceptance-criteria)). So S17's own PR, any PR whose hunks include an old fake value, and any PR whose hunks include a hit line in a listed file or in `docs/phases/phase-1/slices/p1-s3-secret-block.md` stay `blocked_secret`.
+- **Still blocked, by design:** removed and context lines are scanned ([P1-S3 AC2](../../phase-1/slices/p1-s3-secret-block.md#acceptance-criteria)). So S17's own PR, any later PR whose hunks include this spec's quoted fake values (AC2, AC3), any PR whose hunks include an old fake value, and any PR whose hunks include a hit line in a listed file or in `docs/phases/phase-1/slices/p1-s3-secret-block.md` stay `blocked_secret`.
 - The config applies only to PRs whose base holds it ([ADR 0008](../../../adr/0008-pull-request-action-with-github-token.md)).
 
 ## Notes

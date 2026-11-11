@@ -15,6 +15,7 @@ criteria).
 """
 
 import importlib
+import inspect
 import subprocess
 import tomllib
 from collections.abc import Mapping
@@ -371,4 +372,5 @@ def test_p3_s17_ac9_suites_still_use_the_test_key_sentinel(module_name, prefix):
     module = importlib.import_module(module_name)
 
     assert module.KEY_SENTINEL == "test-key-sentinel"
-    assert any(name.startswith(prefix) for name in vars(module)), prefix
+    criterion_tests = [test for name, test in vars(module).items() if name.startswith(prefix)]
+    assert any("KEY_SENTINEL" in inspect.getsource(test) for test in criterion_tests), prefix
