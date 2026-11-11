@@ -28,7 +28,7 @@ from stream_support import (
 
 pytestmark = pytest.mark.integration
 
-API_KEY = "test-key-sentinel"
+KEY_SENTINEL = "test-key-sentinel"
 
 # `getattr` first: assigning to a renamed method would silently leave the real CLI in place.
 REAL_QUERY_CHILD = """
@@ -142,11 +142,11 @@ def test_p0_s4_ac9_missing_cli_exits_7_with_one_line(run_real_query):
 
 
 def test_p0_s4_ac11_key_written_by_the_cli_reaches_neither_stream(run_real_query):
-    completed = run_real_query("crash_after_the_prompt", api_key=API_KEY)
+    completed = run_real_query("crash_after_the_prompt", api_key=KEY_SENTINEL)
 
     assert completed.returncode == 12, completed.stderr
-    assert API_KEY not in completed.stdout
-    assert API_KEY not in completed.stderr
+    assert KEY_SENTINEL not in completed.stdout
+    assert KEY_SENTINEL not in completed.stderr
 
 
 def test_p0_s4_ac6_success_then_the_clis_exit_still_delivers(run_real_query):

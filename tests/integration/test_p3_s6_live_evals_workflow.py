@@ -157,7 +157,7 @@ def run_live_step(
         "RUNNER_TEMP": str(runner_temp),
         "FAKE_UV_LOG": str(log),
         "FAKE_UV_EXIT": str(exit_code),
-        "ANTHROPIC_API_KEY": "fake-key-for-the-test",
+        "ANTHROPIC_API_KEY": "test-placeholder-not-a-key",
     }
     done = run_script(step["run"], env, workspace)
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
