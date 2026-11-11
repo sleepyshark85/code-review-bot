@@ -149,6 +149,7 @@ tests/
 ## 12. Security
 
 - No secrets in code, tests, logs or git history. Read them from the environment or a secret manager.
+- A stand-in credential in a test must not take a form the bot's own secret scan reports, unless its file tests secret detection and is on the guard's list (P3-S17). Use a value with a placeholder word, such as `test-placeholder-not-a-key`, or build the value at run time.
 - Treat all external input as hostile: files, diffs, HTTP bodies, environment variables, and **LLM output**.
 - Never call `eval`, `exec`, `pickle.load` or `yaml.load` on untrusted data. Use `yaml.safe_load` and `json`.
 - `subprocess`: pass an argument list, never `shell=True`, and always set a timeout.
