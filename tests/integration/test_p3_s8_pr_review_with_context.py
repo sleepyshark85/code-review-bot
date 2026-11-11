@@ -952,8 +952,8 @@ def run_live_step(workflow: dict[Any, Any], tmp_path: Path, exit_code: int = 0) 
         "RUNNER_TEMP": str(runner_temp),
         "FAKE_UV_LOG": str(log),
         "FAKE_UV_EXIT": str(exit_code),
-        "ANTHROPIC_API_KEY": "fake-key-for-the-test",
-        "GITHUB_TOKEN": "fake-token-for-the-test",
+        "ANTHROPIC_API_KEY": "test-placeholder-not-a-key",
+        "GITHUB_TOKEN": "test-placeholder-not-a-token",
     }
     done = run_script(step["run"], env, tmp_path)
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]

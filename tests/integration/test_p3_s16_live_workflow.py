@@ -229,7 +229,7 @@ def run_review_step(workflow: dict[Any, Any], tmp_path: Path, exit_code: int = 0
         "FAKE_UV_LOG": str(log),
         "FAKE_UV_EXIT": str(exit_code),
         # What `${{ secrets.ANTHROPIC_API_KEY }}` becomes on the runner.
-        "ANTHROPIC_API_KEY": "fake-key-for-the-test",
+        "ANTHROPIC_API_KEY": "test-placeholder-not-a-key",
     }
     (runner_temp / "live").mkdir()
     (runner_temp / "live" / "smoke.diff").write_text("", encoding="utf-8")
@@ -563,7 +563,7 @@ def test_p3_s16_ac4_api_key_is_only_in_the_review_steps_env(workflow):
 
 def test_p3_s16_ac4_the_key_reaches_the_review_command(smoke_run):
     for call in smoke_run.calls:
-        assert call.env.get("ANTHROPIC_API_KEY") == "fake-key-for-the-test"
+        assert call.env.get("ANTHROPIC_API_KEY") == "test-placeholder-not-a-key"
 
 
 def test_p3_s16_ac4_no_run_block_interpolates_event_or_inputs(workflow):

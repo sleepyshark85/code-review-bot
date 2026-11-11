@@ -31,7 +31,7 @@ from review_bot.providers.claude_agent import ClaudeAgentProvider
 
 pytestmark = pytest.mark.integration
 
-API_KEY = "test-key-sentinel"
+KEY_SENTINEL = "test-key-sentinel"
 MODEL_TEXT = "MODEL-SENTINEL"
 
 
@@ -77,29 +77,29 @@ def test_p0_s4_ac10_auth_names_the_login_and_the_key(claude_review, script):
 @pytest.mark.parametrize(
     "error",
     [
-        ProcessError("Command failed", exit_code=1, stderr=f"auth failed for {API_KEY}"),
-        ProcessError(f"Command failed for {API_KEY}", exit_code=1),
-        ProcessError(f"{API_KEY}", exit_code=1, stderr=API_KEY),
+        ProcessError("Command failed", exit_code=1, stderr=f"auth failed for {KEY_SENTINEL}"),
+        ProcessError(f"Command failed for {KEY_SENTINEL}", exit_code=1),
+        ProcessError(f"{KEY_SENTINEL}", exit_code=1, stderr=KEY_SENTINEL),
     ],
     ids=["in_stderr", "in_message", "in_both"],
 )
 def test_p0_s4_ac11_key_in_a_process_error_reaches_neither_stream(
     claude_review, monkeypatch, error
 ):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY_SENTINEL)
 
     run = claude_review(FakeSdk(error))
 
     assert run.exit_code == 12, run.stderr
-    assert API_KEY not in run.stdout
-    assert API_KEY not in run.stderr
+    assert KEY_SENTINEL not in run.stdout
+    assert KEY_SENTINEL not in run.stderr
 
 
 def test_p0_s4_ac11_control_the_fake_error_really_holds_the_key():
-    error = ProcessError("Command failed", exit_code=1, stderr=f"auth failed for {API_KEY}")
+    error = ProcessError("Command failed", exit_code=1, stderr=f"auth failed for {KEY_SENTINEL}")
 
-    assert API_KEY in str(error)
-    assert API_KEY in error.stderr
+    assert KEY_SENTINEL in str(error)
+    assert KEY_SENTINEL in error.stderr
 
 
 # --- AC12 -----------------------------------------------------------------------------------------

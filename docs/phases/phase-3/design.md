@@ -8,7 +8,7 @@ Fewer guesses, deeper findings: the model can look up callers and definitions in
 
 Read for this repository, the gate is: **on the same pull requests and eval cases, a context review's precision and recall both improve on the Phase 2 review's, and every live step stays within its share of the $20 the user approved.** [How the gate is evidenced](#how-the-gate-is-evidenced) says what closes each clause, and [Q3](#6-open-questions) and [Q4](#6-open-questions) define "improve" and "within budget". Autonomy: comment.
 
-**Phase 2's gate isn't met yet.** P2-S12 is Done, released early on 2026-11-09 as v0.3.0, and its evidence criteria (the shadow weeks, precision, the labelled set) are open in issue [#67](https://github.com/sleepyshark85/code-review-bot/issues/67). The README starts a phase only after the previous gate. Slices S1 to S14 and S16 build and test entirely offline while Phase 2's shadow weeks run. Nothing they ship changes which findings a Phase 2 shadow run reports unless a person turns it on: S11 adds owners to the report and summary, but no finding. Only S15, the close, waits for P2-S12 AC1 to AC6 (#67): the committed labelled set ([Q11](#6-open-questions)).
+**Phase 2's gate isn't met yet.** P2-S12 is Done, released early on 2026-11-09 as v0.3.0, and its evidence criteria (the shadow weeks, precision, the labelled set) are open in issue [#67](https://github.com/sleepyshark85/code-review-bot/issues/67). The README starts a phase only after the previous gate. Slices S1 to S14 and S16 build and test entirely offline while Phase 2's shadow weeks run. Nothing they ship changes which findings a Phase 2 shadow run reports unless a person turns it on: S11 adds owners to the report and summary, but no finding. Only S15, the close, waits for P2-S12 AC1 to AC6 (#67): the committed labelled set ([Q11](#6-open-questions)). S17 (issue #98, approved by the user 2026-11-11) deliberately changes which of this repository's PRs a Phase 2 shadow run reviews, and what it sends from each: eval recordings are excluded, and test fixtures stop tripping the secret scan. Committing `.review-bot.toml` turns the exclusion on; the fixture fix takes effect when S17 merges. Each shadow report's `config.source` shows whether the run used it.
 
 ## 2. Architecture
 
@@ -286,8 +286,9 @@ Order of work; real dependencies are in each spec. Slices on one line can run in
 14. [P3-S14: Turn on context reviews in CI with one repository variable](slices/p3-s14-context-in-ci.md)
 15. [P3-S15: Close Phase 3: measure the gate, release 0.4.0](slices/p3-s15-close-phase-3.md)
 16. [P3-S16: Run the live smoke from a manual workflow, and accept CI only for such a dispatch](slices/p3-s16-live-steps-workflow.md)
+17. [P3-S17: Let this repository's own pull requests reach a shadow review](slices/p3-s17-shadow-sample-supply.md) (issue #98, approved by the user 2026-11-11)
 
-**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 → S3 ∥ S5 ∥ S12 → S16 ∥ S7 ∥ S10 → S6 ∥ S8 → S9 ∥ S13 → S14 → S15 (after S16 and P2-S12 AC1 to AC6, #67).
+**Parallel waves:** S1 ∥ S11 → S2 ∥ S4 → S3 ∥ S5 ∥ S12 → S16 ∥ S7 ∥ S10 → S6 ∥ S8 → S9 ∥ S13 → S14 → S15 (after S16 and P2-S12 AC1 to AC6, #67). S17 depends only on merged slices and may merge before S15.
 
 **Smoke stop rule.** S16's `smoke` runs as soon as S16 merges. If it shows any built-in tool available, or the three MCP tools missing, S6 and S8 pause and S3 goes back to design.
 

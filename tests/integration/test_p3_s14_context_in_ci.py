@@ -82,7 +82,7 @@ PERMISSIONS = {
     "collect": {"contents": "read", "pull-requests": "read"},
 }
 TOKEN = "ghs_s14_canary"  # noqa: S105 - a canary to look for, not a credential
-API_KEY = "fake-key-for-the-test"
+API_KEY = "test-placeholder-not-a-key"
 NUMBER = "7"
 # Values the context check must refuse: case and spacing variants, other words, shell text.
 UNKNOWN_VALUES = [

@@ -1240,3 +1240,60 @@ No assertion was weakened. Each change follows from something P3-S14 amends, and
 ### Coverage
 
 The slice changes no code under `src/`, so there is no module coverage to report. The tests reproduce GitHub's expression evaluation with P2-S3's evaluator; GitHub's own evaluation is the only part not exercised.
+
+## P3-S17: Let this repository's own pull requests reach a shadow review
+
+Spec: [p3-s17-shadow-sample-supply.md](slices/p3-s17-shadow-sample-supply.md). Tests: [`tests/integration/test_p3_s17_shadow_sample_supply.py`](../../../tests/integration/test_p3_s17_shadow_sample_supply.py), 27 cases, written from the spec's criteria. `src/` doesn't change, so there was no implementation to read.
+
+**Status: AC1 to AC3 and AC5 to AC9 pass, 27 of 27. AC4 was removed by the spec.**
+
+### Gate
+
+Only the suites below were run, one at a time, not the full suite (it runs out of memory locally; CI runs it). `ruff format --check`, `ruff check` and `mypy` are clean on the whole tree. The S17 file gives 27 passed. The six rewritten files, `test_p1_s5_provider_notices.py`, `tests/unit/test_secret_scan.py` and `test_p1_s3_secret_block.py` together give 776 passed and 2 skipped (`test_p0_s4_real_sdk.py`: no `/dev/full` on Windows, as before).
+
+`scan_secrets` over every tracked file in the repository hits only `tests/integration/test_p1_s3_secret_block.py`, `tests/unit/test_secret_scan.py` (both on the guard's list), `docs/phases/phase-1/slices/p1-s3-secret-block.md` and this slice's own spec, as the spec's Out of scope expects. The new test file has no hit, and the untracked `tests/evals/labelled/` has none either.
+
+### Seam and set-up
+
+- AC1 and AC2 run `review-bot` in process (`cli.main`, `--provider mock`) over a one-file diff, through the integration `bot` fixture.
+- AC5 to AC8 build a P2-S9 pull request repository (`make_pr`, `run_pr`): a base commit holding the bytes of this repository's committed `.review-bot.toml`, then a head commit with the changed files. `review_bot.pr.cli.main run --mode shadow` runs over it with a `MockProvider`.
+- AC3's guard lists files with `git ls-files -z tests` from the repository root and scans each, decoded as UTF-8 with replacement, so no tracked file is skipped. The check takes a `{path: text}` mapping, so the negative case passes its own file set.
+
+### Criteria
+
+| AC | Tests (`test_p3_s17_…`) | Result |
+|---|---|---|
+| AC1 | `ac1_placeholder_value_is_sent_to_the_provider_once` ×4 (Python assignment, JSON `ANTHROPIC_API_KEY`, JSON `GITHUB_TOKEN`, YAML `token`): one request, the line in the prompt, exit not 16. `ac1_all_four_placeholder_lines_in_one_diff_are_reviewed` | pass (5) |
+| AC2 | `ac2_fake_value_still_exits_16_without_a_call` ×6 (`fake-key-for-the-test`, `test-key-sentinel`, JSON `fake-token-for-the-test`, `PLACEHOLDER_API_KEY = "V"`, YAML `TEST_PLACEHOLDER_TOKEN: "V"`, JSON assembled anthropic-key). `ac2_v_is_a_value_the_scan_reports` (V's precondition) | pass (7) |
+| AC3 | `ac3_no_tracked_test_file_off_the_list_has_a_scanner_hit` (the guard). `ac3_the_six_rewritten_files_are_tracked_unlisted_and_clean`. `ac3_every_listed_file_is_tracked_and_still_needs_its_place`. `ac3_an_unlisted_hit_fails_naming_path_line_and_kind_not_the_value` (negative: an unlisted path holding an `API_KEY` assignment of `fake-key-for-the-test` fails naming `path:3: assigned-credential`; a listed path with a hit in the same set isn't named; neither value appears). `ac3_a_clean_file_set_passes_the_check`. `ac3_this_file_has_no_scanner_hit` | pass (6) |
+| AC4 | Removed by the spec | n/a |
+| AC5 | `ac5_only_the_recording_is_skipped_as_excluded_by_config`: `skipped_files` is exactly the recording with `excluded_by_config`; the other three files' canaries are in the prompt, the recording's isn't; `config.source` is `.review-bot.toml@<base SHA>` | pass (1) |
+| AC6 | `ac6_recordings_over_the_cap_dont_stop_the_review_with_the_config` (two 75,000-byte recordings in two cases plus a 2,000-byte `src/app.py`, cap 120000: `reviewed`, both recordings excluded, the source in the prompt). `ac6_the_same_pr_without_the_config_is_too_large` (`skipped`, `too_large`, no request) | pass (2) |
+| AC7 | `ac7_secret_in_an_excluded_recording_still_blocks`: an assembled aws-access-key in the excluded recording gives `blocked_secret`, no request, and the value is in neither `shadow.json` nor stderr | pass (1) |
+| AC8 | `ac8_committed_config_sets_only_the_recordings_exclusion` (the parsed file equals `{"exclude": ["tests/evals/cases/*/recordings/**"]}`). `ac8_threshold_and_max_open_comments_stay_at_their_defaults` (a run reports `low` and 10) | pass (2) |
+| AC9 | `ac9_suites_still_use_the_test_key_sentinel` ×3: `KEY_SENTINEL` is `test-key-sentinel` in the P0-S4 messages and real-SDK suites and the P1-S5 suite, and each still holds its AC11 or AC8 tests. Those tests themselves pass in the run above | pass (3) |
+
+A mutation check by hand: the guard's `unlisted_hits`, applied to the six files as they are at `HEAD` before this slice, reports all seven earlier hits (`test_p3_s8_pr_review_with_context.py` held two).
+
+### Earlier suites changed
+
+No assertion was changed; only the stand-in values and one constant's name.
+
+- `test_p0_s4_messages.py`, `test_p0_s4_real_sdk.py`: the constant `API_KEY` is renamed `KEY_SENTINEL`, as P1-S5's suite already names it, so the line isn't a credential assignment. The value stays `test-key-sentinel` (AC9).
+- `test_p3_s6_live_evals_workflow.py`, `test_p3_s14_context_in_ci.py`, `test_p3_s16_live_workflow.py`: `fake-key-for-the-test` becomes `test-placeholder-not-a-key` (in S16, also in the assertion that compares it).
+- `test_p3_s8_pr_review_with_context.py`: `fake-key-for-the-test` and `fake-token-for-the-test` become `test-placeholder-not-a-key` and `test-placeholder-not-a-token`.
+
+No file under `tests/evals/cases/**` or `tests/fixtures/**` changed.
+
+### Failures
+
+None.
+
+### Readings for the designer
+
+1. **The guard's list** holds only the two files that hit today. `ac3_every_listed_file_is_tracked_and_still_needs_its_place` fails if a listed file stops hitting, so the list can't keep an entry that would hide a new hit.
+2. **The guard scans the working tree** of tracked files, not `HEAD`'s blobs. In CI they're the same; locally, an unstaged edit is checked too.
+
+### Coverage
+
+The slice changes no code under `src/`, so there is no module coverage to report.
