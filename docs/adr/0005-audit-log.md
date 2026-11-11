@@ -22,4 +22,4 @@ Every run appends versioned records to a local JSONL file, on by default, and an
 - **Continue when the log fails:** keeps reviews flowing, but allows untraced calls to a vendor.
 - **Store rationale text:** convenient for Phase 2, but it can quote the diff or an undetected secret.
 - **Discard CLI diagnostics:** the strictest option and the user's to choose, but failed calls stay undiagnosable.
-- **SQLite or a logging service:** query power nobody needs yet, and JSONL is what the README names.
+- **SQLite or a logging service:** query power nobody needs yet, and JSONL is what the roadmap names.

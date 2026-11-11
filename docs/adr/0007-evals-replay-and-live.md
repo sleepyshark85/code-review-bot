@@ -12,7 +12,7 @@ Eval cases are versioned files holding a diff, its expectations and its pass thr
 
 ## Consequences
 - A passing CI eval means the pipeline still handles a past response correctly. It says nothing about the model today, and replay output states this.
-- Any change to the case, or to what the model would see, needs a new live run to get CI green, which costs tokens and needs a login. That's the prompt gate the README wants, arriving earlier.
+- Any change to the case, or to what the model would see, needs a new live run to get CI green, which costs tokens and needs a login. That's the prompt gate the roadmap wants, arriving earlier.
 - Injection is scored on what the model returned, so verification dropping a requested finding can't hide a compromised model.
 - Hand-written recordings are marked synthetic, sit apart from live ones and can never count as a measurement. They exist to prove the scorer can fail.
 - A new model isn't detected by replay alone, so the final gate test requires recordings of the default model.

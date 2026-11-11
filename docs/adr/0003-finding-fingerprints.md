@@ -22,6 +22,6 @@ A fingerprint is a versioned hash of the file, the rule, the whitespace-normalis
 - **Include the line number:** simplest, but any edit above a finding would change its identity.
 - **Include the rationale:** distinguishes findings, but model wording varies on every run.
 - **Dedupe by location alone:** would drop a real AI finding about a different problem on the same line as a rule finding, such as an unvalidated path on the open call.
-- **Dedupe by exact fingerprint only:** the README's wording, but it misses the same issue anchored on a neighbouring line.
+- **Dedupe by exact fingerprint only:** the roadmap's wording, but it misses the same issue anchored on a neighbouring line.
 - **Dedupe regardless of severity:** simpler, but a model tag could then suppress a more serious finding.
 - **Infer the rule from the rationale's words:** fragile, and wrong in ways nobody could test.
