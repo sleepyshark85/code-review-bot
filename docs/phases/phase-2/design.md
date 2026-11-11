@@ -5,7 +5,7 @@
 
 ## 1. Goal and gate
 
-Run the bot on this repository's own pull requests (`sleepyshark85/code-review-bot`) without creating noise. It starts in shadow mode, reporting what it would post, and posts and maintains its own comments once the user decides. Scope and gate: [README Phase 2](../../roadmap.md#phase-2-integrated). The user's decision of 2026-11-08 replaces "a RightShip repo" with this repository, starts with an Action posting through `GITHUB_TOKEN`, and leaves the GitHub App optional and later ([ADR 0008](../../adr/0008-pull-request-action-with-github-token.md)).
+Run the bot on this repository's own pull requests (`sleepyshark85/code-review-bot`) without creating noise. It starts in shadow mode, reporting what it would post, and posts and maintains its own comments once the user decides. Scope and gate: [Roadmap Phase 2](../../roadmap.md#phase-2-integrated). The user's decision of 2026-11-08 replaces "a RightShip repo" with this repository, starts with an Action posting through `GITHUB_TOKEN`, and leaves the GitHub App optional and later ([ADR 0008](../../adr/0008-pull-request-action-with-github-token.md)).
 
 Read for dogfooding, the gate is: **weeks of shadow mode on this repo's PRs, with precision measured from the user's judgements; a value baseline from this repo's PR history, captured before comments are turned on; and the user named as owner.** [How the gate is evidenced](#how-the-gate-is-evidenced) says what closes each clause. Autonomy: observe, then comment.
 
@@ -43,7 +43,7 @@ A new package, `review_bot.pr`, with its own entry point `python -m review_bot.p
 
 event → **refuse** (fork, action, no credential in CI, draft in comment mode) → git diff of base...head (from S7, only the hunks changed since the last reviewed commit) → **the Phase 1 pipeline** (secret scan → parse → skip → rules → agent → verify → policy; S2 adds the reviewable-bytes cap after the skip step, S9 adds config exclusions and threshold) → `plan_comments` against the bot's existing comments (none in shadow mode) → `shadow/v1` and Markdown, always written → in comment mode only, apply the plan through `GitHubClient` → summary comment.
 
-A secret hit, an oversize or unreadable diff, a skip, an invalid config or a provider failure still ends in a written report with that outcome, so every event leaves an explicit result ([README targets](../../roadmap.md#targets)).
+A secret hit, an oversize or unreadable diff, a skip, an invalid config or a provider failure still ends in a written report with that outcome, so every event leaves an explicit result ([Roadmap targets](../../roadmap.md#targets)).
 
 ### Interfaces
 

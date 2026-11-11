@@ -4,7 +4,7 @@ Approved by the user on 2026-11-05 (PR #14), with the defaults for Q5 and Q9. Th
 
 ## 1. Goal and gate
 
-Make findings trustworthy, triageable and measurable, with every stage decision on record. Scope and gate: [README Phase 1](../../roadmap.md#phase-1-trustworthy-core). [What the evals prove](#what-the-evals-prove) says how each gate clause is evidenced, because passing CI alone can't close it.
+Make findings trustworthy, triageable and measurable, with every stage decision on record. Scope and gate: [Roadmap Phase 1](../../roadmap.md#phase-1-trustworthy-core). [What the evals prove](#what-the-evals-prove) says how each gate clause is evidenced, because passing CI alone can't close it.
 
 ## 2. Architecture
 

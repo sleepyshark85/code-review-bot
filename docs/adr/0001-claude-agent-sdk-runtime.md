@@ -5,10 +5,10 @@
 - **Phase:** 0
 
 ## Context
-The inherited tool calls an OpenAI API that no longer exists, so it needs a new model runtime. [README Phase 0](../roadmap.md#phase-0-stabilise) names the Claude Agent SDK. It works with the team's existing Claude account, and Phases 3 to 5 need its tools, hooks and subagents. Its cost is that it drives the Claude Code CLI as a subprocess, with agent defaults a single-shot review must not inherit.
+The inherited tool calls an OpenAI API that no longer exists, so it needs a new model runtime. [Roadmap Phase 0](../roadmap.md#phase-0-stabilise) names the Claude Agent SDK. It works with the team's existing Claude account, and Phases 3 to 5 need its tools, hooks and subagents. Its cost is that it drives the Claude Code CLI as a subprocess, with agent defaults a single-shot review must not inherit.
 
 ## Decision
-The Claude provider uses the Claude Agent SDK, pinned to version 0.2.178, locked down as the README specifies and also restricted to explicitly supplied MCP configuration, with lockdown asserted in tests. The CLI's retries are the only retry layer, and our overall deadline setting is the only wall-clock bound. No other module uses the SDK.
+The Claude provider uses the Claude Agent SDK, pinned to version 0.2.178, locked down as the roadmap specifies and also restricted to explicitly supplied MCP configuration, with lockdown asserted in tests. The CLI's retries are the only retry layer, and our overall deadline setting is the only wall-clock bound. No other module uses the SDK.
 
 ## Consequences
 - Later phases get tools, hooks and subagents without changing runtime.

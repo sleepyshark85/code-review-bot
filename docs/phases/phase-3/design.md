@@ -4,7 +4,7 @@
 
 ## 1. Goal and gate
 
-Fewer guesses, deeper findings: the model can look up callers and definitions in the repository before it reports, reads the acceptance criteria of the issues a PR closes, and works under the repository's own domain rules. Each finding records what the model read, findings are routed to code owners, and a finding can carry a suggested fix. Scope and gate: [README Phase 3](../../roadmap.md#phase-3-context-aware). Suggested fixes move here from Phase 2 (Phase 2 Q7, Option A). The GitHub App stays out.
+Fewer guesses, deeper findings: the model can look up callers and definitions in the repository before it reports, reads the acceptance criteria of the issues a PR closes, and works under the repository's own domain rules. Each finding records what the model read, findings are routed to code owners, and a finding can carry a suggested fix. Scope and gate: [Roadmap Phase 3](../../roadmap.md#phase-3-context-aware). Suggested fixes move here from Phase 2 (Phase 2 Q7, Option A). The GitHub App stays out.
 
 Read for this repository, the gate is: **on the same pull requests and eval cases, a context review's precision and recall both improve on the Phase 2 review's, and every live step stays within its share of the $20 the user approved.** [How the gate is evidenced](#how-the-gate-is-evidenced) says what closes each clause, and [Q3](#6-open-questions) and [Q4](#6-open-questions) define "improve" and "within budget". Autonomy: comment.
 
