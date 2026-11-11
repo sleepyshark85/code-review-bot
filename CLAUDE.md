@@ -6,7 +6,9 @@ Read these before working. Don't restate them in other files; link to them.
 
 | File | Holds |
 |---|---|
-| `README.md` | Current state, north star, phases, risks |
+| `README.md` | Status, a short usage guide, and a summary of the plan |
+| `docs/usage.md` | Every command, option, setting and workflow |
+| `docs/roadmap.md` | Current state, north star, phases and gates, ownership, risks |
 | `CONVENTIONS.md` | Python coding conventions (binding for all code) |
 | `docs/phases/phase-N/design.md` | Phase N goal, gate, architecture, and the ordered slice index |
 | `docs/phases/phase-N/slices/pN-sM-*.md` | One slice's spec and acceptance criteria (from `docs/phases/slice-template.md`) |
@@ -64,7 +66,7 @@ A green gate doesn't meet this bar on its own. "It works" is never a reason to l
 - [ ] Follows `CONVENTIONS.md`; any deviation is justified in the slice notes.
 - [ ] The reviewer's verdict is `approve`: no finding of severity `blocker`, `major` or `minor` is open (except a doc-only minor deferred to an issue under the round-2 rule above), and the code meets the quality bar above.
 - [ ] No secrets, no live model calls in tests (use `MockProvider`).
-- [ ] The README is updated if behaviour or usage changed.
+- [ ] `docs/usage.md` (and the README, if the summary changes) is updated if behaviour or usage changed.
 
 ## Releases (per phase)
 

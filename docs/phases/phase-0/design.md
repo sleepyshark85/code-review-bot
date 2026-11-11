@@ -2,7 +2,7 @@
 
 ## 1. Goal and gate
 
-Make the tool people rely on actually work and fail safely, with the model behind one narrow interface. Scope and gate: [README Phase 0](../../../README.md#phase-0-stabilise). `Assignment/` stays untouched, outside the gate: its `openai` import and placeholder key are an accepted exception.
+Make the tool people rely on actually work and fail safely, with the model behind one narrow interface. Scope and gate: [Roadmap Phase 0](../../roadmap.md#phase-0-stabilise). `Assignment/` stays untouched, outside the gate: its `openai` import and placeholder key are an accepted exception.
 
 **No secrets:** the gate relies on the CI step "Scan the whole tree for secrets (gitleaks)". Slice tests add only the narrow check in P0-S1.
 

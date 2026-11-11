@@ -5,7 +5,7 @@
 - **Phase:** 3
 
 ## Context
-The provider interface takes a request and returns findings ([ADR 0002](0002-llm-provider-interface.md)). Tools need a loop between model and code, and the README wants hooks to record the context behind each finding. Recording only in Claude SDK hooks would make the record Claude-specific, so `MockProvider` runs, and every offline test, would record nothing; the README accepts the tool loop itself as Claude-specific but keeps the review call portable.
+The provider interface takes a request and returns findings ([ADR 0002](0002-llm-provider-interface.md)). Tools need a loop between model and code, and the roadmap wants hooks to record the context behind each finding. Recording only in Claude SDK hooks would make the record Claude-specific, so `MockProvider` runs, and every offline test, would record nothing; the roadmap accepts the tool loop itself as Claude-specific but keeps the review call portable.
 
 ## Decision
 A review request may carry a tool executor: the tool definitions and one asynchronous call operation that never raises on model input. The executor records every call in a ledger of files, line spans, outcomes and bytes, with no file content or model text. Providers only drive the loop: `MockProvider` makes scripted calls, and the Claude provider exposes the executor as an in-process MCP server, with a `PreToolUse` hook that denies every other tool. [Signatures](../phases/phase-3/design.md#interfaces).

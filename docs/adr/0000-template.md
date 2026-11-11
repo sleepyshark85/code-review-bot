@@ -5,7 +5,7 @@
 - **Phase:** N
 
 ## Context
-<!-- 2–4 sentences: the problem and the forces at play. Link to the README instead of restating it. -->
+<!-- 2–4 sentences: the problem and the forces at play. Link to the roadmap instead of restating it. -->
 
 ## Decision
 <!-- 1–3 sentences: what we will do. Prose only, no code: link to design.md for signatures. -->
