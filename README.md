@@ -20,12 +20,12 @@ Authentication is your Claude Code login, or `ANTHROPIC_API_KEY` if set. The dif
 |---|---|
 | `review-bot DIFF [--format text\|json\|markdown] [--triage]` | Reviews a diff: built-in rules, then the model. Exits `0` clean, `1` findings, `2` or more on an error |
 
-From a clone (`uv sync`, then prefix each with `uv run`):
+From a clone (`uv sync`, then prefix each with `uv run`), which includes unreleased Phase 3 commands:
 
 | Command | Does |
 |---|---|
 | `python -m review_bot <diff>` | The same as `review-bot` |
-| `python -m review_bot DIFF --context-repo DIR` | Lets the model read the repository through three read-only tools (on `main`, not yet released) |
+| `python -m review_bot DIFF --context-repo DIR` | Lets the model read the repository through three read-only tools |
 | `python -m review_bot.pr shadow\|run` | Writes the review a pull request would get, or posts it (`--mode comment`) |
 | `python -m review_bot.pr label\|collect\|metrics\|compare\|baseline` | Judges findings, gathers reactions, and measures precision, cost and value |
 | `python -m review_bot.evals replay\|compare` | Scores recorded model runs offline |
