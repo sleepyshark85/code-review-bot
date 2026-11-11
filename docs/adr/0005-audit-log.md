@@ -5,7 +5,7 @@
 - **Phase:** 1
 
 ## Context
-[README Phase 1](../../README.md#phase-1-trustworthy-core) requires a JSONL record of every stage decision, and auditors and Phase 2's feedback data will read it. That format is costly to change once consumers exist. The log may also be shared more widely than a developer's machine, while diffs are confidential and may hold secrets the scanner can't recognise.
+[README Phase 1](../roadmap.md#phase-1-trustworthy-core) requires a JSONL record of every stage decision, and auditors and Phase 2's feedback data will read it. That format is costly to change once consumers exist. The log may also be shared more widely than a developer's machine, while diffs are confidential and may hold secrets the scanner can't recognise.
 
 ## Decision
 Every run appends versioned records to a local JSONL file, on by default, and an unwritable log stops the run before the diff is read. Records hold decisions, identifiers and hashes, never diff lines, rationale text or model-chosen strings such as a file name that isn't in the diff. The one exception is scrubbed, size-capped CLI diagnostics on a failed call.

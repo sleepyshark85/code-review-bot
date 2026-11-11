@@ -5,7 +5,7 @@
 - **Phase:** 2
 
 ## Context
-[README Phase 2](../../README.md#phase-2-integrated) asks for a GitHub Action, then an App. The user decided on 2026-11-08 to dogfood on this repository with an Action first, using the workflow's own token, and to leave the App optional and for later. A pull request is hostile input, the job holds a model credential, and this repo's PRs change the bot itself, so whichever code reviews a PR must not come from that PR.
+[README Phase 2](../roadmap.md#phase-2-integrated) asks for a GitHub Action, then an App. The user decided on 2026-11-08 to dogfood on this repository with an Action first, using the workflow's own token, and to leave the App optional and for later. A pull request is hostile input, the job holds a model credential, and this repo's PRs change the bot itself, so whichever code reviews a PR must not come from that PR.
 
 ## Decision
 The review runs in its own workflow on the `pull_request` event only, never `pull_request_target`, for PRs from this repository, never forks. It posts with `GITHUB_TOKEN`, with the narrowest permissions each mode needs. The bot's code, its lock file and its repo config come from the PR's base commit, and the PR contributes only its diff, read through git as data. The review job is never a required check. [Workflow rules](../phases/phase-2/design.md#safety-on-the-pr-path).

@@ -5,7 +5,7 @@
 - **Phase:** 2
 
 ## Context
-[README Phase 2](../../README.md#phase-2-integrated) starts in shadow mode, a report of what the bot would have posted, and its gate needs weeks of these reports judged by a person to measure precision. The report needs to be readable at a glance on the PR and also machine-readable for labelling and metrics, and the format is consumed by later phases, so it is costly to change.
+[README Phase 2](../roadmap.md#phase-2-integrated) starts in shadow mode, a report of what the bot would have posted, and its gate needs weeks of these reports judged by a person to measure precision. The report needs to be readable at a glance on the PR and also machine-readable for labelling and metrics, and the format is consumed by later phases, so it is costly to change.
 
 ## Decision
 Every run, in either mode, writes one versioned JSON document (`shadow/v1`) that embeds the `report/v1` review and lists each comment the bot would create, update, move, resolve or withhold, with its exact body. It also writes a Markdown rendering. The workflow puts the Markdown in the job summary and uploads both, with the audit log, as an artifact kept for 90 days. Judgements and metrics live outside the artifact, in files the user keeps. [Format](../phases/phase-2/design.md#interfaces).

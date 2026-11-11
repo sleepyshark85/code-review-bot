@@ -5,7 +5,7 @@
 - **Phase:** 1
 
 ## Context
-The gate requires that no invalid line anchor survives. The sample diff's hunk headers [declare counts their bodies don't match](../../README.md#1-current-state), so a parser that trusts them either rejects the diff or accepts lines that aren't there. Real runs also report varying lines for one issue, which tempts a tolerant repair. Every later phase's inline comments depend on this rule.
+The gate requires that no invalid line anchor survives. The sample diff's hunk headers [declare counts their bodies don't match](../roadmap.md#1-current-state), so a parser that trusts them either rejects the diff or accepts lines that aren't there. Real runs also report varying lines for one issue, which tempts a tolerant repair. Every later phase's inline comments depend on this rule.
 
 ## Decision
 Valid lines are computed from hunk bodies, using only the header's new start. A model finding survives only if it names a reviewable file and an added or context line in it. Anything else is dropped and logged, never moved to a nearby line. [Rule](../phases/phase-1/design.md#line-anchors) and [worked example](../phases/phase-1/slices/p1-s2-parse-and-skip.md).

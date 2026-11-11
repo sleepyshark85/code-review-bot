@@ -1,6 +1,6 @@
 # Review Bot runbook
 
-For the owner named in the [README](../README.md#ownership). The workflow is [`.github/workflows/review.yml`](../.github/workflows/review.yml); its design is in [Phase 2](phases/phase-2/design.md) and ADRs 0008 to 0012.
+For the owner named in the [README](roadmap.md#ownership). The workflow is [`.github/workflows/review.yml`](../.github/workflows/review.yml); its design is in [Phase 2](phases/phase-2/design.md) and ADRs 0008 to 0012.
 
 ## Turn the bot off, or change its mode
 

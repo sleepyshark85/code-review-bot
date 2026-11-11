@@ -5,7 +5,7 @@
 - **Phase:** 2
 
 ## Context
-[README Phase 0](../../README.md#phase-0-stabilise) says anything shared uses `ANTHROPIC_API_KEY`; the user will add it as a repo secret. Every push to a PR now spends real tokens with nobody watching, Phase 1 found that reported token counts can read zero ([known limits](../phases/phase-1/design.md#known-limits-carried-from-phase-0)), and spend caps by budget wait for Phase 4.
+[README Phase 0](../roadmap.md#phase-0-stabilise) says anything shared uses `ANTHROPIC_API_KEY`; the user will add it as a repo secret. Every push to a PR now spends real tokens with nobody watching, Phase 1 found that reported token counts can read zero ([known limits](../phases/phase-1/design.md#known-limits-carried-from-phase-0)), and spend caps by budget wait for Phase 4.
 
 ## Decision
 The key is a repository Actions secret passed only to the review step, and only for same-repo PRs. With no key the run is skipped and says so. Each run makes at most one model call with no retries, refuses before any call when the files it would send, after docs, lock and generated files are skipped, exceed a fixed byte limit, caps output tokens through the provider, has a wall-clock deadline, and a newer push cancels an older run for the same PR. The monthly spend limit is set on the user's Anthropic account, outside the repository. [Values](../phases/phase-2/design.md#ci-settings-and-caps).

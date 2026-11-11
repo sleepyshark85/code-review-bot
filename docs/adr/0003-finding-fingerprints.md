@@ -5,7 +5,7 @@
 - **Phase:** 1
 
 ## Context
-[README Phase 1](../../README.md#phase-1-trustworthy-core) asks for stable fingerprints, used now to dedupe rule and AI findings and in Phase 2 to key self-updating PR comments. Changing the scheme later would orphan every posted comment. Two facts complicate it: rule and AI findings need a shared rule identity to compare at all, and the model's line number for one issue varies between runs.
+[README Phase 1](../roadmap.md#phase-1-trustworthy-core) asks for stable fingerprints, used now to dedupe rule and AI findings and in Phase 2 to key self-updating PR comments. Changing the scheme later would orphan every posted comment. Two facts complicate it: rule and AI findings need a shared rule identity to compare at all, and the model's line number for one issue varies between runs.
 
 ## Decision
 A fingerprint is a versioned hash of the file, the rule, the whitespace-normalised text of the anchored line and an ordinal among otherwise identical findings. The model may tag a finding with one of a closed set of rule identifiers, and an untagged AI finding uses its category as the rule part. An AI finding is a duplicate of a rule finding only with the same file and rule, nearby in one hunk, and a severity no higher than the rule's. [Details](../phases/phase-1/design.md#fingerprints-and-dedup).

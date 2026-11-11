@@ -4,7 +4,7 @@
 
 ## 1. Goal and gate
 
-Fewer guesses, deeper findings: the model can look up callers and definitions in the repository before it reports, reads the acceptance criteria of the issues a PR closes, and works under the repository's own domain rules. Each finding records what the model read, findings are routed to code owners, and a finding can carry a suggested fix. Scope and gate: [README Phase 3](../../../README.md#phase-3-context-aware). Suggested fixes move here from Phase 2 (Phase 2 Q7, Option A). The GitHub App stays out.
+Fewer guesses, deeper findings: the model can look up callers and definitions in the repository before it reports, reads the acceptance criteria of the issues a PR closes, and works under the repository's own domain rules. Each finding records what the model read, findings are routed to code owners, and a finding can carry a suggested fix. Scope and gate: [README Phase 3](../../roadmap.md#phase-3-context-aware). Suggested fixes move here from Phase 2 (Phase 2 Q7, Option A). The GitHub App stays out.
 
 Read for this repository, the gate is: **on the same pull requests and eval cases, a context review's precision and recall both improve on the Phase 2 review's, and every live step stays within its share of the $20 the user approved.** [How the gate is evidenced](#how-the-gate-is-evidenced) says what closes each clause, and [Q3](#6-open-questions) and [Q4](#6-open-questions) define "improve" and "within budget". Autonomy: comment.
 
@@ -18,7 +18,7 @@ Read for this repository, the gate is: **on the same pull requests and eval case
 |---|---|---|
 | Turned on by | default; `--context off` | `--context repo` / `REVIEW_BOT_CONTEXT=repo`, or `review-bot --context-repo DIR` |
 | Prompt | `p1-v1`, byte-for-byte unchanged | `p3-vN`, its own versioned prompt |
-| Model call | one turn, no tools ([Phase 0 lockdown](../../../README.md#phase-0-stabilise)) | one query of several turns, with three read-only tools |
+| Model call | one turn, no tools ([Phase 0 lockdown](../../roadmap.md#phase-0-stabilise)) | one query of several turns, with three read-only tools |
 | Linked issues, domain-rule guidance, suggested fixes, evidence | none | in the prompt and the output |
 
 `diff` mode stays exactly what Phase 2 measures, so its recordings stay fresh and the shadow window isn't disturbed ([ADR 0016](../../adr/0016-measure-phase-3-against-phase-2.md)). Deterministic additions, CODEOWNERS routing (S11) and domain-rule checks (S10), apply in both modes, because they don't touch the model; domain checks run only where a repository's config switches them on ([ADR 0017](../../adr/0017-domain-rules-from-a-catalogue.md)).
