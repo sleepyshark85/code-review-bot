@@ -16,7 +16,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from http.client import HTTPException, HTTPMessage
+from http.client import HTTPException
 from typing import Final, Self
 from urllib.parse import urlencode, urlsplit
 
@@ -33,6 +33,7 @@ from pydantic.alias_generators import to_camel
 
 from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
+from review_bot.no_redirect import NoRedirect
 from review_bot.pr.comments import (
     Marker,
     is_summary,
@@ -334,21 +335,6 @@ class _StatusError(GitHubError):
         self.status = status
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuses every redirect, so the token never follows one to another host."""
-
-    def redirect_request(  # noqa: PLR0913, PLR0917 - urllib's signature
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> None:
-        """Return None, so urllib raises the redirect's status as an ``HTTPError``."""
-
-
 class RestGitHubClient:
     """A ``GitHubClient`` for one repository, through GitHub's REST and GraphQL APIs.
 
@@ -364,7 +350,7 @@ class RestGitHubClient:
         self._graphql_url = f"{access.api_url}/graphql"
         self._token = access.token
         self._timeout_s = timeout_s
-        self._opener = urllib.request.build_opener(_NoRedirect)
+        self._opener = urllib.request.build_opener(NoRedirect)
 
     def list_bot_comments(self, pr: PullRequestRef) -> tuple[BotComment, ...]:
         """Return the bot's inline comments on ``pr`` with a valid marker, oldest first.

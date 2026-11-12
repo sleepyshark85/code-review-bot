@@ -59,3 +59,81 @@ From this file alone, measured before the two no-`version` cases were added: `go
 - **Claude's own tool list** (`allowed_tools`, the init check, the hook and `can_use_tool`) under a policy is S3's, so it isn't tested here; AC4 is checked through the executor, with the mock and `RepoTools`.
 - **An unreadable file** is a directory, not a file without read permission: Windows can't remove read access with `chmod`.
 - **Context-mode `evals live` under a ceiling** isn't run: it would need P3-S6's context fakes, and the cap and allowance arithmetic is the same code path diff mode exercises here.
+
+## P4-S2: Review with a second, OpenAI-compatible provider that passes the conformance suite
+
+Spec: [p4-s2-openai-compatible-provider.md](slices/p4-s2-openai-compatible-provider.md). Tests:
+- [`tests/integration/test_p4_s2_openai_compatible_provider.py`](../../../tests/integration/test_p4_s2_openai_compatible_provider.py): 254 cases for AC1 to AC4 and AC6 to AC10.
+- The `openai` factory in [`tests/conformance/conftest.py`](../../../tests/conformance/conftest.py), with [`test_p4_s2_openai_conformance.py`](../../../tests/conformance/test_p4_s2_openai_conformance.py): AC5.
+- The shared fake, [`tests/fake_openai.py`](../../../tests/fake_openai.py).
+
+The tests were written from the spec's criteria, Limits and Interfaces, design.md (Interfaces, "Second provider and routing") and ADRs 0002 and 0020, while the developer built the slice. Their code was read only for the injection point: `HttpResponse(status, headers, body)`, and a transport that raises the standard library's `OSError`s.
+
+**Status: every criterion passes, AC10 included.** The run was on the developer's uncommitted working tree (base `849f3b8`): 352 passed, and 2 skipped (`tool_loop` for `openai`, which AC5 allows). The first run failed 2 AC4 cases, which the developer has since fixed (see Failures).
+
+### Gate
+
+The coordinator asked for a partial run, because the full suite runs out of memory locally. These ran: this slice's files, `tests/conformance`, `test_p0_s1_offline.py`, `test_p1_s5_provider_notices.py` and `test_p0_s3_safe_stderr.py`. `ruff format` and `ruff check` are clean on every file changed. `mypy` covers `src` only. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **Every command builds its own provider.** No provider is injected for `--provider openai`. `fake_openai.use_fake_transport` replaces `openai_compat.UrllibTransport`. So `review-bot`, `pr shadow` and `pr run` each build the real `OpenAICompatibleProvider`, with the CLI's own base URL, key and checks, over a scripted `HttpTransport`. The script's last step repeats, so a retrying provider keeps getting the same answer.
+- **The real `UrllibTransport`** also runs, unpatched, against a `ThreadingHTTPServer` on 127.0.0.1, which the suite's network guard allows. These runs cover redirects not followed, the 4 MB cap (with a `Content-Length`, without one, and with a lying one), a refused connection, a slow server under `--deadline-s`, and status mapping.
+- **"Byte for byte" (AC1)** is checked against the request `MockProvider` gets for the same diff and `--model`, including non-ASCII text and CRLF.
+- **"As Claude's are" (AC2)**: the same content goes through Claude's fake SDK and through `openai`, and both must give the same exit code and stdout. There are 9 contents: a finding, empty, a bad severity, confidence 1.5, a missing field, fenced JSON, prose, `[]`, and an unanchored line.
+- **"One warning naming the retry"** is one stderr line holding "warning" and "retr". **"Fails at once"** is one request, done within 10 s.
+- **"4 MB"** is read as 4 MiB or 4,000,000 bytes: 3,900,000 bytes are accepted, and 4 MiB + 1 is refused.
+- **An empty `OPENAI_API_KEY`** counts as unset (AC7).
+- **Every `openai` case passes a model** (`--model m1`, or `REVIEW_BOT_MODEL` where AC10's variable form is the point), so AC10 never decides another criterion's outcome.
+- **AC9's variable** `REVIEW_BOT_MAX_COST_USD` is refused like the flag: exit 2, and no request. Its message isn't checked.
+- **"A Claude subprocess never holds the key" (AC8)**: the fake `sdk_call` records whether `OPENAI_API_KEY` is in `os.environ` and in `options.env` when the subprocess would start. This covers `review-bot --provider claude` and `evals live`.
+- **"Before a provider is built" (AC8)**: `build_provider` in `cli` and `pr.cli` is replaced by a recorder that checks `os.environ`.
+- **`tests/conftest.py`** now also removes `OPENAI_API_KEY` for the whole session, so a developer's own key can't reach a test.
+- **`test_p0_s4_ac14_mock_and_claude_are_both_in_the_suite`** now checks that `mock` and `claude` are among the factories, rather than the only two. `test_p4_s2_ac5_mock_claude_and_openai_are_all_in_the_suite` checks the exact set.
+
+### Criteria
+
+Test names drop the `test_p4_s2_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_one_post_to_the_default_base_with_the_bearer_key`. `ac1_body_model_is_the_flags_model`. `ac1_messages_are_the_system_and_user_prompts_byte_for_byte`. `ac1_prompts_hold_non_ascii_and_crlf_unchanged`. `ac1_no_output_cap_and_no_tools_without_the_flag`. `ac1_cap_is_max_completion_tokens_for_api_openai_com` ×2 (one with `:443`). `ac1_cap_is_max_tokens_for_any_other_host` ×4 (loopback, self-hosted, `api.openai.com.evil.example`, `eu.api.openai.com`). `ac1_base_with_a_path_prefix_gets_chat_completions_appended`. `ac1_base_from_the_variable`. `ac1_real_transport_posts_to_chat_completions` | pass (14) |
+| AC2 | `ac2_finding_is_reported_as_claudes_would_be`. `ac2_report_names_provider_openai_and_model_m1`. `ac2_usage_comes_from_prompt_and_completion_tokens` (the summary line and `agent.called`). `ac2_summary_and_audit_name_openai_and_m1`. `ac2_same_content_gives_claudes_exit_code_and_report` ×9 | pass (13) |
+| AC3 | `ac3_response_fails_with_its_category_and_exit_code` ×42 and `ac3_audit_records_the_failure_category` ×42, over one table. `auth`: 401, 403. `rate_limit`: 429. `transient`: 500, 502, 503, 504, 529, 599, a 503 HTML page, a timeout, a reset. `unavailable`: refused, DNS. `permanent`: 429 `insufficient_quota`, 400, 402, 404, 405, 409, 413, 418, 422, 451, 499, and the redirects 300, 301, 302, 303, 307, 308. `refusal`: `content_filter`, a refusal, a refusal beside findings. `invalid_output`: prose, empty content, null content, another object, `length`, `length` with cut JSON. Also `ac3_redirect_is_never_followed`, `ac3_quota_error_with_a_retry_after_is_still_permanent`, `ac3_empty_refusal_beside_findings_is_not_a_refusal`, `ac3_real_transport_never_follows_a_redirect` ×5, `ac3_real_transport_refused_connection_is_unavailable` and `ac3_real_transport_error_statuses_map_to_their_categories` ×3 | pass (92) |
+| Limits | `limits_malformed_200_body_fails_invalid_output` ×15, each within 10 s: not JSON; HTML; a top-level array, `null` or string; no `choices`; empty `choices`; `choices` not a list; a choice without `message`; a `message` that isn't an object; content that isn't a string; invalid UTF-8; truncated; empty; 100,000-deep nesting. `limits_body_over_4_mb_fails_invalid_output`. `limits_valid_body_just_under_4_mb_is_read`. `limits_error_message_never_reaches_the_users_message`. `limits_200_with_bad_usage_still_fails_cleanly_not_internally`. `limits_real_transport_reads_at_most_4_mb` ×2 (with `Content-Length`, and read until close). `limits_real_transport_lying_content_length_is_still_capped`. `limits_real_transport_reads_a_body_under_4_mb` | pass (23) |
+| AC4 | `ac4_503_then_200_with_one_retry_succeeds_with_one_warning`. `ac4_transient_and_rate_limit_are_retried` ×4 (429, 500, timeout, reset). `ac4_retries_send_the_same_request`. `ac4_other_categories_are_never_retried` ×9 (auth, 400, quota, redirect, refusal, invalid output, `length`, refused, DNS). `ac4_no_retry_with_max_retries_0`. `ac4_retries_stop_at_max_retries`. `ac4_rate_limit_after_its_retries_is_rate_limit`. `ac4_retry_after_within_30_s_is_honoured` (at least 0.95 s for `Retry-After: 1`). `ac4_retry_after_over_30_s_fails_at_once` ×6 (429 and 503, each with `31`, `3600`, and an HTTP date an hour ahead). `ac4_unreadable_retry_after_never_hangs` ×5 (`soon`, `-5`, `1e9`, empty, `NaN`). `ac4_deadline_bounds_a_call_that_never_answers`. `ac4_no_retry_waits_past_the_deadline` (`Retry-After: 20` with `--deadline-s 2`). `ac4_deadline_bounds_the_retries_together`. `ac4_transport_timeout_is_within_the_deadline`. `ac4_real_transport_slow_server_is_bounded_by_the_deadline` | pass (35) |
+| AC5 | Every test in `tests/conformance` runs for `openai`: the P0-S3, P1-S5 and P3-S3 suites, with `tool_loop` skipped under a reason naming P4-S6. Also `ac5_mock_claude_and_openai_are_all_in_the_suite`, `ac5_openai_factory_builds_the_openai_compatible_provider` and `ac5_tool_loop_is_skipped_for_openai_naming_s6` | pass (29, 2 skipped) |
+| AC6 | `ac6_refused_base_flag_exits_2_naming_it_before_any_request` ×11 and `ac6_refused_base_variable_exits_2_naming_it` ×11, over the same bases: `http` to a remote host, `http://127.0.0.1.evil.example`, `http://localhost.evil.example`, userinfo with and without a password, loopback with userinfo, a query, a fragment, a loopback query, `ftp`, no scheme. `ac6_refusal_never_shows_the_userinfos_password`. `ac6_http_on_loopback_is_accepted` ×3 (`127.0.0.1:8000`, `localhost`, `[::1]`) | pass (26) |
+| AC7 | `ac7_no_key_with_a_remote_base_exits_2_naming_it_before_any_request` ×4 (the key unset or empty, with the default or a remote base). `ac7_no_key_with_a_loopback_base_sends_no_authorization` ×3. `ac7_mock_run_needs_no_openai_key` | pass (8) |
+| AC8 | `ac8_review_bot_removes_the_key_before_building_a_provider` ×3 (`openai`, `claude`, `mock`). `ac8_claude_subprocess_never_holds_the_key`. `ac8_pr_removes_the_key_before_building_a_provider` ×2 (`shadow`, `run`). `ac8_evals_live_claude_call_never_holds_the_key`. `ac8_evals_replay_removes_the_key`. `ac8_key_is_in_no_report_message_or_audit_record_on_success` ×2 (a plain key and an `sk-`-shaped one, each in text, JSON and Markdown). `ac8_key_echoed_by_the_server_reaches_no_output` ×12 (the key in a 401's JSON or plain text, a 500, `error.code`, the content and a refusal, each with both keys). `ac8_key_echoed_in_a_retry_warning_reaches_no_output`. `ac8_error_body_is_kept_only_as_scrubbed_diagnostics` (it appears only in `agent.failed` diagnostics). `ac8_error_body_quoting_the_diff_is_scrubbed`. `ac8_pr_reviews_over_openai_and_never_write_the_key` ×2 (`shadow` and `run`; checks every file in `--out`, the audit log, stdout and stderr) | pass (27) |
+| AC9 | `ac9_max_cost_usd_flag_exits_2_before_any_request` (the exact message). `ac9_max_cost_usd_variable_exits_2_before_any_request`. `ac9_policy_cost_ceiling_exits_2_before_any_request` (the exact message). `ac9_policy_without_a_cost_ceiling_runs`. `ac9_pr_max_cost_usd_exits_2_before_any_request` ×2 (`shadow`, `run`). `ac9_cost_refusal_is_before_the_key_check` | pass (7) |
+| AC10 | `ac10_review_bot_without_model_exits_2_naming_it_before_any_request`. `ac10_provider_from_the_variable_without_model_exits_2` (`REVIEW_BOT_PROVIDER=openai`). `ac10_never_sends_claudes_default_model`. `ac10_model_from_the_variable_satisfies_it` (`REVIEW_BOT_MODEL=m2` is sent). `ac10_pr_without_model_exits_2_naming_it_before_any_request` ×2 (`shadow`, `run`). `ac10_pr_model_from_the_variable_satisfies_it` ×2. Control: `ac10_claude_and_mock_still_default_their_model` | pass (9) |
+
+### Failures
+
+None open.
+
+**Fixed: a `Retry-After` an hour ahead, given as an HTTP date (AC4).** On the first run, `test_p4_s2_ac4_retry_after_over_30_s_fails_at_once[http_date_an_hour_ahead-429]` and `[…-503]` failed. RFC 9110 allows `Retry-After` as delay-seconds or as an HTTP date, and the provider read only the seconds form. A date was treated as if no header had been sent: the call was retried, and the run exited 0. The developer now reads both forms, and both cases pass. The test is unchanged.
+
+Minimal reproduction, as first reported:
+
+```python
+transport = fake(
+    api_error(429, retry_after=formatdate(time.time() + 3600, usegmt=True)), no_findings()
+)
+done = openai.review(transport, "--max-retries", "2")
+# expected: exit 9 (rate_limit) after 1 request; observed then: exit 0 after 2 requests
+```
+
+### Coverage
+
+From this slice's tests alone (the files above, `tests/conformance` and `test_p0_s1_offline.py`):
+- `providers/openai_compat.py`: 98%. Lines 164 (a `URLError` whose reason isn't an `OSError`) and 234 (a request with tools) aren't covered.
+- `providers/openai_wire.py`: 98%. Lines 191 and 223 aren't covered.
+
+### Gaps
+
+- **A `Retry-After` of exactly 30 s** isn't run: honouring it would wait 30 s per case. A 1 s wait is shown to be honoured, and 31 s fails at once.
+- **A DNS failure and a reset connection** are scripted only through the fake transport (`socket.gaierror`, `ConnectionResetError`). A real DNS lookup would leave loopback, which the suite's network guard forbids.
+- **`pr backfill` and `evals live` with `--provider openai`** aren't tested. Live commands measure one model, `evals live` builds only Claude, and the spec names `pr` and `evals` only for AC8.
+- **A real 3xx with no `Location`** isn't run against the local server. The fake covers each redirect status.

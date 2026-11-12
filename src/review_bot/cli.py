@@ -49,11 +49,17 @@ from review_bot.governance.policy import (
 )
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
+from review_bot.providers.openai_compat import OpenAICompatibleProvider, check_api_key
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import ReviewContext, run_pipeline
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, load_settings, take_github_token
+from review_bot.settings import (
+    Settings,
+    load_settings,
+    take_github_token,
+    take_openai_api_key,
+)
 from review_bot.triage import TriageResult, run_triage
 
 __all__ = [
@@ -61,6 +67,7 @@ __all__ = [
     "add_setting_arguments",
     "add_tool_cap_arguments",
     "build_provider",
+    "check_provider_settings",
     "main",
     "parse_args",
     "read_policy",
@@ -117,6 +124,17 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
 
+_OPENAI_MODEL_MISSING: Final = (
+    "--provider openai needs --model (or REVIEW_BOT_MODEL), since the default model is "
+    "Claude's, so nothing was sent. Pass the model the endpoint serves."
+)
+# Until P4-S6, nothing would enforce a cost cap on the OpenAI-compatible provider.
+_OPENAI_COST_CAP_REFUSED: Final = (
+    "--max-cost-usd isn't supported with --provider openai yet, as nothing would enforce it. "
+    "Leave out --max-cost-usd and REVIEW_BOT_MAX_COST_USD, and run under a policy without a "
+    "[cost] ceiling."
+)
+
 _NOTHING_REVIEWED_WARNING: Final = (
     "review-bot: warning: nothing was reviewed: every changed file was skipped: "
 )
@@ -155,7 +173,7 @@ class RaisingArgumentParser(argparse.ArgumentParser):
 
 def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the review's setting flags, each named after its ``Settings`` field."""
-    parser.add_argument("--provider", help="the provider to use: claude (default), mock")
+    parser.add_argument("--provider", help="the provider to use: claude (default), openai, mock")
     parser.add_argument("--model", help="the model to request")
     parser.add_argument("--threshold", help=f"the lowest severity to report: {', '.join(Severity)}")
     parser.add_argument("--max-diff-bytes", help="the largest diff file to review, in bytes")
@@ -164,10 +182,10 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
         help="the most bytes of files to send to the model, after skipping (default: no cap)",
     )
     parser.add_argument(
-        "--max-output-tokens", help="the Claude CLI's output token cap (default: the CLI's own)"
+        "--max-output-tokens", help="the model's output token cap (default: the provider's own)"
     )
-    parser.add_argument("--max-retries", help="retries the Claude CLI makes for a failed API call")
-    parser.add_argument("--api-timeout-ms", help="the Claude CLI's API timeout, in milliseconds")
+    parser.add_argument("--max-retries", help="retries the provider makes for a failed API call")
+    parser.add_argument("--api-timeout-ms", help="the provider's API timeout, in milliseconds")
     parser.add_argument("--deadline-s", help="the time limit for the whole call, in seconds")
     parser.add_argument(
         "--max-cost-usd",
@@ -178,6 +196,11 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--policy", help="the policy file the run is under (default: the built-in policy)"
+    )
+    parser.add_argument(
+        "--openai-base-url",
+        help="the Chat Completions endpoint of --provider openai, https unless on a loopback "
+        "host (default: https://api.openai.com/v1); its key is read from OPENAI_API_KEY",
     )
 
 
@@ -274,15 +297,46 @@ def _open_context(settings: Settings) -> ReviewContext | None:
     return ReviewContext(repo=RepoRef(git=git, commit=commit))
 
 
-def build_provider(settings: Settings) -> LLMProvider:
-    """Create the selected provider. Nothing starts until its ``review`` is called."""
+def build_provider(settings: Settings, *, openai_api_key: str | None = None) -> LLMProvider:
+    """Create the selected provider. Nothing starts until its ``review`` is called.
+
+    ``openai_api_key`` is the key the entry point took from ``OPENAI_API_KEY``; only the
+    ``openai`` provider uses it.
+
+    Raises:
+        ConfigError: For ``openai``, if there is no key and its base URL's host isn't loopback.
+    """
     if settings.provider == "claude":
         # Deferred so only a Claude run pays to load the SDK. If it can't be imported, the error
         # reaches ``main``'s catch-all, like any other failure.
         from review_bot.providers.claude_agent import ClaudeAgentProvider  # noqa: PLC0415 - see above
 
         return ClaudeAgentProvider(settings)
+    if settings.provider == "openai":
+        return OpenAICompatibleProvider(
+            settings, base_url=settings.openai_base_url, api_key=openai_api_key
+        )
     return MockProvider()
+
+
+def check_provider_settings(settings: Settings, *, openai_api_key: str | None) -> None:
+    """Refuse, before anything is sent, settings the selected provider can't run with.
+
+    Called once ``settings`` are within the policy, so a cost cap from its ceiling counts.
+
+    Raises:
+        ConfigError: For ``openai``, if no model was given, since the default is Claude's; if a
+            cost cap is set, which it can't enforce yet; or if there is no key and its base
+            URL's host isn't loopback.
+    """
+    if settings.provider != "openai":
+        return
+    # Given by a flag or variable, whatever its value: the default names a Claude model.
+    if "model" not in settings.model_fields_set:
+        raise ConfigError(_OPENAI_MODEL_MISSING)
+    if settings.max_cost_usd is not None:
+        raise ConfigError(_OPENAI_COST_CAP_REFUSED)
+    check_api_key(settings.openai_base_url, openai_api_key)
 
 
 def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
@@ -297,12 +351,14 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         ``docs/phases/phase-1/design.md`` appends.
     """
     keep_library_logs_off_stderr()
-    # Before any provider is built, so the Claude CLI never inherits it.
+    # Before any provider is built, so the Claude CLI never inherits them.
     take_github_token()
+    openai_api_key = take_openai_api_key()
     try:
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
         settings, policy = settings_within_policy(settings)
+        check_provider_settings(settings, openai_api_key=openai_api_key)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Before the audit log, like any other bad argument: no provider is called.
@@ -312,7 +368,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
     try:
-        return _review(diff_path, settings, policy, provider, audit, context)
+        return _review(diff_path, settings, policy, provider, audit, context, openai_api_key)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         exit_code = report_failure(exc)
         record_failed_end(audit, exit_code, exc)
@@ -432,8 +488,17 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     provider: LLMProvider | None,
     audit: AuditLog,
     context: ReviewContext | None,
+    openai_api_key: str | None,
 ) -> int:
-    result = run_review(diff_path, settings, provider, audit, policy=policy, context=context)
+    result = run_review(
+        diff_path,
+        settings,
+        provider,
+        audit,
+        policy=policy,
+        context=context,
+        openai_api_key=openai_api_key,
+    )
     # Before any output, so stdout holds only the report, written after the last decision.
     triage = None
     if settings.triage:
@@ -463,25 +528,29 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     return exit_code
 
 
-def run_review(  # noqa: PLR0913 - policy and context are keyword-only
+def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     diff_path: Path,
     settings: Settings,
     provider: LLMProvider | None,
     audit: AuditLog,
     *,
     policy: Policy,
+    openai_api_key: str | None,
     context: ReviewContext | None = None,
 ) -> PipelineResult:
     """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
 
     ``policy`` is the policy the review is under, which ``settings`` are within. ``context`` is
-    the commit the model's tools read; None reviews in diff mode.
+    the commit the model's tools read; None reviews in diff mode. ``openai_api_key`` is passed
+    to ``build_provider`` when there is no ``provider``.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
             becomes one too, so it can't set the exit code itself.
     """
-    selected_provider = build_provider(settings) if provider is None else provider
+    selected_provider = (
+        build_provider(settings, openai_api_key=openai_api_key) if provider is None else provider
+    )
     review = run_pipeline(
         diff_path, settings, selected_provider, audit, context=context, policy=policy
     )

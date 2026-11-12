@@ -4,21 +4,24 @@ import os
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
+from review_bot.providers.openai_wire import DEFAULT_BASE_URL, check_base_url
 
 __all__ = [
     "GITHUB_TOKEN_VARIABLE",
+    "OPENAI_API_KEY_VARIABLE",
     "Settings",
     "in_ci",
     "live_run_refused",
     "load_settings",
     "take_github_token",
+    "take_openai_api_key",
 ]
 
 # Set by GitHub Actions and most CI services.
@@ -27,6 +30,7 @@ _CI_VARIABLE: Final = "CI"
 _EVENT_NAME_VARIABLE: Final = "GITHUB_EVENT_NAME"
 _MANUAL_DISPATCH: Final = "workflow_dispatch"
 GITHUB_TOKEN_VARIABLE: Final = "GITHUB_TOKEN"  # noqa: S105 - the variable's name, not a token
+OPENAI_API_KEY_VARIABLE: Final = "OPENAI_API_KEY"
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
 
@@ -36,7 +40,7 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider: Literal["mock", "claude"] = "claude"
+    provider: Literal["mock", "claude", "openai"] = "claude"
     # An allowlist, because the name is printed in the stderr summary line. No leading hyphen,
     # because a later provider may pass it to a command line.
     model: str = Field(default="claude-opus-5-5", pattern=r"^[\w.:/@\[\]][\w.:/@\[\]-]*$")
@@ -65,6 +69,8 @@ class Settings(BaseModel):
     # None means no cap: the CLI's budget for one review (ADR 0015). At least a cent, so rounding
     # it down to the cent never gives 0; at most $1,000, so that rounding is exact.
     max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0.01"), le=Decimal(1000))
+    # The Chat Completions endpoint of ``provider`` ``openai`` (ADR 0020).
+    openai_base_url: Annotated[str, AfterValidator(check_base_url)] = DEFAULT_BASE_URL
     # The policy file's path as given, which reports record (ADR 0018); None means the built-in
     # policy.
     policy: str | None = Field(default=None, min_length=1)
@@ -93,6 +99,15 @@ def take_github_token() -> str | None:
     holds the token (Phase 2 design, Safety on the PR path). Only comment mode uses the value.
     """
     return os.environ.pop(GITHUB_TOKEN_VARIABLE, None)
+
+
+def take_openai_api_key() -> str | None:
+    """Remove ``OPENAI_API_KEY`` from this process's environment, and return it, or None if unset.
+
+    For the reason ``take_github_token`` gives: every entry point calls this before any provider
+    is built, so the Claude CLI's process never holds the key (ADR 0020).
+    """
+    return os.environ.pop(OPENAI_API_KEY_VARIABLE, None)
 
 
 def load_settings(flags: Mapping[str, str | bool | None]) -> Settings:

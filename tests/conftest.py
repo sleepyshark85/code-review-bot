@@ -18,7 +18,13 @@ from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 CLAUDE_EXECUTABLES = ("claude", "claude.exe", "claude.cmd", "claude.bat", "claude.ps1")
-CREDENTIAL_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+# OPENAI_API_KEY since P4-S2: a developer's own key must never reach a test either.
+CREDENTIAL_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+)
 AUDIT_LOG_VARIABLE = "REVIEW_BOT_AUDIT_LOG"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
