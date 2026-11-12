@@ -2,7 +2,7 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 released as 0.3.0 and running in shadow mode; its gate evidence is pending ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) · Phase 3 built; it closes once that evidence is in · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-11
+> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 complete: shadow precision 42/42 (Wilson 95% 91.6–100%), with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC by the owner ([evidence](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2)); the bot now comments on PRs · Phase 3 built, closing next · Phase 4 in progress · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-12
 
 ## Usage
 

@@ -750,16 +750,207 @@ Measured by CI's full suite on PR #63 (`gate`, at least 90%).
 
 ## P2-S12: Close Phase 2
 
-Released as 0.3.0 on 2026-11-09, at the owner's request, before the gate's evidence existed.
+Spec: [p2-s12-close-phase-2.md](slices/p2-s12-close-phase-2.md). Released as 0.3.0 on 2026-11-09, at the owner's request, before the gate's evidence existed. The evidence was recorded on 2026-11-12, closing [#67](https://github.com/sleepyshark85/code-review-bot/issues/67).
+
+**Status: gate met on the cut sample, with two owner-approved exceptions.** As with Phase 1's `double-tax` miss, both are the user's decisions of 2026-11-12, recorded here, not threshold changes.
+1. **The ≥ 3-week window of [Q1](design.md#5-open-questions) is waived.** The user chose to close #67 early. The sample's live window runs from 2026-11-08 17:03 to 2026-11-11 14:56 UTC, under one week.
+2. **The sample is cut at 2026-11-11 14:56 UTC** (PR #101's last run). Live shadow continued until comments were turned on (2026-11-12 04:34 UTC): 15 more shadow reports, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00), holding 5 unjudged units. The owner decided to ignore them, so they fall outside the sample. Over the full window to 04:34 UTC there would be 47 units and coverage would be 42/47 = **89.4%, below Q1's 90%**.
+
+Every other Q1 clause is met on the cut sample, and every number below is the cut sample's (`shadow-reports/` holds the cut set; `metrics` gives 42/42).
 
 | AC | State | Evidence |
 |---|---|---|
-| AC1 to AC5 | Open | Wait for the shadow-mode weeks, which started 2026-11-08 when `ANTHROPIC_API_KEY` was added ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
-| AC6 | Open | No labelled set yet ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
-| AC7 | Done, except the status line | The README status line says the gate evidence is pending until [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) closes. README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65, this release) |
-| AC8 | Partly done | [Runbook](../../runbook.md) written; the dated branch-protection confirmation is open ([#67](https://github.com/sleepyshark85/code-review-bot/issues/67)) |
+| AC1 | Done (recorded) | [Window and sample](#p2-s12-window-and-sample): Q1 met on the cut sample, with the window waived |
+| AC2 | Done (recorded) | [Shadow precision](#p2-s12-shadow-precision): 100.0% (42/42), Wilson 95% 91.6% to 100.0%, full `metrics` output |
+| AC3 | Done (recorded) | [Baseline and cost](#p2-s12-baseline-and-cost): `baseline/v1` 2026-11-03 to 2026-11-12; $0.23 per accepted finding (backfill, reported cost); comment precision n/a (no comment posted yet) |
+| AC4 | Done (recorded) | [Start-up cost](#p2-s12-start-up-cost): Actions run 43151852223 (outside the cut sample), review step 29 s of a 39 s job |
+| AC5 | Done (recorded) | [Switch decision and dogfooding limits](#p2-s12-switch-decision-and-dogfooding-limits): comment mode on 2026-11-12 04:34 UTC |
+| AC6 | Pass | [The labelled set](#p2-s12-ac6-the-labelled-set): `tests/evals/labelled/` and `tests/evals/test_p2_s12_labelled_set.py` (29 tests) |
+| AC7 | Done | README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65). The README status line says Phase 2 is complete |
+| AC8 | Done | [Runbook](../../runbook.md) written (0.3.0); [branch protection](#p2-s12-branch-protection-ac8) confirmed 2026-11-12 |
 | AC9 | Done | `pyproject.toml` at `0.3.0`, [release notes](release-notes.md), tag `v0.3.0` |
 
-**Manual checks:**
+### P2-S12: Window and sample
+
+Sources: 94 `shadow/v1` reports, all `mode` `shadow`, kept locally and never committed: 64 live shadow artifacts (`origin` `event`) up to the cut, and 30 backfill reports in `shadow-reports/backfill-p2/` (`origin` `backfill`, run 2026-11-11 18:56 to 19:10 UTC). Each has its own `run_id`, and none was unreadable.
+
+- **Live window (the sample):** shadow runs start 2026-11-08 05:14 UTC (PR #53, `skipped/no_credential`). The first reviewed event is PR #66 at 2026-11-08 17:03 UTC, after `ANTHROPIC_API_KEY` was added. The sample ends at the owner's cut, 2026-11-11 14:56 UTC: **about 2.9 days, 0.4 weeks.**
+- **After the cut (outside the sample):** 15 live shadow reports from the cut to 2026-11-12 04:00 UTC, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00) with 5 unjudged units. Comments were turned on at 04:34 UTC. With them, the window would be about 3.5 days with 47 units, and coverage would be 89.4%.
+- **Live runs (64):** 12 `reviewed`, 19 `skipped/no_credential`, 13 `skipped/too_large`, 7 `skipped/nothing_to_review` and 13 `blocked_secret`, over PRs #53 to #101.
+- **Reviewed PRs: 28.** Live: 7 (#66, #68, #73, #75, #76, #78, #96), in 12 reviewed runs. Backfilled: 21 (#17, #18, #20, #25, #28, #30, #31, #32, #34, #35, #36, #38, #39, #40, #41, #42, #43, #44, #49, #50, #51). The backfill's other 9 PRs ended `skipped/nothing_to_review` (7) or `blocked_secret` (2).
+- **Would-be comments (units): 42,** from 24 PRs: 36 backfill units from 20 PRs, and 6 live units from 4 PRs (#73, #75, #76, #78).
+- **Judged: 42 of 42, coverage 100.0%,** by the user with `label` (`tests/evals/labelled/labels.jsonl`: 42 lines, one per unit, no orphans).
+
+| Q1 clause | Needed | Measured | Met |
+|---|---|---|---|
+| Live shadow from the first reviewed event | ≥ 3 weeks | 2026-11-08 17:03 to 2026-11-11 14:56 UTC (the cut), about 0.4 weeks | **No: waived by the user on 2026-11-12 (exception 1)** |
+| Reviewed PRs | ≥ 12 | 28 | Yes, on the cut sample |
+| ... of them live | ≥ 5 | 7 | Yes, on the cut sample |
+| Judged would-be comments | ≥ 30 | 42 | Yes, on the cut sample |
+| Coverage | ≥ 90% | 100.0% (42/42) on the cut sample; 89.4% (42/47) over the full window to 2026-11-12 04:34 UTC | Yes on the cut sample only: **the cut is the user's decision of 2026-11-12 (exception 2)** |
+
+### P2-S12: Shadow precision
+
+From `uv run python -m review_bot.pr metrics --reports shadow-reports --labels tests/evals/labelled/labels.jsonl`, 2026-11-12.
+
+| Measure | Value |
+|---|---|
+| Point estimate | **100.0%** (42 accepted of 42 counted) |
+| Count | 42 judged: 42 accepted, 0 rejected, 0 duplicates |
+| Wilson 95% interval | 91.6% to 100.0% |
+| Lower bound (duplicates as rejections) | 100.0% (42/42) |
+| `wrong_line` | 0 |
+| PRs contributing | 24 |
+| Largest PR's share | 7.1% (3 of 42; PRs #20, #25, #34, #41 and #42 have 3 each) |
+| 70% reached? | **Yes.** The point estimate is 100.0%, and even the Wilson lower bound, 91.6%, is above 70% |
+
+| Split | Value | Accepted | Rejected | Duplicates | Precision |
+|---|---|---|---|---|---|
+| origin | backfill | 36 | 0 | 0 | 100.0% |
+| origin | event | 6 | 0 | 0 | 100.0% |
+| source | ai | 41 | 0 | 0 | 100.0% |
+| source | rule | 1 | 0 | 0 | 100.0% |
+| rule part | ai:logic | 8 | 0 | 0 | 100.0% |
+| rule part | ai:maintainability | 3 | 0 | 0 | 100.0% |
+| rule part | ai:reliability | 16 | 0 | 0 | 100.0% |
+| rule part | ai:security | 6 | 0 | 0 | 100.0% |
+| rule part | ai:testing | 8 | 0 | 0 | 100.0% |
+| rule part | swallowed-exception | 1 | 0 | 0 | 100.0% |
+
+Reject reasons: `wrong` 0, `not_worth_it` 0, `wrong_line` 0, `duplicate` 0.
+
+**Clustering caveat.** A PR's comments are correlated (same author, same diff, same review call), so the Wilson interval, which treats the 42 as independent, is optimistic. 24 PRs contribute, and the largest holds 7.1%.
+
+**Reading it.** No rejection at all is unusual for a first measurement. One judge made every call, and 36 of the 42 units come from backfilled PRs that had already been reviewed and merged (see the dogfooding limits below). The live sample alone is 6 units (6/6), too few to stand on its own.
+
+Full `metrics` output:
+
+```
+metrics: runs count=94 since=any until=any
+metrics: outcome mode=shadow origin=backfill outcome=blocked_secret reason=null count=2
+metrics: outcome mode=shadow origin=backfill outcome=reviewed reason=null count=21
+metrics: outcome mode=shadow origin=backfill outcome=skipped reason="nothing_to_review" count=7
+metrics: outcome mode=shadow origin=event outcome=blocked_secret reason=null count=13
+metrics: outcome mode=shadow origin=event outcome=reviewed reason=null count=12
+metrics: outcome mode=shadow origin=event outcome=skipped reason="no_credential" count=19
+metrics: outcome mode=shadow origin=event outcome=skipped reason="nothing_to_review" count=7
+metrics: outcome mode=shadow origin=event outcome=skipped reason="too_large" count=13
+metrics: latency_s end_to_end runs=12 p50=35.0 p95=58.3
+metrics: latency_s review runs=33 p50=30.2 p95=69.6
+metrics: tokens runs=33 input total=1243040 mean=37667.9 max=71422 output total=101085 mean=3063.2 max=7919 over_budget=0
+metrics: cost=not priced
+metrics: shadow_precision units=42 judged=42 coverage=100.0% accepted=42 rejected=0 duplicates=0 precision=100.0% (42/42)
+metrics: shadow_precision wilson_95=91.6% to 100.0% lower_bound=100.0% (42/42) prs=24 largest_pr_share=7.1% conflict=0 resolved=0
+metrics: shadow_precision split origin="backfill" accepted=36 rejected=0 duplicates=0 precision=100.0% (36/36)
+metrics: shadow_precision split origin="event" accepted=6 rejected=0 duplicates=0 precision=100.0% (6/6)
+metrics: shadow_precision split source="ai" accepted=41 rejected=0 duplicates=0 precision=100.0% (41/41)
+metrics: shadow_precision split source="rule" accepted=1 rejected=0 duplicates=0 precision=100.0% (1/1)
+metrics: shadow_precision split rule_part="ai:logic" accepted=8 rejected=0 duplicates=0 precision=100.0% (8/8)
+metrics: shadow_precision split rule_part="ai:maintainability" accepted=3 rejected=0 duplicates=0 precision=100.0% (3/3)
+metrics: shadow_precision split rule_part="ai:reliability" accepted=16 rejected=0 duplicates=0 precision=100.0% (16/16)
+metrics: shadow_precision split rule_part="ai:security" accepted=6 rejected=0 duplicates=0 precision=100.0% (6/6)
+metrics: shadow_precision split rule_part="ai:testing" accepted=8 rejected=0 duplicates=0 precision=100.0% (8/8)
+metrics: shadow_precision split rule_part="swallowed-exception" accepted=1 rejected=0 duplicates=0 precision=100.0% (1/1)
+metrics: shadow_precision split severity="low" accepted=25 rejected=0 duplicates=0 precision=100.0% (25/25)
+metrics: shadow_precision split severity="medium" accepted=17 rejected=0 duplicates=0 precision=100.0% (17/17)
+metrics: shadow_precision split model="claude-opus-5-5" accepted=42 rejected=0 duplicates=0 precision=100.0% (42/42)
+metrics: shadow_precision split prompt_version="p1-v1" accepted=42 rejected=0 duplicates=0 precision=100.0% (42/42)
+metrics: shadow_precision split reject_reason wrong=0 not_worth_it=0 wrong_line=0 duplicate=0
+metrics: comment_precision units=0 judged=0 coverage=n/a accepted=0 rejected=0 duplicates=0 precision=n/a (0/0)
+metrics: comment_precision wilson_95=n/a lower_bound=n/a (0/0) prs=0 largest_pr_share=n/a conflict=0 resolved=0
+metrics: comment_precision split reject_reason wrong=0 not_worth_it=0 wrong_line=0 duplicate=0
+metrics: orphans=0
+```
+
+### P2-S12: Baseline and cost
+
+`baseline/v1`, committed as `tests/evals/labelled/baseline.json` (captured 2026-11-12 04:43 UTC):
+
+| Measure | Value |
+|---|---|
+| Window | `since` 2026-11-03, `until` 2026-11-12, the day comments were turned on, so "no later than" holds |
+| Merged PRs | 79 |
+| Open-to-merge hours | median 0.12, p90 3.94 |
+| Commits after opening | median 0.0, p90 2.0 |
+| Escaped-defect proxy | 0 fix PRs and 1 bug issue: 0.013 per merged PR |
+
+The capture ran 9 minutes after comment mode was turned on (04:34 UTC). No PR in it saw a bot comment: the first comment-mode run, on PR #107, ended `skipped/too_large` and posted nothing.
+
+**Cost per accepted finding.** By the user's choice, this uses the cost Claude reported in each report (`report.usage.cost_usd`), not token prices. That is why `metrics` prints `cost=not priced`: it was given no `--prices`.
+- **Backfill (headline):** the 21 reviewed backfill runs reported **$8.43** in total, for 36 accepted findings: **$0.23 per accepted finding.**
+- **Live:** 9 of the 12 reviewed live runs predate P3-S8 and report no cost. The 3 that do (PR #78 twice, PR #96) reported $0.86, for 2 accepted findings.
+- **Every run with a reported cost:** $9.30 for 38 accepted findings, $0.24 each. The 4 accepted live findings from runs without a reported cost are left out rather than estimated.
+
+**Comment precision:** not measurable yet. Comments were turned on at 04:34 UTC on 2026-11-12, and none has been posted (`comment_precision units=0`, coverage n/a).
+
+### P2-S12: Start-up cost
+
+From `metrics`: review time (`finished_at − started_at`) has p50 30.2 s and p95 69.6 s over 33 reviewed runs. End-to-end time (`finished_at − event_at`) has p50 35.0 s and p95 58.3 s over the 12 reviewed live runs; `metrics` reports it for live runs only.
+
+Steps of one shadow review job, Actions run 43151852223 (PR #106, 2026-11-12 04:00 UTC; step times from the Actions API, to the second). The run is after the cut, so it is outside the precision sample; it is kept only as a timing example.
+
+| Step | Start (UTC) | Seconds |
+|---|---|---|
+| Set up job | 04:00:06 | 1 |
+| Check out the base commit | 04:00:07 | 1 |
+| Fetch the head commit (not checked out) | 04:00:08 | 0 |
+| Run astral-sh/setup-uv | 04:00:08 | 2 |
+| Install the bot from the base commit | 04:00:10 | 2 |
+| **Review the pull request in shadow mode** | 04:00:12 | **29** |
+| Show the shadow report in the job summary | 04:00:41 | 0 |
+| Upload the shadow report | 04:00:41 | 1 |
+| Post steps and Complete job | 04:00:42 | 0 |
+
+The job took 39 s from job start to end, 36 s of it in steps: 6 s of set-up before the review, 29 s for the review step, and 1 s after. The review step includes the SDK's start-up as well as the model call, and one-second step times can't separate them. Set-up is small next to the review.
+
+### P2-S12: Switch decision and dogfooding limits
+
+**Decision:** the user turned comment mode on (`REVIEW_BOT_MODE=comment`) on **2026-11-12 at 04:34 UTC**. Q2's recommendation is met: S7 has merged, and the shadow point estimate (100.0%) is above 70%, with the Wilson lower bound (91.6%) beside it.
+
+**Dogfooding limits.** These numbers may not carry over to a human team:
+- **Agent-written PRs:** every PR here was written and reviewed by agents.
+- **One merger, one judge:** one person judged all 42 would-be comments. That person owns the repository and merged these agent-written PRs.
+- **No rejections:** the labeller accepted all 42. With one judge, there is no measure of how far another reviewer would agree.
+- **Already-reviewed backfilled PRs:** 36 of the 42 units come from merged PRs that had already passed review and the gate.
+- **A prompt tuned on Phase 1's cases:** every review used `p1-v1`.
+- **A short window:** under one week of live shadow (the waived Q1 clause), with 6 live units.
+
+### P2-S12: AC6, the labelled set
+
+Committed under `tests/evals/labelled/`:
+- `labels.jsonl`: the user's 42 `feedback/v1` judgements, unedited.
+- `would-be.jsonl`: one line per unit (42), with exactly `repo`, `pr`, `file`, `rule_part`, `anchor`, `index`, `source` and `origin`. It was derived from the 94 local reports with `read_reports` and `would_be_comments` (the grouping `label` and `metrics` use), taking `origin` from each unit's latest report.
+- `baseline.json`: the `baseline/v1` capture above, unchanged.
+
+`tests/evals/test_p2_s12_labelled_set.py` reads the three files as plain JSON and recomputes every number without `review_bot.pr`, so a bug in `metrics` can't hide in both.
+
+| Check | Test(s) | Result |
+|---|---|---|
+| The three files exist | `test_p2_s12_ac6_the_three_files_are_committed_together` | pass |
+| One line per unit, with exactly the eight fields | `..._would_be_has_exactly_the_eight_fields_on_every_line`, `..._would_be_holds_one_line_per_unit` | pass |
+| Every label judges a unit, and labels and would-be agree on `source` | `..._every_label_judges_a_unit_in_would_be`, `..._labels_and_would_be_agree_on_source` | pass |
+| Every label is `accept` with no reason, or `reject` with a known reason | `..._every_label_is_an_accept_or_a_reject_with_a_known_reason` | pass |
+| Count 42, coverage 100.0% | `..._count_and_coverage_reproduce_ac2` | pass |
+| Point estimate and lower bound 100.0% | `..._point_estimate_and_lower_bound_reproduce_ac2` | pass |
+| Wilson 95% 91.6% to 100.0%, by its own formula | `..._wilson_interval_reproduces_ac2` | pass |
+| 24 PRs, largest share 7.1% | `..._pr_count_and_largest_share_reproduce_ac2` | pass |
+| Splits by origin, source and rule part | `..._splits_reproduce_ac2` ×3 | pass |
+| Reject reasons, `wrong_line` 0 | `..._reject_reasons_and_wrong_line_reproduce_ac2` | pass |
+| Baseline is `baseline/v1`, `until` ≤ 2026-11-12, with AC3's numbers | `..._baseline_is_v1_and_ends_no_later_than_comments_on` | pass |
+| No body, rationale or username key at any depth; labels have only `feedback/v1` keys | `..._no_line_has_a_body_rationale_or_username_key` ×3, `..._labels_have_only_feedback_v1_keys` | pass |
+| No prose (a value with whitespace) and no @mention | `..._no_value_is_prose_or_a_mention` ×3 | pass |
+| The owner's login appears only as the owner in `repo` | `..._the_owner_login_appears_only_as_the_repo_owner` ×3 | pass |
+| P3-S17 guard: no `scan_secrets` hit in the three files or the test | `..._committed_files_have_no_scanner_hit` ×3, `..._this_file_has_no_scanner_hit` | pass |
+
+29 passed (22 test functions, with parametrised cases). The expected AC2 values are named `EXPECTED_*` constants copied from this report, so a new labelled set changes only this report and those constants. `tests/integration/test_p3_s17_shadow_sample_supply.py` (34) still passes; its AC3 guard scans tracked files, so it covers the new files once they are committed.
+
+**For the designer:** AC6 says "no ... username in any line", but `repo`, which the same AC requires, is `owner/name`, and the owner is a login. The test reads "username" as a person's identity beyond the repository's name: no user-like key, no @mention, and the owner's login nowhere outside `repo`.
+
+### P2-S12: Branch protection (AC8)
+
+On 2026-11-12, branch protection on `main` requires only the `gate` status check (strict), and a pull request is required (0 approvals). The user confirmed it by delegation that day.
+
+### P2-S12: Manual checks
+
 - **S3 AC12 done.** PR #53's shadow run (42450012667) ended `skipped/no_credential` before the key existed. PR #66's run (42503017053) ended `reviewed` with the key.
-- **S6 AC12 open.** It needs comment mode turned on.
+- **S6 AC12 open.** Comment mode has been on since 2026-11-12 04:34 UTC, but the first comment-mode run, on PR #107, ended `skipped/too_large` and posted nothing. The next small PR closes it.

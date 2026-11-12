@@ -1,0 +1,1 @@
+{"schema": "baseline/v1", "repo": "sleepyshark85/code-review-bot", "since": "2026-11-03", "until": "2026-11-12", "captured_at": "2026-11-12T04:43:39.079277+00:00", "pr_count": 79, "open_to_merge_hours": {"median": 0.12, "p90": 3.94}, "commits_after_open": {"median": 0.0, "p90": 2.0}, "fix_prs": 0, "bug_issues": 1, "escaped_defects_per_merged_pr": 0.013}
