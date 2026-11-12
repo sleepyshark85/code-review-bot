@@ -514,6 +514,35 @@ def test_p4_s3_ac4_one_record_per_denial_even_when_repeated(review, read_glob_po
     assert [r["layer"] for r in records] == ["hook"] * 40 + ["can_use_tool"] * 40
 
 
+FAILURES_AFTER_DENIALS = {
+    "cost_cap": result_message(None, is_error=True, subtype="error_max_budget_usd"),
+    "turn_cap": result_message(None, is_error=True, subtype="error_max_turns"),
+    # The CLI re-sends init, now listing a tool outside the policy: the init check fails.
+    "init_check": init_message([*READ_GLOB, "Bash"]),
+}
+
+
+@pytest.mark.parametrize(
+    "failure", FAILURES_AFTER_DENIALS.values(), ids=FAILURES_AFTER_DENIALS.keys()
+)
+def test_p4_s3_ac4_denials_before_a_failure_are_recorded_before_failed(
+    review, read_glob_policy, failure
+):
+    fake = FakeSdk(init_message(READ_GLOB), hook_step("Bash"), can_use_tool_step(GREP), failure)
+
+    run = review(fake, read_glob_policy)
+
+    assert run.exit_code == PERMANENT_EXIT, run.stderr
+    events = [r["event"] for r in run.records if r["stage"] == "agent"]
+    assert events[-3:] == ["denied", "denied", "failed"], events
+    records = run.agent("denied")
+    assert [(r["tool"], r["layer"]) for r in records] == [
+        ("Bash", "hook"),
+        (GREP, "can_use_tool"),
+    ]
+    assert all(r["policy_version"] == VERSION for r in records), records
+
+
 def test_p4_s3_ac4_builtin_policy_records_builtin_v1(review):
     run = review(finds(hook_step("Bash"), listed=ALLOWED_TOOLS), None)
 
