@@ -148,7 +148,8 @@ class OpenAICompatibleProvider:
 
         Raises:
             ValueError: If ``base_url`` isn't allowed (``check_base_url``).
-            ConfigError: If there is no key and the host isn't loopback.
+            ConfigError: If there is no key and the host isn't loopback, or the key holds a
+                character that can't be sent in a header (``check_api_key``).
         """
         check_base_url(base_url)
         check_api_key(base_url, api_key)

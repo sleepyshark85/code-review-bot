@@ -2,8 +2,11 @@
 
 A socket timeout bounds each read, not the request, so a server sending a byte at a time could
 hold a request open for ever. Here a timer shuts the request's socket once its time is up, which
-ends any read in progress, and the request fails with ``TimeoutError``. Only resolving the host
-name, which the operating system bounds, happens before there is a socket to shut.
+ends any read in progress, and the request fails with ``TimeoutError``. The timer covers sending,
+the headers and the body, once ``connect()`` has returned. The earlier phases have other bounds:
+the operating system bounds resolving the host name, each resolved address gets one socket
+timeout to connect (so N unreachable addresses can take N timeouts), and CPython's ``ssl``
+module bounds the whole TLS handshake by one socket timeout.
 """
 
 import asyncio
@@ -166,8 +169,9 @@ class _WatchedHTTPConnection(HTTPConnection):
 class _WatchedHTTPSConnection(HTTPSConnection, _WatchedHTTPConnection):
     """An HTTPS connection whose sockets its ``deadline`` shuts.
 
-    ``HTTPSConnection.connect`` connects through ``_WatchedHTTPConnection.connect``, so the
-    plain socket is watched during the TLS handshake; the TLS socket replacing it is watched here.
+    The plain socket is detached when TLS wraps it, so the timer can't end the handshake; the
+    handshake has CPython's own bound of one socket timeout. The TLS socket is watched here, once
+    the handshake is done.
     """
 
     def connect(self) -> None:
