@@ -2,7 +2,7 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 complete: shadow precision 42/42 (Wilson 95% 91.6–100%), with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC by the owner ([evidence](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2)); the bot now comments on PRs · Phase 3 complete (0.4.0) as an accepted exception: on the eval cases context mode raised precision (49.1% against 33.8%), but the recall clause isn't met, and the labelled-PR comparison wasn't run by the owner's decision ([evidence](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3)) · Phase 4 in progress · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-12
+> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 complete: shadow precision 42/42 (Wilson 95% 91.6–100%), with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC by the owner ([evidence](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2)); the bot now comments on PRs · Phase 3 closed (0.4.0) as an owner-accepted exception: on 9 eval cases the precision gain is inconclusive (49.1% against 33.8%, intervals overlap), the recall clause isn't met, and the labelled-PR comparison wasn't run ([evidence](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3)) · Phase 4 in progress · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-12
 
 ## Usage
 
@@ -18,7 +18,7 @@ Authentication is your Claude Code login, or `ANTHROPIC_API_KEY` if set. The dif
 
 | Command | Does |
 |---|---|
-| `review-bot DIFF [--format text\|json\|markdown] [--triage]` | Reviews a diff: built-in rules, then the model. Exits `0` clean, `1` findings, `2` or more on an error |
+| `review-bot DIFF [--format text\|json\|markdown] [--triage] [--context-repo DIR]` | Reviews a diff: built-in rules, then the model. Exits `0` clean, `1` findings, `2` or more on an error |
 
 From a clone (`uv sync`, then prefix each with `uv run`), which may include unreleased commands:
 
