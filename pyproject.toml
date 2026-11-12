@@ -5,10 +5,10 @@ description = "Automated PR reviewer: deterministic checks plus an LLM, with hum
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "claude-agent-sdk==0.2.178",
+    "claude-agent-sdk==0.2.179",
     # Imported directly for the in-process tool server (P3-S3); its 2.x server API.
     "mcp>=2.3,<3",
-    "pydantic>=2.14.2",
+    "pydantic>=2.14.3",
 ]
 
 [project.scripts]
@@ -16,18 +16,18 @@ review-bot = "review_bot.cli:main"
 
 [dependency-groups]
 dev = [
-    "hypothesis>=6.170.14",
+    "hypothesis>=6.170.15",
     "markdown-it-py[linkify]>=4.2.0",
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.8",
+    "ruff>=0.17.4",
 ]
 
 [build-system]
-requires = ["hatchling>=1.26"]
+requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 # --- Ruff: formatting and linting (CONVENTIONS.md §1) -------------------------
