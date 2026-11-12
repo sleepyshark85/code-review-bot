@@ -98,10 +98,11 @@ class GateClass:
 class Blocker:
     """A finding that blocks the merge, and its class.
 
-    ``file`` and ``line`` are None where it has none: a new path holding a possible secret has
-    neither, a secret on a hunk whose header has no readable start has no line, and a carried
-    blocker whose comment is gone has neither. ``severity`` is None only for such a carried
-    blocker. ``carried`` says it came from an earlier run, not from this one's checks.
+    ``file`` and ``line`` are None where it has none: a new path holding a possible secret, or
+    a finding in such a path, has neither; a secret on a hunk whose header has no readable start
+    has no line; and a carried blocker whose comment is gone has neither. ``severity`` is None
+    only for such a carried blocker. ``carried`` says it came from an earlier run, not from this
+    one's checks.
     """
 
     fingerprint: str

@@ -18,11 +18,11 @@ from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import (
     BotComment,
+    BotIssueComment,
     MergedPullRequest,
     NewComment,
     Resolver,
     Summary,
-    SummaryState,
 )
 from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess, RestGitHubClient, github_access
@@ -930,102 +930,133 @@ def test_read_issue_refuses_another_repository(stub: Stub) -> None:
     assert stub.received == []
 
 
-def edited(node_id: str, editor: str | None, *, at: str | None = "2026-11-12T10:00:00Z") -> dict:
-    return {
-        "id": node_id,
-        "lastEditedAt": at,
-        "editor": None if editor is None else {"login": editor},
-    }
+def edited(node_id: str, *editors: str | None) -> dict:
+    """A comment node whose edits were made by ``editors`` in turn; GraphQL returns the last."""
+    edits = [{"editor": None if editor is None else {"login": editor}} for editor in editors]
+    return {"id": node_id, "userContentEdits": {"nodes": edits[-1:]}}
 
 
-def test_read_summary_state_reads_the_summary_and_who_last_edited_it(stub: Stub) -> None:
-    body = f"Summary.\n\n{marker_for(SHA)}"
-    summary = {"id": 6, "node_id": "IC_6", "user": BOT, "body": body}
+def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
+    stub: Stub,
+) -> None:
+    summary_body = f"Summary.\n\n{marker_for(SHA)}"
+    comments = [
+        {"id": 8, "node_id": "IC_8", "user": BOT, "body": "Marker edited away."},
+        {"id": 3, "node_id": "IC_3", "user": PERSON, "body": "A person's."},
+        {"id": 6, "node_id": "IC_6", "user": BOT, "body": summary_body},
+    ]
 
     def respond(request: Received) -> Reply:
         if request.path == "/graphql":
-            assert request.body["variables"] == {"ids": ["IC_6"]}
-            return reply({"data": {"nodes": [edited("IC_6", "mallory")]}})
-        return reply([summary])
+            assert request.body["variables"] == {"ids": ["IC_6", "IC_8"]}
+            assert "userContentEdits(last: 1)" in request.body["query"]
+            nodes = [edited("IC_6"), edited("IC_8", "github-actions", "mallory")]
+            return reply({"data": {"nodes": nodes}})
+        assert request.path == "/repos/owner/repo/issues/7/comments"
+        return reply(comments)
 
     stub.respond = respond
 
-    assert client(stub).read_summary_state(PR) == SummaryState(body, "mallory")
+    assert client(stub).list_bot_issue_comments(PR) == (
+        BotIssueComment(6, summary_body, None),
+        BotIssueComment(8, "Marker edited away.", "mallory"),
+    )
 
 
 @pytest.mark.parametrize(
     ("node", "last_editor"),
     [
-        (edited("IC_6", None, at=None), None),
-        (edited("IC_6", "github-actions"), "github-actions[bot]"),
+        (edited("IC_6"), None),
+        (edited("IC_6", "mallory", "github-actions"), "github-actions[bot]"),
         (edited("IC_6", None), "ghost"),
+        ({"id": "IC_6", "userContentEdits": {"nodes": [None]}}, "ghost"),
     ],
-    ids=["never-edited", "the-bot", "deleted-account"],
+    ids=["never-edited", "the-bot-last", "deleted-account", "null-edit"],
 )
-def test_read_summary_state_names_the_bot_as_rest_does_and_a_deleted_account_as_someone(
+def test_the_latest_editor_names_the_bot_as_rest_does_and_an_unknown_one_as_someone(
     stub: Stub, node: dict, last_editor: str | None
 ) -> None:
-    summary = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
+    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
     stub.respond = lambda request: reply(
-        {"data": {"nodes": [node]}} if request.path == "/graphql" else [summary]
+        {"data": {"nodes": [node]}} if request.path == "/graphql" else [comment]
     )
 
-    state = client(stub).read_summary_state(PR)
+    (read,) = client(stub).list_bot_issue_comments(PR)
 
-    assert state is not None
-    assert state.last_editor == last_editor
+    assert read.last_editor == last_editor
 
 
-def test_read_summary_state_of_no_summary_makes_no_graphql_call(stub: Stub) -> None:
-    stub.respond = lambda _request: reply([])
+def test_list_bot_issue_comments_with_none_by_the_bot_makes_no_graphql_call(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([{"id": 3, "user": PERSON, "body": "Hi."}])
 
-    assert client(stub).read_summary_state(PR) is None
+    assert client(stub).list_bot_issue_comments(PR) == ()
     assert len(stub.received) == 1
 
 
-def test_list_bot_comment_editors_reads_every_bot_comment_in_batches_of_100(stub: Stub) -> None:
+def test_read_inline_comments_lists_once_for_the_comments_and_their_editors(stub: Stub) -> None:
     comments = [
-        {**review_comment(index, BOT, body="edited away"), "node_id": f"RC_{index}"}
-        for index in range(1, 101)
+        {**review_comment(10, BOT), "node_id": "RC_10"},
+        {**review_comment(20, BOT, body="edited away"), "node_id": "RC_20"},
+        {**review_comment(30, PERSON), "node_id": "RC_30"},
     ]
-    comments.append({**review_comment(101, PERSON), "node_id": "RC_101"})
-    comments.append({**review_comment(102, BOT), "node_id": "RC_102"})
-    asked: list[list[str]] = []
 
     def respond(request: Received) -> Reply:
-        if request.path == "/graphql":
-            ids = request.body["variables"]["ids"]
-            asked.append(ids)
-            return reply(
-                {"data": {"nodes": [edited(node_id, "github-actions") for node_id in ids]}}
-            )
-        page = request.query["page"][0]
-        return reply(comments[:100] if page == "1" else comments[100:])
+        if request.path != "/graphql":
+            return reply(comments)
+        if "ids" in request.body["variables"]:
+            return reply({"data": {"nodes": [edited("RC_10"), edited("RC_20", "mallory")]}})
+        return reply(threads_page([thread("T10", 10), thread("T20", 20)]))
 
     stub.respond = respond
 
-    editors = client(stub).list_bot_comment_editors(PR)
+    inline = client(stub).read_inline_comments(PR)
+
+    assert [comment.comment_id for comment in inline.comments] == [10]
+    assert inline.editors == {10: None, 20: "mallory"}
+    listings = [request for request in stub.received if request.path != "/graphql"]
+    assert len(listings) == 1
+
+
+def test_read_inline_comments_asks_for_editors_in_batches_of_100(stub: Stub) -> None:
+    comments = [
+        {**review_comment(index, BOT, body="edited away"), "node_id": f"RC_{index}"}
+        for index in range(1, 102)
+    ]
+    asked: list[list[str]] = []
+
+    def respond(request: Received) -> Reply:
+        if request.path != "/graphql":
+            page = request.query["page"][0]
+            return reply(comments[:100] if page == "1" else comments[100:])
+        ids = request.body["variables"].get("ids")
+        if ids is None:
+            return reply(threads_page([]))
+        asked.append(ids)
+        return reply({"data": {"nodes": [edited(node_id) for node_id in ids]}})
+
+    stub.respond = respond
+
+    inline = client(stub).read_inline_comments(PR)
 
     assert [len(ids) for ids in asked] == [100, 1]
-    assert sorted(editors) == [*range(1, 101), 102]
-    assert set(editors.values()) == {"github-actions[bot]"}
+    assert sorted(inline.editors) == list(range(1, 102))
 
 
-def test_list_bot_comment_editors_fails_when_graphql_skips_a_comment(stub: Stub) -> None:
-    comment = {**review_comment(1, BOT), "node_id": "RC_1"}
+def test_reading_editors_fails_when_graphql_skips_a_comment(stub: Stub) -> None:
+    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": "x"}
     stub.respond = lambda request: reply(
         {"data": {"nodes": [None]}} if request.path == "/graphql" else [comment]
     )
 
-    with pytest.raises(GitHubError, match="list_bot_comment_editors failed: GraphQL returned"):
-        client(stub).list_bot_comment_editors(PR)
+    with pytest.raises(GitHubError, match="list_bot_issue_comments failed: GraphQL returned"):
+        client(stub).list_bot_issue_comments(PR)
 
 
-def test_list_bot_comment_editors_fails_on_a_comment_with_no_node_id(stub: Stub) -> None:
-    stub.respond = lambda _request: reply([review_comment(1, BOT)])
+def test_reading_editors_fails_on_a_comment_with_no_node_id(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([{"id": 6, "user": BOT, "body": "x"}])
 
-    with pytest.raises(GitHubError, match="comment 1 has no node_id"):
-        client(stub).list_bot_comment_editors(PR)
+    with pytest.raises(GitHubError, match="comment 6 has no node_id"):
+        client(stub).list_bot_issue_comments(PR)
 
 
 def test_write_summary_records_an_enabled_gate_in_its_marker(stub: Stub) -> None:

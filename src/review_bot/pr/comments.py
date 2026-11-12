@@ -22,6 +22,7 @@ from review_bot.errors import ErrorCategory
 from review_bot.findings import Category, EvidenceSpan, RuleId, Severity
 from review_bot.governance.gate import (
     GATE_CLASS_NAMES,
+    POSSIBLE_SECRET,
     Blocker,
     GateDecision,
     GateReason,
@@ -520,8 +521,10 @@ def _blocker_line(blocker: Blocker, threaded: Collection[str]) -> str:
         where = _location(blocker.file, blocker.line)
     elif blocker.carried:
         where = "carried from an earlier review, no comment"
-    else:
+    elif blocker.gate_class == POSSIBLE_SECRET:
         where = "a file path holding a possible secret"
+    else:
+        where = "a finding in a file whose path holds a possible secret"
     line = f"{where}: {blocker.gate_class}"
     if blocker.fingerprint in threaded:
         return line

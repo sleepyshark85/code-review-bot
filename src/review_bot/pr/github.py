@@ -22,14 +22,15 @@ __all__ = [
     "BOT_USER_TYPE",
     "MAX_MERGED_PULLS",
     "BotComment",
+    "BotIssueComment",
     "CommentSignals",
     "GitHubClient",
+    "InlineComments",
     "IssueReader",
     "MergedPullRequest",
     "NewComment",
     "Resolver",
     "Summary",
-    "SummaryState",
     "in_window",
     "is_any_bot",
     "is_bot_user",
@@ -127,15 +128,28 @@ class Summary:
 
 
 @dataclass(frozen=True, slots=True)
-class SummaryState:
-    """The bot's summary comment as posted, its marker last, and who last edited it.
+class BotIssueComment:
+    """One of the bot's issue comments, whatever its body, and who last edited it.
 
     ``last_editor`` is the login of whoever last edited it, ``BOT_LOGIN`` for the bot, or None
-    if nobody did since it was created.
+    if nobody did since it was posted.
     """
 
+    comment_id: int
     body: str
     last_editor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InlineComments:
+    """The bot's inline comments read back (``list_bot_comments``), and who last edited each.
+
+    ``editors`` maps every inline comment the bot wrote, by ID, to its last editor, as
+    ``BotIssueComment.last_editor`` says it; one whose marker was edited away is in it too.
+    """
+
+    comments: tuple[BotComment, ...]
+    editors: Mapping[int, str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,19 +224,17 @@ class GitHubClient(IssueReader, Protocol):
         """Resolve a comment's thread."""
         ...
 
-    def read_summary_state(self, pr: PullRequestRef) -> SummaryState | None:
-        """Return the bot's summary comment on ``pr`` and its last editor, or None if it has none.
+    def list_bot_issue_comments(self, pr: PullRequestRef) -> tuple[BotIssueComment, ...]:
+        """Return every issue comment the bot wrote on ``pr``, oldest first, with its last editor.
 
-        Only a gated run reads it, so a run with gating off makes Phase 3's calls (P4-S5).
+        Only a gated run reads them, so a run with gating off makes Phase 3's calls (P4-S5).
         """
         ...
 
-    def list_bot_comment_editors(self, pr: PullRequestRef) -> Mapping[int, str | None]:
-        """Return each inline comment the bot wrote on ``pr``, by ID, mapped to its last editor.
+    def read_inline_comments(self, pr: PullRequestRef) -> InlineComments:
+        """Return ``list_bot_comments``' comments and who last edited each, listing them once.
 
-        Every comment by the bot counts, whatever its body, so one whose marker was edited away
-        is still listed. The last editor is as ``SummaryState.last_editor`` says it. Only a
-        gated run reads it.
+        Only a gated run reads them.
         """
         ...
 

@@ -343,9 +343,9 @@ def _read_gated(
     """
     if github is None:
         return _Gated(classes)
-    existing = github.list_bot_comments(pr)
-    prior = read_prior(github.read_summary_state(pr), github.list_bot_comment_editors(pr))
-    return _Gated(classes, prior, existing)
+    inline = github.read_inline_comments(pr)
+    prior = read_prior(github.list_bot_issue_comments(pr), inline.editors)
+    return _Gated(classes, prior, inline.comments)
 
 
 def _gated_report(
@@ -354,8 +354,8 @@ def _gated_report(
     """``shadow`` with its merge gate decided, and the decision closing its summary.
 
     The model's part counts as judged if the run reviewed, or had already reviewed the head.
-    The blockers carried from earlier runs follow ``gated.prior``, with the comments this run
-    resolves counted as the bot's resolved (``carried_blockers``). A run that had already
+    The blockers carried from earlier runs follow ``gated.prior``; one drops only when this
+    run resolves its comment (``carried_blockers``). A run that had already
     reviewed the head keeps its earlier summary's body, with only the gate section new.
     """
     resolved = {resolve.comment.comment_id for resolve in shadow.resolves}
@@ -364,8 +364,8 @@ def _gated_report(
     carried = carried_blockers(
         gated.prior,
         classes=gated.classes,
-        existing=gated.existing,
         standing=standing,
+        resolved_now={resolve.comment.fingerprint for resolve in shadow.resolves},
         checks_ran=checks_ran,
     )
     reported = [

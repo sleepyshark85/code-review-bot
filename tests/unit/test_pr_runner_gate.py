@@ -366,3 +366,37 @@ def test_a_withheld_blocker_still_blocks_and_is_named_by_place(tmp_path: Path) -
     assert [b.line for b in shadow.gate.blocking] == [1, 2]
     fingerprint = withheld.reviewed.fingerprint
     assert f"- `app.py:2`: ai:security, fingerprint `{fingerprint}`" in shadow.summary_body
+
+
+def test_a_withheld_blocker_sharing_an_old_resolved_comments_fingerprint_keeps_blocking(
+    tmp_path: Path,
+) -> None:
+    pr = PullRequest(tmp_path, config=f"max_open_comments = 1\n{MONEY_CONFIG}")
+    pr.push({"app.py": "x = eval(y)\n"})
+    first = pr.run(security_finding(1))
+    (fingerprint,) = [blocker.fingerprint for blocker in first.gate.blocking]
+    pr.push({"app.py": "x = 1\n"})
+    second = pr.run()
+    assert [resolve.comment.fingerprint for resolve in second.resolves] == [fingerprint]
+    pr.push({"app.py": "a = 0\nx = eval(y)\n"})
+    third = pr.run(security_finding(1), security_finding(2))
+    assert [item.reviewed.fingerprint for item in third.withheld] == [fingerprint]
+    pr.push({"README.md": "Read me again.\n"})
+
+    fourth = pr.run()
+
+    assert fourth.gate.decision is GateDecision.BLOCK
+    assert fingerprint in [blocker.fingerprint for blocker in fourth.gate.blocking]
+
+
+def test_a_summary_whose_marker_was_edited_away_is_a_tamper_and_rebuilds(pr: PullRequest) -> None:
+    pr.push({"app.py": "x = 1\n"})
+    first = pr.run(security_finding())
+    pr.github.edit_summary("All clear.", by="mallory")
+
+    shadow = pr.run()
+
+    assert shadow.since is None
+    assert shadow.gate.rebuilt
+    assert [b.fingerprint for b in shadow.gate.blocking] == [first.gate.blocking[0].fingerprint]
+    assert "A tamper occurred" in shadow.summary_body

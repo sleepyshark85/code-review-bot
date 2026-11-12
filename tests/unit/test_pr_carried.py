@@ -17,7 +17,7 @@ from review_bot.pr.carried import (
     standing_comments,
 )
 from review_bot.pr.comments import MarkerEntry, SummaryMarker, with_summary_marker
-from review_bot.pr.github import BOT_LOGIN, BotComment, Resolver, SummaryState
+from review_bot.pr.github import BOT_LOGIN, BotComment, BotIssueComment, Resolver
 from review_bot.pr.plan import pair_fingerprints
 from review_bot.rules import DomainRule
 
@@ -55,13 +55,18 @@ def comment(  # noqa: PLR0913 - keyword-only, one per field a test varies
 
 
 def carried(
-    prior: Prior, existing: tuple[BotComment, ...], *, checks_ran: bool = True, resolved=()
+    prior: Prior,
+    existing: tuple[BotComment, ...],
+    *,
+    checks_ran: bool = True,
+    resolved: tuple[int, ...] = (),
 ) -> list[tuple[str, str, str | None]]:
+    """What ``prior`` carries, with the comments ``resolved`` resolved by this run."""
     blockers = carried_blockers(
         prior,
         classes=(SECURITY, MONEY),
-        existing=existing,
         standing=standing_comments(existing, resolved),
+        resolved_now={c.fingerprint for c in existing if c.comment_id in resolved},
         checks_ran=checks_ran,
     )
     return [(blocker.fingerprint, blocker.gate_class, blocker.file) for blocker in blockers]
@@ -71,9 +76,13 @@ def marker_prior(*entries: MarkerEntry) -> Prior:
     return Prior(SummaryMarker(SHA, entries), "Body.")
 
 
+def issue(body: str, editor: str | None = None, comment_id: int = 50) -> BotIssueComment:
+    return BotIssueComment(comment_id, body, editor)
+
+
 def test_a_summary_the_bot_last_edited_with_a_good_marker_is_trusted() -> None:
     for editor in (None, BOT_LOGIN):
-        prior = read_prior(SummaryState(TRUSTED_BODY, editor), {})
+        prior = read_prior((issue(TRUSTED_BODY, editor),), {})
         assert prior == Prior(
             SummaryMarker(SHA, (MarkerEntry(A, "ai:security"),)), "Body.", rebuild=False
         )
@@ -83,21 +92,36 @@ def test_a_summary_the_bot_last_edited_with_a_good_marker_is_trusted() -> None:
 def test_a_summary_someone_else_edited_or_malformed_or_tampered_is_rebuilt_from() -> None:
     tampered = with_summary_marker("Body.", reviewed_sha=SHA).replace(" -->", " tampered -->")
     for state in (
-        SummaryState(TRUSTED_BODY, "mallory"),
-        SummaryState("Body.\n\n<!-- review-bot:v1 summary reviewed=junk -->", None),
-        SummaryState(tampered, BOT_LOGIN),
+        issue(TRUSTED_BODY, "mallory"),
+        issue("Body.\n\n<!-- review-bot:v1 summary reviewed=junk -->"),
+        issue(tampered, BOT_LOGIN),
     ):
-        prior = read_prior(state, {})
+        prior = read_prior((state,), {})
         assert (prior.marker, prior.rebuild, prior.reviewed_sha) == (None, True, None)
 
 
 def test_no_summary_rebuilds_only_while_the_bot_has_inline_comments() -> None:
-    assert read_prior(None, {}) == FRESH
-    assert read_prior(None, {7: None}) == Prior(rebuild=True)
+    assert read_prior((), {}) == FRESH
+    assert read_prior((issue("Coverage is 91%."),), {}) == FRESH
+    assert read_prior((), {7: None}) == Prior(rebuild=True)
+
+
+def test_a_summary_whose_marker_someone_edited_away_is_a_tamper_not_a_deletion() -> None:
+    edited_away = issue("All clear.", "mallory", comment_id=40)
+
+    assert read_prior((edited_away,), {}) == Prior(rebuild=True)
+    assert read_prior((edited_away, issue(TRUSTED_BODY)), {}) == Prior(rebuild=True)
+
+
+def test_the_summary_is_the_oldest_bot_issue_comment_with_a_marker() -> None:
+    older = issue(TRUSTED_BODY, comment_id=10)
+    newer = issue(f"Newer.\n\n<!-- review-bot:v1 summary reviewed={'f' * 40} -->", comment_id=20)
+
+    assert read_prior((older, newer), {}).reviewed_sha == SHA
 
 
 def test_an_inline_comment_someone_else_edited_marks_the_prior_edited() -> None:
-    prior = read_prior(SummaryState(TRUSTED_BODY, None), {7: BOT_LOGIN, 8: "mallory"})
+    prior = read_prior((issue(TRUSTED_BODY),), {7: BOT_LOGIN, 8: "mallory"})
 
     assert prior.marker is not None
     assert prior.edited
@@ -110,22 +134,31 @@ def test_a_rebuild_is_tampered_until_the_whole_diff_can_be_checked() -> None:
     assert not FRESH.is_tampered(checks_ran=False)
 
 
-def test_a_trusted_ai_entry_carries_while_it_stands_and_drops_once_the_bot_resolved_it() -> None:
+def test_a_trusted_ai_entry_carries_while_it_stands_and_drops_when_this_run_resolves_it() -> None:
     prior = marker_prior(MarkerEntry(A, "ai:security"))
 
     assert carried(prior, (comment(1, A),)) == [(A, "ai:security", "app.py")]
     assert carried(prior, (comment(1, A, resolved_by=Resolver.PERSON),)) == [
         (A, "ai:security", "app.py")
     ]
-    assert carried(prior, (comment(1, A, resolved_by=Resolver.BOT),)) == []
-    assert carried(prior, (comment(1, A),), resolved={1}) == []
+    assert carried(prior, (comment(1, A),), resolved=(1,)) == []
+
+
+def test_a_listed_entry_sharing_an_older_bot_resolved_comments_fingerprint_still_carries() -> None:
+    # Push 1 commented F as X; push 2 removed the line and the bot resolved X; push 3 re-added
+    # it, withheld over the limit with the same F, so the marker lists F. Push 4 resolves
+    # nothing: F must still block.
+    prior = marker_prior(MarkerEntry(A, "ai:security"))
+    resolved_earlier = comment(1, A, resolved_by=Resolver.BOT)
+
+    assert carried(prior, (resolved_earlier,)) == [(A, "ai:security", None)]
 
 
 def test_a_trusted_ai_entry_with_no_comment_carries_with_no_place() -> None:
     prior = marker_prior(MarkerEntry(B, "ai:security"))
 
     blockers = carried_blockers(
-        prior, classes=(SECURITY,), existing=(), standing=(), checks_ran=True
+        prior, classes=(SECURITY,), standing=(), resolved_now=frozenset(), checks_ran=True
     )
 
     assert blockers == (Blocker(B, "ai:security", None, None, None, carried=True),)

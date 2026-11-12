@@ -8,7 +8,7 @@ a comment after a push: a test moves its line, or marks it outdated. A test acts
 with ``edit_comment``, ``delete_comment``, ``edit_summary`` and ``delete_summary``.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Final
@@ -30,12 +30,13 @@ from review_bot.pr.github import (
     BOT_USER_TYPE,
     MAX_MERGED_PULLS,
     BotComment,
+    BotIssueComment,
     CommentSignals,
+    InlineComments,
     MergedPullRequest,
     NewComment,
     Resolver,
     Summary,
-    SummaryState,
     in_window,
     is_any_bot,
     is_bot_user,
@@ -138,7 +139,9 @@ class FakeGitHubClient:
     ``comments`` are oldest first, and IDs grow with each one added or posted. ``summary`` is
     the body of the bot's summary comment as posted, its marker last, or None before one is
     written; a test may set it to any body. ``summary_editor`` is the login of whoever last
-    edited the summary, or None if nobody did. ``reviews`` are the reviews the bot
+    edited the summary, or None if nobody did. ``other_bot_comments`` are the bot's issue
+    comments that stopped being its summary, as when a person edits the marker away and the
+    bot then writes a new summary, oldest first. ``reviews`` are the reviews the bot
     posted, and ``calls`` every call made through ``GitHubClient``, in order. ``pulls`` and
     ``issues`` are those of ``repo``, in the order added. ``read_issue`` refuses another
     repository, as ``RestGitHubClient`` does; the other calls read them whatever repository
@@ -151,6 +154,8 @@ class FakeGitHubClient:
         self.comments: list[FakeComment] = []
         self.summary: str | None = None
         self.summary_editor: str | None = None
+        self.other_bot_comments: list[BotIssueComment] = []
+        self._summary_id = 0
         self.reviews: list[FakeReview] = []
         self.pulls: list[FakePull] = []
         self.issues: list[FakeIssue] = []
@@ -264,21 +269,23 @@ class FakeGitHubClient:
             return None
         return Summary(read_reviewed_sha(self.summary), holds_gate_state(self.summary))
 
-    def read_summary_state(self, pr: PullRequestRef) -> SummaryState | None:
-        """Return the summary and its last editor, or None as ``read_summary`` returns it."""
-        self._record("read_summary_state", pr)
-        if self.summary is None or not is_summary(self.summary):
-            return None
-        return SummaryState(self.summary, self.summary_editor)
+    def list_bot_issue_comments(self, pr: PullRequestRef) -> tuple[BotIssueComment, ...]:
+        """Return ``other_bot_comments``, then the summary if any, whatever its body."""
+        self._record("list_bot_issue_comments", pr)
+        if self.summary is None:
+            return tuple(self.other_bot_comments)
+        summary = BotIssueComment(self._summary_id, self.summary, self.summary_editor)
+        return (*self.other_bot_comments, summary)
 
-    def list_bot_comment_editors(self, pr: PullRequestRef) -> Mapping[int, str | None]:
-        """Return each comment by the bot, by ID, mapped to its last editor, whatever its body."""
-        self._record("list_bot_comment_editors", pr)
-        return {
+    def read_inline_comments(self, pr: PullRequestRef) -> InlineComments:
+        """Return ``list_bot_comments``' comments, and each bot comment's last editor."""
+        self._record("read_inline_comments", pr)
+        editors = {
             comment.comment_id: comment.last_editor
             for comment in self.comments
             if is_bot_user(comment.author, comment.author_type)
         }
+        return InlineComments(tuple(own for _comment, own in self._own_comments()), editors)
 
     def post_review(self, pr: PullRequestRef, comments: Sequence[NewComment]) -> None:
         """Post ``comments`` by the bot, as one review on ``pr``'s head commit."""
@@ -320,6 +327,13 @@ class FakeGitHubClient:
         """
         self._record("write_summary", pr, body)
         is_edit = self.summary is not None and is_summary(self.summary)
+        if not is_edit:
+            # As on GitHub, a body that is no longer a summary stays, and a new one is created.
+            if self.summary is not None:
+                self.other_bot_comments.append(
+                    BotIssueComment(self._summary_id, self.summary, self.summary_editor)
+                )
+            self._summary_id = self._new_id()
         self.summary = with_summary_marker(body, reviewed_sha=reviewed_sha, gate=gate)
         self.summary_editor = BOT_LOGIN if is_edit else None
 

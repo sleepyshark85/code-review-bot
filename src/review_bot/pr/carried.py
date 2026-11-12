@@ -1,10 +1,11 @@
 """What a gated comment-mode run carries from its earlier runs, and the PR diff's blockers.
 
 Pure (Phase 4 design, Merge gating; ADR 0019). A run reads the bot's summary and inline comments
-first (``read_prior``). Its marker is trusted only if the bot last edited it and it is well
-formed without ``tampered``; then its ``ai:`` entries carry, or every entry when the whole diff
-couldn't be checked (``carried_blockers``). Otherwise nothing is read from it, and the ``ai:``
-blockers are rebuilt from the bot's own inline comments. The rule blockers the whole diff holds
+first (``read_prior``). Its marker is trusted only if nobody but the bot last edited any of the
+bot's issue comments, and it is well formed without ``tampered``; then its ``ai:`` entries
+carry, or every entry when the whole diff couldn't be checked (``carried_blockers``). Otherwise
+nothing is read from it, and the ``ai:`` blockers are rebuilt from the bot's own inline
+comments. The rule blockers the whole diff holds
 take the fingerprints of the bot's comments they pair with (``check_pr_diff``).
 """
 
@@ -26,9 +27,10 @@ from review_bot.pr.comments import (
     MarkerEntry,
     SummaryMarker,
     body_before_gate,
+    is_summary,
     read_summary_marker,
 )
-from review_bot.pr.github import BotComment, Resolver, SummaryState, is_edited_by_others
+from review_bot.pr.github import BotComment, BotIssueComment, Resolver, is_edited_by_others
 from review_bot.pr.plan import pair_fingerprints
 from review_bot.rules import DomainRule
 
@@ -76,17 +78,26 @@ class Prior:
 FRESH: Final = Prior()
 
 
-def read_prior(summary: SummaryState | None, editors: Mapping[int, str | None]) -> Prior:
-    """What ``summary``, the bot's summary if any, and ``editors`` say for the run.
+def read_prior(
+    issue_comments: Sequence[BotIssueComment], editors: Mapping[int, str | None]
+) -> Prior:
+    """What the bot's ``issue_comments`` and inline comments' ``editors`` say for the run.
 
-    ``editors`` maps each inline comment the bot wrote to its last editor.
+    ``issue_comments`` are oldest first, and its summary is the oldest whose last line is a
+    summary marker, as ``GitHubClient.read_summary`` finds it. ``editors`` maps each inline
+    comment the bot wrote to its last editor. The marker is trusted only if none of the bot's
+    issue comments was last edited by someone else, so a summary whose marker was edited away
+    is a tamper too, not a deletion.
     """
     edited = any(is_edited_by_others(editor) for editor in editors.values())
-    if summary is not None and not is_edited_by_others(summary.last_editor):
+    summary = next((comment for comment in issue_comments if is_summary(comment.body)), None)
+    issue_edited = any(is_edited_by_others(comment.last_editor) for comment in issue_comments)
+    if summary is not None and not issue_edited:
         marker = read_summary_marker(summary.body)
         if marker is not None and not marker.tampered:
             return Prior(marker, body_before_gate(summary.body), edited=edited)
-    return Prior(rebuild=summary is not None or bool(editors), edited=edited)
+    rebuild = summary is not None or issue_edited or bool(editors)
+    return Prior(rebuild=rebuild, edited=edited)
 
 
 def check_pr_diff(
@@ -124,18 +135,20 @@ def carried_blockers(
     prior: Prior,
     *,
     classes: Sequence[GateClass],
-    existing: Sequence[BotComment],
     standing: Sequence[BotComment],
+    resolved_now: Collection[str],
     checks_ran: bool,
 ) -> tuple[Blocker, ...]:
     """The blockers ``prior`` carries into this run, under the enabled ``classes``.
 
-    ``existing`` are the bot's inline comments, and ``standing`` those of them not resolved by
-    the bot, before or in this run (``standing_comments``). With a trusted marker, each listed
-    ``ai:`` entry carries, or every entry if ``checks_ran`` is false, unless every comment with
-    its fingerprint is one the bot resolved, because its anchored line is gone (P4-S5 AC8).
-    With a rebuild, each standing comment of an enabled ``ai:`` class whose shown severity and
-    confidence meet the class's minimums is a blocker (AC9). Otherwise nothing carries.
+    ``standing`` are the bot's inline comments not resolved by the bot, before or in this run
+    (``standing_comments``), and ``resolved_now`` the fingerprints of those this run resolves
+    because their anchored lines are gone. With a trusted marker, each listed ``ai:`` entry
+    carries, or every entry if ``checks_ran`` is false, unless this run resolves its comment
+    (P4-S5 AC8). An entry listed after its comment was resolved, such as a withheld finding
+    sharing an old comment's fingerprint, still carries. With a rebuild, each standing comment
+    of an enabled ``ai:`` class whose shown severity and confidence meet the class's minimums
+    is a blocker (AC9). Otherwise nothing carries.
     """
     enabled = {gate_class.rule_part: gate_class for gate_class in classes}
     if prior.marker is not None:
@@ -147,7 +160,7 @@ def carried_blockers(
         return tuple(
             blocker
             for entry in entries
-            if (blocker := _listed_blocker(entry, existing, standing)) is not None
+            if (blocker := _listed_blocker(entry, standing, resolved_now)) is not None
         )
     if prior.rebuild:
         return tuple(
@@ -159,17 +172,17 @@ def carried_blockers(
 
 
 def _listed_blocker(
-    entry: MarkerEntry, existing: Sequence[BotComment], standing: Sequence[BotComment]
+    entry: MarkerEntry, standing: Sequence[BotComment], resolved_now: Collection[str]
 ) -> Blocker | None:
     """The blocker a marker entry carries, placed on its standing comment if it has one.
 
-    None if the bot resolved every comment with its fingerprint. With no comment at all, it was
-    withheld or its comment is gone, so it carries with no place.
+    None if this run resolves its comment. With no standing comment, it was withheld or its
+    comment is gone, so it carries with no place.
     """
     own = next((comment for comment in standing if comment.fingerprint == entry.fingerprint), None)
     if own is not None:
         return _comment_blocker(own, entry.gate_class)
-    if any(comment.fingerprint == entry.fingerprint for comment in existing):
+    if entry.fingerprint in resolved_now:
         return None
     return Blocker(entry.fingerprint, entry.gate_class, None, None, None, carried=True)
 

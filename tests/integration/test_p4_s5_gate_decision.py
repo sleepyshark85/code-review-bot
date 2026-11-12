@@ -1173,6 +1173,64 @@ def test_p4_s5_ac8_once_the_diff_is_readable_again_the_fixed_rule_blocker_drops(
     assert [b["class"] for b in blockers(run)] == [AI_LOGIC]
 
 
+# AC8: a blocker withheld on a line whose earlier comment the bot resolved still carries.
+
+SHELL = "    os.system(cmd)"
+SHELL_LINES = [
+    "def run(cmd):",
+    SHELL,
+    "    return 0",
+    "def other(a):",
+    "    b = a + 1",
+    "    return b",
+]
+SECURITY_CONFIG = repo_config(AI_SECURITY, extra="max_open_comments = 1\n", domain_rule=None)
+
+
+def shell_finding() -> Finding:
+    """`ai:security` at `high`, 0.95: a blocker under the class, below a critical finding."""
+    return model(2, severity="high", category="security", confidence=0.95)
+
+
+def test_p4_s5_ac8_withheld_blocker_on_a_line_whose_old_comment_the_bot_resolved_still_carries(
+    tmp_path, capsys, monkeypatch
+):
+    """Review round 1's laundering path: the re-added line's fingerprint F matches a comment the
+    bot resolved earlier, but this time F is withheld, so that old resolution can't drop it."""
+    pr = GatePR(
+        tmp_path, capsys, monkeypatch, config=SECURITY_CONFIG, classes=(gate_class(AI_SECURITY),)
+    )
+    pr.push({APP: text(SHELL_LINES)})
+    first, _ = pr.review([shell_finding()])
+    (comment,) = pr.open_comments()
+    fingerprint = marker_of(comment.body)["fingerprint"]
+    assert fingerprint == expected_fingerprint(APP, AI_SECURITY, SHELL, 0)
+    assert fingerprints(first) == [fingerprint]
+
+    pr.push({APP: text(replaced(SHELL_LINES, 2, None))})
+    pr.github.outdate(comment.comment_id)
+    removed, _ = pr.review([])
+    assert removed.resolved_threads == [comment.thread_id], "the bot resolves it: the line went"
+    assert (gate(removed)["decision"], blockers(removed)) == ("pass", [])
+
+    pr.push({APP: text(SHELL_LINES)})
+    critical = model(5, severity="critical", confidence=0.95)  # takes the one open-comment slot
+    readded, _ = pr.review([shell_finding(), critical])
+    assert [(w["fingerprint"], w["reason"]) for w in readded.shadow["withheld"]] == [
+        (fingerprint, "over_limit")
+    ], "precondition: the re-added finding is withheld, with F"
+    assert fingerprint in fingerprints(readded)
+    assert gate(readded)["decision"] == "block"
+
+    pr.push({README: "# Project\n\nMore words.\n"})
+    run, _ = pr.review([])
+
+    assert run.exit_code == 0, run.stderr
+    assert fingerprint in fingerprints(run), "the bot's old resolution doesn't drop it"
+    assert gate(run)["decision"] == "block"
+    assert (fingerprint, AI_SECURITY) in pr.marker()["gate"]
+
+
 # --- AC9: an untrusted or missing summary is rebuilt from the bot's inline comments -------------
 
 
@@ -1337,6 +1395,52 @@ def test_p4_s5_ac9_deleted_summary_without_bot_comments_is_a_fresh_review_with_n
     assert_full_review(run)
     assert (gate(run)["decision"], gate(run)["reason"], blockers(run)) == ("pass", None, [])
     assert "tamper" not in pr.visible_summary().lower()
+
+
+def assert_tamper_not_silent(pr: GatePR, run: Run) -> None:
+    """AC9's path: the whole diff is reviewed, and the run is `tampered` or says a tamper
+    occurred, so a lost withheld blocker never passes unremarked."""
+    assert_full_review(run)
+    said = "tamper" in pr.visible_summary().lower()
+    assert gate(run)["reason"] == "tampered" or said, (gate(run), pr.visible_summary())
+
+
+def test_p4_s5_ac9_a_line_appended_under_the_marker_is_a_tamper_not_a_fresh_summary(
+    tmp_path, capsys, monkeypatch
+):
+    """Review round 1's laundering path. The PR's only `ai:` blocker is withheld, so there is no
+    inline comment; a person appends a line under the summary's marker, so the marker is no
+    longer its last line. The bot's issue comment was last edited by someone else (AC9)."""
+    config = repo_config(AI_LOGIC, domain_rule=None)
+    pr = GatePR(tmp_path, capsys, monkeypatch, config=config, classes=(AI_LOGIC_CLASS,))
+    pr.push({APP: text(APP_V1)})
+    first, _ = pr.review([model(EVAL_LINE, rationale=f"The key {aws_key()} leaks.")])
+    (blocker,) = blockers(first)
+    assert (first.posted, pr.marker()["gate"]) == ([], [(blocker["fingerprint"], AI_LOGIC)])
+    pr.people.edit_summary(pr.summary() + "\n\nThanks, will look.")
+    pr.push({OTHER_FILE: "other = 1\n"})
+
+    run, _ = pr.review([])
+
+    assert_tamper_not_silent(pr, run)
+    assert pr.marker()["reviewed"] == pr.head or pr.marker()["tampered"]
+
+    pr.push({OTHER_FILE: "other = 2\n"})
+    later, _ = pr.review([])
+
+    assert_tamper_not_silent(pr, later), "the edited comment still stands, so still not trusted"
+
+
+def test_p4_s5_ac9_a_line_appended_under_the_marker_with_inline_comments_rebuilds(ai_carry):
+    """The same edit where A and C have inline comments: they are rebuilt; B is lost, said."""
+    pr = ai_carry.pr
+    pr.people.edit_summary(pr.summary() + "\nnote")
+    pr.push({OTHER_FILE: "other = 1\n"})
+
+    run, _ = pr.review([])
+
+    assert_tamper_not_silent(pr, run)
+    assert {ai_carry.a, ai_carry.c} <= set(fingerprints(run))
 
 
 def test_p4_s5_ac9_rebuild_cant_finish_without_the_whole_diff_checks(ai_carry):
@@ -1550,8 +1654,10 @@ def test_p4_s5_ac11_a_skip_with_no_blocker_is_unjudged_and_writes_the_summary(
     assert pr.marker()["reviewed"] == "none"
 
 
-def test_p4_s5_ac11_too_large_with_no_trusted_marker_is_unjudged(tmp_path, capsys, monkeypatch):
-    """Limits: no trusted marker and no whole-diff check fails open, as Q5 accepts."""
+def test_p4_s5_ac11_too_large_with_no_summary_and_no_bot_comments_is_unjudged(
+    tmp_path, capsys, monkeypatch
+):
+    """Limits: no summary, no bot comments and no whole-diff check fails open, as Q5 accepts."""
     pr = money_pr(tmp_path, capsys, monkeypatch)
     pr.push(
         {PRICES: text(PRICES_V1), "src/big.py": "".join(f"r_{n} = {n}\n" for n in range(2_000))}
@@ -1776,7 +1882,7 @@ def test_p4_s5_interfaces_valid_review_bot_gate_values_run(tmp_path, capsys, mon
     assert gate(run)["decision"] == "block", "the variable doesn't turn the gate on or off"
 
 
-# --- AC12: one audit record per run -------------------------------------------------------------
+# --- AC12: one audit record per run that reaches a decision -------------------------------------
 
 
 def test_p4_s5_ac12_audit_records_the_gate_with_every_fingerprint(mixed):
@@ -1818,6 +1924,26 @@ def test_p4_s5_ac12_refused_run_has_a_no_config_record(tmp_path, capsys, monkeyp
         "no_config",
     )
     assert record["policy_version"] == POLICY_VERSION
+
+
+def test_p4_s5_ac12_a_run_ending_on_a_git_error_writes_no_report_or_gate_record(
+    tmp_path, capsys, monkeypatch
+):
+    """It reaches no decision, so, as in Phase 3, there is no report to hold one."""
+    pr = money_pr(tmp_path, capsys, monkeypatch)
+    pr.push({PRICES: text(PRICES_V1)})
+
+    run, provider = pr.review([], payload=head_not_in_clone(pr))
+
+    assert run.exit_code == GIT_ERROR_EXIT, run.stderr
+    assert provider.requests == []
+    assert not (run.out / "shadow.json").exists()
+    audit = run.out / "audit.jsonl"
+    if audit.exists():
+        gate_records = [
+            r for r in read_records(audit) if (r["stage"], r["event"]) == ("policy", "gate")
+        ]
+        assert gate_records == []
 
 
 def test_p4_s5_ac12_record_holds_no_diff_text_or_path_secret(tmp_path, capsys, monkeypatch):

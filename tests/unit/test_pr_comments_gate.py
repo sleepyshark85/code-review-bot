@@ -227,3 +227,14 @@ def test_body_before_gate_drops_the_marker_and_the_gate_section() -> None:
 
     assert body_before_gate(posted) == "Body.\n\nMore."
     assert body_before_gate(with_summary_marker("Body.", reviewed_sha=SHA)) == "Body."
+
+
+def test_a_rule_blocker_in_a_secret_holding_path_is_named_as_a_finding_not_a_secret() -> None:
+    hidden = Blocker("e" * 16, "decimal-money", None, None, Severity.HIGH)
+
+    section = gate_summary(gated(hidden), would=False, threaded=())
+
+    assert (
+        f"- a finding in a file whose path holds a possible secret: decimal-money, "
+        f"fingerprint `{'e' * 16}`"
+    ) in section
