@@ -311,7 +311,8 @@ def build_provider(settings: Settings, *, openai_api_key: str | None = None) -> 
     ``openai`` provider uses it.
 
     Raises:
-        ConfigError: For ``openai``, if there is no key and its base URL's host isn't loopback.
+        ConfigError: For ``openai``, if there is no key and its base URL's host isn't loopback,
+            or if only one price is set, or a cost cap without both.
     """
     if settings.provider == "claude":
         # Deferred so only a Claude run pays to load the SDK. If it can't be imported, the error

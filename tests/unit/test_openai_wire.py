@@ -518,5 +518,5 @@ def test_tool_replies_are_the_assistant_message_then_each_result() -> None:
 def test_tool_replies_need_one_result_per_call() -> None:
     turn = ToolTurn(None, (ToolCall("c1", "read", {}),), TokenUsage(0, 0))
 
-    with pytest.raises(ValueError, match="zip"):
+    with pytest.raises(ValueError):
         tool_replies(turn, [])

@@ -385,6 +385,11 @@ BAD_ARGUMENTS = {
     # Valid JSON under 64 KB that Python's parser can't take: it must be refused, not crash.
     "nested_30000_deep": "[" * 30_000 + "]" * 30_000,
     "objects_10000_deep": '{"a":' * 10_000 + "1" + "}" * 10_000,
+    # Spec Notes: Python's parser takes these, but they count as not JSON.
+    "nan": '{"path": NaN}',
+    "infinity": '{"path": "billing/checkout.py", "start_line": Infinity}',
+    "negative_infinity": '{"path": "billing/checkout.py", "start_line": -Infinity}',
+    "duplicate_key": '{"path": "a", "path": "billing/checkout.py"}',
 }
 
 
@@ -445,13 +450,9 @@ async def test_p4_s6_ac3_valid_json_beyond_pythons_number_limits_never_crashes(r
     assert entry.outcome is ToolOutcome.REFUSED
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    ['{"path": NaN}', '{"path": "\\ud800"}', '{"path": "a", "path": "billing/checkout.py"}'],
-    ids=["nan", "lone_surrogate", "duplicate_key"],
-)
-async def test_p4_s6_limits_odd_json_arguments_leave_the_review_going(repo, arguments):
+async def test_p4_s6_limits_lone_surrogate_in_arguments_leaves_the_review_going(repo):
     tools = watched(repo)
+    arguments = '{"path": "\\ud800"}'  # the JSON escape of a lone surrogate
     transport = fake(tool_calls_completion(tool_call("call_1", "read", arguments)), answer(FINDING))
 
     response = await review(transport, tools)
@@ -492,75 +493,122 @@ async def test_p4_s6_ac3_policy_denied_tool_is_refused_and_the_review_goes_on(re
     assert "line_12" not in tool_messages(transport.sent[1].messages)[0]["content"]
 
 
-async def test_p4_s6_limits_calls_past_max_tool_calls_in_one_message_are_refused(repo):
+@pytest.mark.parametrize(
+    ("max_tool_calls", "asked"), [(1, 2), (3, 4), (3, 40)], ids=["1_of_2", "3_of_4", "3_of_40"]
+)
+async def test_p4_s6_limits_message_with_more_calls_than_the_cap_fails_before_any_runs(
+    repo, max_tool_calls, asked
+):
+    tools = watched(repo, max_calls=max_tool_calls)
+    transport = fake(asks(*[READ_CHECKOUT] * asked), answer(FINDING))
+
+    error = await failure(transport, tools, "--max-tool-calls", str(max_tool_calls))
+
+    assert error.category is ErrorCategory.INVALID_OUTPUT
+    assert tools.calls == []
+    assert tools.ledger == ()
+    assert len(transport.sent) == 1
+
+
+async def test_p4_s6_limits_message_with_exactly_max_tool_calls_calls_runs_them_all(repo):
     tools = watched(repo, max_calls=3)
-    transport = fake(asks(*[READ_CHECKOUT] * 40), answer(FINDING))
+    transport = fake(asks(READ_CHECKOUT, GREP_LINE, GLOB_PY), answer(FINDING))
 
     response = await review(transport, tools, "--max-tool-calls", "3")
 
     assert response.findings == (FINDING,)
-    results = tool_messages(transport.sent[1].messages)
-    assert [m["tool_call_id"] for m in results] == [f"call_{n}" for n in range(1, 41)]
-    answered = [m for m in results if "refused" not in m["content"]]
-    assert len(answered) <= 3
-    assert all("refused" in m["content"] for m in results[3:])
-    assert sum(entry.outcome is ToolOutcome.OK for entry in tools.ledger) <= 3
+    assert tools.calls == [READ_CHECKOUT, GREP_LINE, GLOB_PY]
+    assert all(entry.outcome is ToolOutcome.OK for entry in tools.ledger), tools.ledger
+    assert len(tool_messages(transport.sent[1].messages)) == 3
 
 
-async def test_p4_s6_limits_thousands_of_calls_in_one_message_finish_quickly(repo):
+@pytest.mark.parametrize("asked", [3_000, 50_000])
+async def test_p4_s6_limits_huge_message_of_calls_fails_fast(repo, asked):
     tools = watched(repo, max_calls=2)
-    transport = fake(asks(*[READ_CHECKOUT] * 3_000), answer(FINDING))
+    minimal = {"id": "c", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+    body = tool_calls_body(*[minimal] * asked)
+    reply = http(200, body)
+    assert len(reply.body) < 4 * 1024 * 1024  # under the response cap: the count must stop it
+    transport = fake(reply, answer(FINDING))
 
     started = time.monotonic()
-    response = await review(transport, tools, "--max-tool-calls", "2")
+    error = await failure(transport, tools, "--max-tool-calls", "2")
 
     assert time.monotonic() - started < BOUND_S
-    assert response.findings == (FINDING,)
-    assert len(tool_messages(transport.sent[1].messages)) == 3_000
-    assert sum(entry.outcome is ToolOutcome.OK for entry in tools.ledger) <= 2
+    assert error.category is ErrorCategory.INVALID_OUTPUT
+    assert tools.calls == []
+    assert tools.ledger == ()
+    assert len(transport.sent) == 1
 
 
-async def test_p4_s6_limits_many_oversized_arguments_in_one_response_finish_quickly(repo):
-    tools = watched(repo)
+async def test_p4_s6_limits_oversized_arguments_up_to_the_cap_finish_quickly(repo):
+    tools = watched(repo, max_calls=30)
     oversized = json.dumps({"path": CHECKOUT, "pad": "y" * 70_000})
-    calls = [tool_call(f"call_{n}", "read", oversized) for n in range(1, 51)]
+    calls = [tool_call(f"call_{n}", "read", oversized) for n in range(1, 31)]
     transport = fake(tool_calls_completion(*calls), answer(FINDING))
 
     started = time.monotonic()
-    response = await review(transport, tools)
+    response = await review(transport, tools, "--max-tool-calls", "30")
 
     assert time.monotonic() - started < BOUND_S
     assert response.findings == (FINDING,)
-    assert all(arguments == {} for _, arguments in tools.calls)
+    assert tools.calls == [("read", {})] * 30
 
 
-MALFORMED_TOOL_CALLS: dict[str, Any] = {
+# Spec Notes: a call that can't be answered (no string `id`, no `function` object with a string
+# `name`) fails `invalid_output`; arguments that aren't a string count as not JSON (AC3).
+UNANSWERABLE_TOOL_CALLS: dict[str, Any] = {
     "not_a_list": "read",
     "entry_not_an_object": [42],
     "entry_without_function": [{"id": "call_1", "type": "function"}],
+    "function_not_an_object": [{"id": "call_1", "type": "function", "function": "read"}],
     "name_not_a_string": [tool_call("call_1", 42, "{}")],
-    "arguments_missing": [{"id": "call_1", "type": "function", "function": {"name": "read"}}],
-    "arguments_an_object": [
-        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": {}}}
-    ],
+    "name_missing": [{"id": "call_1", "type": "function", "function": {"arguments": "{}"}}],
     "id_missing": [{"type": "function", "function": {"name": "read", "arguments": "{}"}}],
+    "id_not_a_string": [{**tool_call("call_1", "read", "{}"), "id": 7}],
+}
+ARGUMENTS_NOT_A_STRING: dict[str, Any] = {
+    "arguments_missing": {"id": "call_1", "type": "function", "function": {"name": "read"}},
+    "arguments_an_object": {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "read", "arguments": {"path": CHECKOUT}},
+    },
+    "arguments_null": tool_call("call_1", "read", None),
 }
 
 
-@pytest.mark.parametrize(
-    "tool_calls", MALFORMED_TOOL_CALLS.values(), ids=MALFORMED_TOOL_CALLS.keys()
-)
-async def test_p4_s6_limits_malformed_tool_calls_fail_only_as_a_provider_error(repo, tool_calls):
-    tools = watched(repo)
+def turn_with_tool_calls(tool_calls: Any) -> Any:
     body = tool_calls_body()
     body["choices"][0]["message"]["tool_calls"] = tool_calls
-    transport = fake(http(200, body), answer(FINDING))
+    return http(200, body)
 
-    try:
-        response = await review(transport, tools)
-    except ProviderError:
-        return
+
+@pytest.mark.parametrize(
+    "tool_calls", UNANSWERABLE_TOOL_CALLS.values(), ids=UNANSWERABLE_TOOL_CALLS.keys()
+)
+async def test_p4_s6_limits_unanswerable_tool_call_fails_invalid_output(repo, tool_calls):
+    tools = watched(repo)
+    transport = fake(turn_with_tool_calls(tool_calls), answer(FINDING))
+
+    error = await failure(transport, tools)
+
+    assert error.category is ErrorCategory.INVALID_OUTPUT
+    assert tools.calls == []
+    assert len(transport.sent) == 1
+
+
+@pytest.mark.parametrize("call", ARGUMENTS_NOT_A_STRING.values(), ids=ARGUMENTS_NOT_A_STRING.keys())
+async def test_p4_s6_ac3_arguments_that_arent_a_string_reach_the_executor_empty(repo, call):
+    tools = watched(repo)
+    transport = fake(turn_with_tool_calls([call]), answer(FINDING))
+
+    response = await review(transport, tools)
+
     assert response.findings == (FINDING,)
+    assert tools.calls == [("read", {})]
+    [entry] = tools.ledger
+    assert entry.reason is RefusalReason.INVALID_ARGUMENTS
 
 
 # --- AC4: the turn cap ----------------------------------------------------------------------------

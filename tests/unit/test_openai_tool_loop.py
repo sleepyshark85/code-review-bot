@@ -366,3 +366,26 @@ async def test_without_a_cost_cap_a_turn_with_unusable_usage_counts_no_tokens(
 
     assert response.usage == TokenUsage(500_000, 5_000)
     assert response.cost_usd == Decimal("1.30")
+
+
+async def test_a_message_asking_for_more_calls_than_the_cap_fails_before_any_runs() -> None:
+    calls = [tool_call(f"c{number}", "read", {"path": "a.py"}) for number in range(3)]
+    fake = transport(tool_turn(*calls), completion())
+    tools = RecordingTools()
+
+    error = await failure(fake, tools, max_tool_calls=2)
+
+    assert error.category is ErrorCategory.INVALID_OUTPUT
+    assert "--max-tool-calls" in str(error)
+    assert tools.calls == []
+    assert len(fake.sent) == 1
+
+
+async def test_a_message_asking_for_exactly_the_cap_runs_every_call() -> None:
+    calls = [tool_call(f"c{number}", "read", {"path": "a.py"}) for number in range(2)]
+    fake = transport(tool_turn(*calls), completion())
+    tools = RecordingTools()
+
+    await provider(fake, max_tool_calls=2).review(context_request(tools))
+
+    assert len(tools.calls) == 2
