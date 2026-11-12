@@ -23,7 +23,7 @@ from review_bot.evals.score import CaseResult
 from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.secret_scan import redact
-from review_bot.settings import Settings, take_github_token
+from review_bot.settings import Settings, take_github_token, take_openai_api_key
 from review_bot.spend import usd_amount
 
 if TYPE_CHECKING:
@@ -63,8 +63,9 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
             and ``compare`` never call a model, so they never use it.
     """
     keep_library_logs_off_stderr()
-    # Before any provider is built, so the Claude CLI never inherits it.
+    # Before any provider is built, so the Claude CLI never inherits them.
     take_github_token()
+    take_openai_api_key()
     try:
         args = _parse_args(argv)
         policy = (

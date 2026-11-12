@@ -12,7 +12,8 @@ pytestmark = pytest.mark.integration
 
 
 def test_p0_s4_ac14_mock_and_claude_are_both_in_the_suite(provider_factories):
-    assert set(provider_factories) == {"mock", "claude"}
+    # P4-S2 adds `openai` beside them.
+    assert {"mock", "claude"} <= set(provider_factories)
 
 
 def test_p0_s4_ac14_claude_factory_builds_the_claude_provider(provider_factories):

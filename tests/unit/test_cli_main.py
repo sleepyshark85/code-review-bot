@@ -203,7 +203,7 @@ def test_main_with_built_claude_provider_that_fails_discards_later_unraisable_re
     reports: list[object] = []
     sys.unraisablehook = reports.append
     failing = MockProvider(error=ProviderError(ErrorCategory.TRANSIENT, "timed out"))
-    monkeypatch.setattr("review_bot.cli.build_provider", lambda _settings: failing)
+    monkeypatch.setattr("review_bot.cli.build_provider", lambda _settings, **_keys: failing)
 
     exit_code = main([str(diff_path), "--provider", "claude"])
     _RaisesWhenFreed()
