@@ -65,6 +65,9 @@ class Settings(BaseModel):
     # None means no cap: the CLI's budget for one review (ADR 0015). At least a cent, so rounding
     # it down to the cent never gives 0; at most $1,000, so that rounding is exact.
     max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0.01"), le=Decimal(1000))
+    # The policy file's path as given, which reports record (ADR 0018); None means the built-in
+    # policy.
+    policy: str | None = Field(default=None, min_length=1)
 
 
 def in_ci(environ: Mapping[str, str]) -> bool:

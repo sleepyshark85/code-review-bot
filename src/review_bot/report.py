@@ -13,9 +13,10 @@ from typing import Final
 from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import FileDiff, ParsedDiff
 from review_bot.findings import ReviewedFinding
+from review_bot.governance.policy import Policy
 from review_bot.path_quoting import c_quoted, has_lone_surrogate
-from review_bot.policy import Decision
 from review_bot.providers.base import TokenUsage
+from review_bot.threshold import Decision
 from review_bot.verify import VerifyResult
 
 __all__ = [
@@ -41,6 +42,7 @@ class PipelineResult:
     ``prompt_version`` is the version of the prompt the review used. ``context_commit`` is the
     commit the tools read in context mode, and None in diff mode; ``ledger`` holds each tool
     call, in order. ``cost_usd`` is the call's cost as the provider reported it, or None.
+    ``policy`` is the policy the review ran under.
     """
 
     verification: VerifyResult
@@ -50,6 +52,7 @@ class PipelineResult:
     parsed: ParsedDiff
     model_called: bool
     prompt_version: str
+    policy: Policy
     warnings: tuple[str, ...] = ()
     context_commit: str | None = None
     ledger: tuple[ToolCall, ...] = ()

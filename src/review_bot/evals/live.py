@@ -1,11 +1,12 @@
 """Record each case's runs against the real model, within a call and a dollar budget (ADR 0007).
 
 The only eval code that calls a model (P1-S16, P3-S6). Before any call it refuses to run in CI,
-except from a manual dispatch given ``--allow-dispatch`` (ADR 0015), without a budget that covers
-every call, or with a case whose diff can't be sent, such as one holding a secret or one whose
-files are all skipped. With a dollar budget, a call starts only while what was spent leaves room
-for one more at its cap (ADR 0015). Context mode reviews each case over its ``repo``, built as
-replay builds it. Each call's outcome goes to stderr as it ends.
+except from a manual dispatch given ``--allow-dispatch`` (ADR 0015), without a call and a dollar
+budget that cover every call, in either mode, or with a case whose diff can't be sent, such as one
+holding a secret or one whose files are all skipped. A call starts only while what was spent
+leaves room for one more at its cap (ADR 0015). Each call is reviewed under the request's policy.
+Context mode reviews each case over its ``repo``, built as replay builds it. Each call's outcome
+goes to stderr as it ends.
 """
 
 import json
@@ -44,6 +45,12 @@ from review_bot.evals.replay import (
 )
 from review_bot.evals.score import CaseResult
 from review_bot.findings import Finding
+from review_bot.governance.policy import (
+    BUILTIN_POLICY,
+    Policy,
+    check_context_allowed,
+    check_settings,
+)
 from review_bot.providers.base import LLMProvider
 from review_bot.review import ReviewContext, run_pipeline
 from review_bot.rules import DomainRule
@@ -67,8 +74,9 @@ class LiveRequest:
 
     ``case_ids`` picks the cases to run; empty runs every case under ``cases_dir``. ``max_calls``
     is the most calls allowed in all; None refuses, as no budget was given. ``max_usd`` is the
-    dollar allowance and ``max_cost_usd`` each call's cap: context mode needs both, diff mode
-    both or neither. ``allow_dispatch`` is ``--allow-dispatch``.
+    dollar allowance and ``max_cost_usd`` each call's cap, which ``policy``'s ceiling is when
+    None: every mode needs both an allowance and a cap. ``allow_dispatch`` is
+    ``--allow-dispatch``. Each call is reviewed under ``policy``.
     """
 
     cases_dir: Path
@@ -79,19 +87,20 @@ class LiveRequest:
     max_usd: Decimal | None = None
     max_cost_usd: Decimal | None = None
     allow_dispatch: bool = False
+    policy: Policy = BUILTIN_POLICY
 
 
 @dataclass(frozen=True, slots=True)
 class LiveRun:
-    """What ``live`` did: each case it recorded, scored, and with a dollar budget, its spend.
+    """What ``live`` did: each case it recorded, scored, and its dollar budget and spend.
 
-    ``spent_usd`` counts each call's reported cost, or its cap if it reported none; it is 0
-    without a budget. ``stopped_by_budget`` says the budget left too little for another call, so
-    the planned cases after the last of ``results`` weren't recorded.
+    ``spent_usd`` counts each call's reported cost, or its cap if it reported none.
+    ``stopped_by_budget`` says the budget left too little for another call, so the planned cases
+    after the last of ``results`` weren't recorded.
     """
 
     results: tuple[CaseResult, ...]
-    budget: DollarBudget | None
+    budget: DollarBudget
     spent_usd: Decimal
     stopped_by_budget: bool
 
@@ -113,9 +122,9 @@ class _OutOfBudgetError(Exception):
 
 @dataclass(slots=True)
 class _Spend:
-    """What the calls so far count towards ``budget``; with no budget, nothing is counted."""
+    """What the calls so far count towards ``budget``."""
 
-    budget: DollarBudget | None
+    budget: DollarBudget
     spent_usd: Decimal = Decimal(0)
 
     def check_room(self) -> None:
@@ -124,18 +133,17 @@ class _Spend:
         Raises:
             _OutOfBudgetError: If one more call at its cap wouldn't fit in the budget.
         """
-        if self.budget is not None and not self.budget.has_room(self.spent_usd):
+        if not self.budget.has_room(self.spent_usd):
             raise _OutOfBudgetError(self.budget, self.spent_usd)
 
     def charge(self, run: RecordedRun) -> None:
         """Count ``run``'s call: its reported cost, or its cap if it reported none."""
-        if self.budget is not None:
-            self.spent_usd += self.budget.charge(run.cost_usd)
+        self.spent_usd += self.budget.charge(run.cost_usd)
 
 
 @dataclass(frozen=True, slots=True)
 class _Reviewer:
-    """How each call reviews a case's diff: with these settings and provider.
+    """How each call reviews a case's diff: with these settings and provider, under ``policy``.
 
     In context mode, its tools read the repository ``context`` names, and the domain rules that
     repository enables run too.
@@ -143,6 +151,7 @@ class _Reviewer:
 
     settings: Settings
     provider: LLMProvider
+    policy: Policy
     context: ReviewContext | None = None
     domain_rules: tuple[DomainRule, ...] = ()
 
@@ -185,28 +194,31 @@ async def record_live(
     Raises:
         EvalInputError: Before any call, if ``CI`` is set and the run isn't a
             ``workflow_dispatch`` given ``allow_dispatch``, a ``--case`` names no case, the
-            planned calls exceed ``max_calls`` or need a dollar budget they lack or don't fit, a
-            case is invalid, its diff can't be reviewed or has nothing to review, or a setting
-            is invalid. During the run, if a case's repo can't be built, or the audit log or a
-            recording can't be written.
+            planned calls exceed ``max_calls`` or lack a dollar budget or don't fit it, a case
+            is invalid, its diff can't be reviewed or has nothing to review, or a setting is
+            invalid or above the policy's ceiling. During the run, if a case's repo can't be
+            built, or the audit log or a recording can't be written.
+        ConfigError: Before any call, in context mode under a policy that allows no tool.
     """
     if live_run_refused(environ, allow_dispatch=request.allow_dispatch):
         raise EvalInputError(
             "live runs in CI only from a workflow_dispatch run given --allow-dispatch, and this "
             "CI run (CI is set) isn't one. Run it by hand, outside CI, or dispatch live.yml."
         )
+    if request.mode == "context":
+        check_context_allowed(request.policy)
     cases = [
         load_case(case_file)
         for case_file in _selected_case_files(request.cases_dir, request.case_ids)
     ]
     plan = _Plan(len(cases), request.runs)
     _check_call_budget(plan, request.max_calls)
-    spend = _Spend(_dollar_budget(request, plan))
+    settings = _live_settings(request.max_cost_usd, request.policy)
+    spend = _Spend(_dollar_budget(request.max_usd, settings.max_cost_usd, plan))
     for loaded in cases:
         await check_sendable(loaded)
-    settings = _live_settings(request.max_cost_usd)
     provider = _claude(settings, sdk_call)
-    reviewer = _Reviewer(settings, provider)
+    reviewer = _Reviewer(settings, provider, request.policy)
     results: list[CaseResult] = []
     try:
         for loaded in cases:
@@ -254,23 +266,27 @@ def _check_call_budget(plan: _Plan, max_calls: int | None) -> None:
         )
 
 
-def _dollar_budget(request: LiveRequest, plan: _Plan) -> DollarBudget | None:
-    """The dollar budget the calls are charged to, or None in diff mode given neither amount.
+def _dollar_budget(
+    max_usd: Decimal | None, max_cost_usd: Decimal | None, plan: _Plan
+) -> DollarBudget:
+    """The dollar budget the calls are charged to, in either mode (ADR 0015).
+
+    ``max_usd`` is the allowance, and ``max_cost_usd`` each call's cap: from ``--max-cost-usd``,
+    else the policy's ceiling.
 
     Raises:
-        EvalInputError: If context mode lacks either amount, diff mode has only one, or the
-            planned calls, each at its cap, could cost more than ``--max-usd``.
+        EvalInputError: If either amount is missing, naming each one missing, or the planned
+            calls, each at its cap, could cost more than ``--max-usd``.
     """
-    max_usd, max_cost_usd = request.max_usd, request.max_cost_usd
-    if request.mode == "diff" and max_usd is None and max_cost_usd is None:
-        return None
     if max_usd is None or max_cost_usd is None:
-        given = "--max-usd" if max_usd is not None else "--max-cost-usd"
-        reason = "--mode context" if request.mode == "context" else given
+        missing = [] if max_usd is not None else ["--max-usd"]
+        if max_cost_usd is None:
+            missing.append("--max-cost-usd")
         raise EvalInputError(
-            f"live with {reason} needs both --max-usd and --max-cost-usd: this run would make "
-            f"{plan}. Pass --max-cost-usd, the most one call may cost, and --max-usd, at least "
-            f"{plan.calls} times that, if that budget is approved."
+            f"live needs {' and '.join(missing)}: this run would make {plan}. Pass "
+            "--max-cost-usd, the most one call may cost, or set the policy's [cost] "
+            f"max_cost_usd, and --max-usd, at least {plan.calls} times that, if that budget is "
+            "approved."
         )
     budget = DollarBudget(max_usd=max_usd, max_cost_usd=max_cost_usd)
     if not budget.covers(plan.calls):
@@ -294,18 +310,18 @@ def _budget_stop_line(stop: _OutOfBudgetError, unrecorded: Sequence[LoadedCase])
     )
 
 
-def _live_settings(max_cost_usd: Decimal | None) -> Settings:
+def _live_settings(max_cost_usd: Decimal | None, policy: Policy) -> Settings:
     """The configured model, deadline and API timeout, with one attempt per call.
 
     The fields in ``fixed`` take no value from their REVIEW_BOT_* variable: a call sends the diff
     replay hashes, at replay's size limit, its tools run at replay's caps, and the audit log goes
-    to live's own path. Each call's cost cap is ``max_cost_usd`` (``--max-cost-usd``), or none,
-    whatever REVIEW_BOT_MAX_COST_USD says.
+    to live's own path. Each call's cost cap is ``max_cost_usd`` (``--max-cost-usd``), else
+    ``policy``'s ceiling, or none, whatever REVIEW_BOT_MAX_COST_USD says.
 
     Raises:
         EvalInputError: If the model, deadline or API timeout configured is invalid,
-            ``max_cost_usd`` is outside the cost cap's range, or without it,
-            REVIEW_BOT_MAX_COST_USD is invalid.
+            ``max_cost_usd`` is outside the cost cap's range or above ``policy``'s ceiling, or
+            without it, REVIEW_BOT_MAX_COST_USD is invalid.
     """
     replay_defaults = Settings()
     fixed = {
@@ -321,11 +337,12 @@ def _live_settings(max_cost_usd: Decimal | None) -> Settings:
         "max_cost_usd": None if max_cost_usd is None else str(max_cost_usd),
     }
     try:
-        settings = load_settings(fixed)
+        # Given None, ``load_settings`` reads REVIEW_BOT_MAX_COST_USD, which this then drops.
+        configured = load_settings(fixed).model_copy(update={"max_cost_usd": max_cost_usd})
+        settings = check_settings(configured, policy)
     except ConfigError as exc:
         raise EvalInputError(str(exc)) from exc
-    # Given None, ``load_settings`` reads REVIEW_BOT_MAX_COST_USD, which this then drops.
-    return settings.model_copy(update={"max_cost_usd": max_cost_usd})
+    return settings
 
 
 def _claude(settings: Settings, sdk_call: "SdkCall | None") -> LLMProvider:
@@ -346,7 +363,7 @@ async def _record_case(
         _OutOfBudgetError: Before a call the budget can't cover; the recording isn't written.
     """
     mode = request.mode
-    fields = freshness_fields(loaded.file, mode)
+    fields = freshness_fields(loaded.file, mode, reviewer.policy)
     if mode == "diff":
         recorded_runs = await _record_runs(loaded, request.runs, reviewer, spend)
     else:
@@ -374,7 +391,7 @@ async def _record_case(
     )
     path = loaded.live_recording_path(mode)
     _write_recording(path, recording)
-    return await score_recording(loaded, load_recording(path), mode=mode)
+    return await score_recording(loaded, load_recording(path), mode=mode, policy=reviewer.policy)
 
 
 async def _record_runs(
@@ -422,6 +439,7 @@ async def _record_run(loaded: LoadedCase, reviewer: _Reviewer) -> RecordedRun:
             audit,
             context=reviewer.context,
             domain_rules=reviewer.domain_rules,
+            policy=reviewer.policy,
         )
     except ProviderError as exc:
         return _failed_run({"category": exc.category, "cap": exc.cap})

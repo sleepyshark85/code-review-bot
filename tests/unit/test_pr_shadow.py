@@ -27,7 +27,7 @@ from review_bot.errors import (
 )
 from review_bot.findings import Category, EvidenceSpan, Finding, ReviewedFinding, Severity, Source
 from review_bot.fingerprint import anchor_for
-from review_bot.policy import Decision
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.config import DEFAULT_REPO_CONFIG, RepoConfig
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import BotComment
@@ -48,6 +48,7 @@ from review_bot.render import report_document
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import SecretHit, SecretKind
 from review_bot.settings import Settings
+from review_bot.threshold import Decision
 from review_bot.verify import VerifyResult
 
 SETTINGS = Settings(provider="mock")
@@ -78,6 +79,7 @@ def result(*findings: ReviewedFinding, model_called: bool = True) -> PipelineRes
         parsed=DIFF,
         model_called=model_called,
         prompt_version=PROMPT_VERSION,
+        policy=BUILTIN_POLICY,
     )
 
 
@@ -95,6 +97,7 @@ def build(
         finished_at=STARTED + timedelta(seconds=2),
         origin=Origin.LOCAL,
         pr=None,
+        policy=BUILTIN_POLICY,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -128,8 +131,14 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "codeowners",
         "context",
         "issues",
+        "policy",
     ]
     assert document["schema"] == "shadow/v1"
+    assert document["policy"] == {
+        "version": "builtin-v1",
+        "sha256": BUILTIN_POLICY.sha256,
+        "source": "builtin",
+    }
     assert (document["mode"], document["origin"], document["pr"]) == ("shadow", "local", None)
     assert (document["outcome"], document["reason"]) == ("reviewed", None)
     assert document["report"] == report_document(review, SETTINGS, "run-1")
@@ -212,6 +221,7 @@ def test_render_shadow_json_writes_utc_times_and_a_local_event_at_its_start() ->
         finished_at=STARTED + timedelta(seconds=2),
         origin=Origin.LOCAL,
         pr=None,
+        policy=BUILTIN_POLICY,
     )
 
     document = json.loads(render_shadow_json(shadow))
@@ -282,6 +292,7 @@ def test_render_shadow_json_redacts_a_secret_in_the_embedded_report() -> None:
             finished_at=STARTED,
             origin=Origin.LOCAL,
             pr=None,
+            policy=BUILTIN_POLICY,
         )
     )
 
@@ -342,6 +353,7 @@ def test_render_shadow_markdown_is_the_summary_then_each_comment_as_a_list_item(
         finished_at=STARTED,
         origin=Origin.LOCAL,
         pr=None,
+        policy=BUILTIN_POLICY,
     )
 
     markdown = render_shadow_markdown(shadow)
@@ -379,6 +391,7 @@ def test_render_shadow_markdown_keeps_a_suggestion_block_inside_its_list_item() 
         finished_at=STARTED,
         origin=Origin.LOCAL,
         pr=None,
+        policy=BUILTIN_POLICY,
     )
 
     item = render_shadow_markdown(shadow).split("\n\n", 1)[1]
@@ -398,6 +411,7 @@ def test_render_shadow_markdown_with_no_comments_is_the_summary() -> None:
         finished_at=STARTED,
         origin=Origin.LOCAL,
         pr=None,
+        policy=BUILTIN_POLICY,
     )
 
     assert render_shadow_markdown(shadow) == shadow.summary_body
@@ -434,6 +448,7 @@ def build_for_pr(
         finished_at=STARTED,
         origin=origin,
         pr=PR,
+        policy=BUILTIN_POLICY,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -477,6 +492,7 @@ def test_build_shadow_report_refuses_a_pull_request_that_doesnt_match_the_origin
             finished_at=STARTED,
             origin=origin,
             pr=pr,
+            policy=BUILTIN_POLICY,
         )
 
 
@@ -540,6 +556,7 @@ def build_in_comment_mode(
         finished_at=STARTED,
         origin=Origin.EVENT,
         pr=PR,
+        policy=BUILTIN_POLICY,
         codeowners=codeowners,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
@@ -587,6 +604,7 @@ def test_build_shadow_report_in_shadow_mode_refuses_existing_comments() -> None:
             finished_at=STARTED,
             origin=Origin.EVENT,
             pr=PR,
+            policy=BUILTIN_POLICY,
         )
 
 
@@ -622,6 +640,7 @@ def build_incremental(
         finished_at=STARTED,
         origin=Origin.EVENT,
         pr=PR,
+        policy=BUILTIN_POLICY,
         since=since,
         incremental=incremental,
     )
@@ -772,7 +791,9 @@ PHASE_2_CAPS = {
 }
 
 
-def build_with(settings: Settings, review: PipelineResult | ReportedError) -> dict[str, Any]:
+def build_with(
+    settings: Settings, review: PipelineResult | ReportedError, policy: Policy = BUILTIN_POLICY
+) -> dict[str, Any]:
     shadow = build_shadow_report(
         review,
         mode=Mode.SHADOW,
@@ -784,6 +805,7 @@ def build_with(settings: Settings, review: PipelineResult | ReportedError) -> di
         finished_at=STARTED,
         origin=Origin.LOCAL,
         pr=None,
+        policy=policy,
     )
     document: dict[str, Any] = json.loads(render_shadow_json(shadow))
     return document
@@ -873,6 +895,7 @@ def test_build_shadow_report_keeps_the_reviews_reported_cost_and_none_for_an_err
             finished_at=STARTED,
             origin=Origin.LOCAL,
             pr=None,
+            policy=BUILTIN_POLICY,
         ).cost_usd
 
     assert cost_of(costing("0.25")) == Decimal("0.25")
@@ -895,6 +918,7 @@ def test_render_shadow_json_lists_each_linked_issue_by_number_and_status_only() 
         finished_at=STARTED,
         origin=Origin.EVENT,
         pr=PR,
+        policy=BUILTIN_POLICY,
         issues=issues,
     )
 
@@ -910,3 +934,35 @@ def test_render_shadow_json_lists_each_linked_issue_by_number_and_status_only() 
 
 def test_render_shadow_json_without_linked_issues_lists_none() -> None:
     assert build(result(reviewed(2)))["issues"] == []
+
+
+# The policy file (P4-S1).
+
+CEILING_POLICY = dataclasses.replace(
+    BUILTIN_POLICY, version="org-1", source="p.toml", max_cost_usd=Decimal("0.60")
+)
+
+
+def test_render_shadow_json_in_diff_mode_under_a_ceiling_adds_the_cost_cap() -> None:
+    settings = Settings(provider="mock", max_cost_usd=Decimal("0.60"))
+
+    document = build_with(settings, costing("0.10", context_commit=None), CEILING_POLICY)
+
+    assert document["caps"] == PHASE_2_CAPS | {"max_cost_usd": "0.60"}
+
+
+def test_render_shadow_json_in_context_mode_under_a_ceiling_keeps_the_key_order() -> None:
+    document = build_with(CONTEXT, costing("0.10"), CEILING_POLICY)
+
+    assert list(document["caps"])[-1] == "max_cost_usd"
+
+
+def test_render_shadow_json_records_the_policy_of_a_run_that_reviewed_nothing() -> None:
+    document = build_with(SETTINGS, DiffEmptyError("empty"), CEILING_POLICY)
+
+    assert document["report"] is None
+    assert document["policy"] == {
+        "version": "org-1",
+        "sha256": BUILTIN_POLICY.sha256,
+        "source": "p.toml",
+    }

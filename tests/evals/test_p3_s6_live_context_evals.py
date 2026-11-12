@@ -611,20 +611,8 @@ def test_p3_s6_ac6_diff_mode_stops_on_budget_too(run_live, tmp_path):
     assert live.exit_code == 1
 
 
-def test_p3_s6_ac6_diff_mode_without_the_flags_is_p1_s16s_command(run_live, tmp_path):
-    root = copy_cases(tmp_path, SAMPLE_CONTEXT)
-    sdk = ScriptedSdk(always(diff_answer(FLOAT_MONEY, cost=5.00)))
-
-    live = run_live("--cases", root, "--runs", "2", "--max-calls", "2", sdk=sdk)
-
-    assert live.exit_code != USAGE_EXIT, live.output
-    # No allowance: a large reported cost stops nothing, and no budget is passed to the CLI.
-    assert len(sdk.calls) == 2
-    assert [options.max_budget_usd for _, options in sdk.calls] == [None, None]
-    assert [options.env["CLAUDE_CODE_MAX_RETRIES"] for _, options in sdk.calls] == ["0", "0"]
-    assert len(read_json(diff_path(root, SAMPLE_CONTEXT))["runs"]) == 2
-    assert "spent=" not in live.out
-    assert "stopped: budget" not in live.out
+# AC6's diff mode without the dollar flags, uncapped as P1-S16's command, is superseded: P4-S1
+# AC8 refuses it (tests/integration/test_p4_s1_policy_file.py).
 
 
 # --- AC7: retries 0, the per-call budget, and the cost in the audit log ------------------------

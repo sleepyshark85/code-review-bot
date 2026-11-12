@@ -485,6 +485,21 @@ async def test_review_ended_by_a_cap_fails_permanent_naming_the_cap_and_its_flag
     assert SENTINEL not in str(caught.value)
 
 
+@pytest.mark.parametrize("request_", [REQUEST, CONTEXT_REQUEST], ids=["diff", "context"])
+async def test_review_ended_by_the_cost_cap_advises_staying_within_the_policys_ceiling(
+    request_: ReviewRequest,
+) -> None:
+    sdk_call = scripted(capped_result("error_max_budget_usd", is_error=True))
+
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeAgentProvider(Settings(), sdk_call=sdk_call).review(request_)
+
+    assert str(caught.value) == (
+        "Claude reached the review's cost cap before it finished the review. Raise "
+        "--max-cost-usd, up to the policy's ceiling if it has one, or review a smaller diff."
+    )
+
+
 @pytest.mark.parametrize(("request_", "subtype", "cap", "flag"), CAPS)
 async def test_review_raising_a_cap_result_error_fails_naming_the_cap(
     request_: ReviewRequest, subtype: str, cap: str, flag: str

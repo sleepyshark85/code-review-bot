@@ -8,6 +8,7 @@ from typing import Final
 
 from review_bot.context.ledger import ToolOutcome, merged_spans_by_file
 from review_bot.findings import EvidenceSpan, Finding, ReviewedFinding, Severity
+from review_bot.governance.policy import Policy
 from review_bot.report import (
     PipelineResult,
     TriageDecision,
@@ -25,6 +26,7 @@ __all__ = [
     "evidence_json",
     "indented_in_list_item",
     "markdown_path",
+    "policy_json",
     "render_findings",
     "render_json",
     "render_markdown",
@@ -132,7 +134,13 @@ def report_document(
         },
         "mode": "diff" if result.context_commit is None else "context",
         "context": _context_json(result),
+        "policy": policy_json(result.policy),
     }
+
+
+def policy_json(policy: Policy) -> dict[str, str]:
+    """Which policy a run ran under, as ``report/v1`` and ``shadow/v1`` write it."""
+    return {"version": policy.version, "sha256": policy.sha256, "source": policy.source}
 
 
 def _context_json(result: PipelineResult) -> dict[str, object] | None:

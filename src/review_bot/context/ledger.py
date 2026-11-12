@@ -53,6 +53,7 @@ class RefusalReason(StrEnum):
     GIT_FAILED = "git_failed"
     CALL_LIMIT = "call_limit"
     BYTE_LIMIT = "byte_limit"
+    POLICY_DENIED = "policy_denied"
 
 
 @dataclass(frozen=True, slots=True)

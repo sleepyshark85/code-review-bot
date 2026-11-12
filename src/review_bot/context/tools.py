@@ -98,12 +98,18 @@ class _Answer:
 
 
 class RepoTools:
-    """The three read-only tools over one commit, recording every call in a ledger."""
+    """The read-only tools a policy allows over one commit, recording every call in a ledger."""
 
-    def __init__(self, repo: RepoRef, *, caps: ToolCaps) -> None:
-        """Serve ``repo`` within ``caps``; git runs only when a tool is called."""
+    def __init__(
+        self, repo: RepoRef, *, caps: ToolCaps, allowed: frozenset[ToolName] = frozenset(ToolName)
+    ) -> None:
+        """Serve ``repo`` within ``caps``, offering only the ``allowed`` tools.
+
+        Git runs only when a tool is called.
+        """
         self._repo = repo
         self._caps = caps
+        self._allowed = allowed
         self._ledger: list[ToolCall] = []
         self._calls_started = 0
         self._bytes_returned = 0
@@ -112,8 +118,8 @@ class RepoTools:
 
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        """``read``, ``grep`` and ``glob``."""
-        return TOOL_DEFINITIONS
+        """The allowed tools, of ``read``, ``grep`` and ``glob`` in that order."""
+        return tuple(tool for tool in TOOL_DEFINITIONS if tool.name in self._allowed)
 
     @property
     def ledger(self) -> tuple[ToolCall, ...]:
@@ -142,8 +148,26 @@ class RepoTools:
         return frame_tool_result(answer.text)
 
     async def _answer(self, tool: ToolName | None, arguments: Mapping[str, object]) -> _Answer:
-        """Check the review's caps and the tool's name, then run the tool in a thread."""
+        """Check the call may run, then run the tool in a thread, within the byte cap.
+
+        Every call counts towards ``max_calls``, a refused one included.
+        """
         self._calls_started += 1
+        runnable = self._runnable(tool)
+        if isinstance(runnable, _Answer):
+            return runnable
+        answer = await asyncio.to_thread(self._run, runnable, arguments)
+        if answer.outcome is ToolOutcome.REFUSED:
+            return answer
+        size = utf8_size(answer.text)
+        if self._bytes_returned + size > self._caps.max_total_bytes:
+            self._is_out_of_bytes = True
+            return _out_of_bytes()
+        self._bytes_returned += size
+        return answer
+
+    def _runnable(self, tool: ToolName | None) -> ToolName | _Answer:
+        """``tool``, or the refusal if the review's caps are used up or the policy denies it."""
         if self._calls_started > self._caps.max_calls:
             return _refused(
                 RefusalReason.CALL_LIMIT,
@@ -155,15 +179,14 @@ class RepoTools:
             return _refused(
                 RefusalReason.UNKNOWN_TOOL, "There is no such tool; use read, grep or glob."
             )
-        answer = await asyncio.to_thread(self._run, tool, arguments)
-        if answer.outcome is ToolOutcome.REFUSED:
-            return answer
-        size = utf8_size(answer.text)
-        if self._bytes_returned + size > self._caps.max_total_bytes:
-            self._is_out_of_bytes = True
-            return _out_of_bytes()
-        self._bytes_returned += size
-        return answer
+        if tool not in self._allowed:
+            allowed = [definition.name for definition in self.definitions]
+            offered = f"use {' or '.join(allowed)}" if allowed else "give your findings now"
+            return _refused(
+                RefusalReason.POLICY_DENIED,
+                f"This review's policy doesn't allow the {tool} tool; {offered}.",
+            )
+        return tool
 
     def _run(self, tool: ToolName, arguments: Mapping[str, object]) -> _Answer:
         """Run one tool; a git failure refuses this call and leaves the review going."""

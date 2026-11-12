@@ -1,7 +1,7 @@
 """The eval reports: one row per bug, each source's recall, and what a person should read.
 
 ``replay`` scores past responses; ``live`` adds each case's run-to-run figures and the totals,
-and with a dollar budget, each case's tool calls, cost and cap-hit runs, and the spend.
+and from its dollar budget, each case's tool calls, cost and cap-hit runs, and the spend.
 """
 
 from collections import Counter
@@ -68,8 +68,8 @@ def render_replay(results: Sequence[CaseResult]) -> str:
 def render_live(run: "LiveRun") -> str:
     """The report of each case just recorded, with its run-to-run figures, then the totals.
 
-    With a dollar budget, each case adds its spend figures, and the report ends with what was
-    spent of ``--max-usd``, after ``stopped: budget`` if the budget stopped the run.
+    Each case adds its spend figures, and the report ends with what was spent of ``--max-usd``,
+    after ``stopped: budget`` if the budget stopped the run.
     """
     lines = [LIVE_NOTICE]
     measured: list[LiveMetrics] = []
@@ -78,15 +78,12 @@ def render_live(run: "LiveRun") -> str:
         if result.score is not None and result.recording is not None:
             metrics = live_metrics(result.score, result.recording)
             measured.append(metrics)
-            figures = _metrics_lines(metrics)
-            if run.budget is not None:
-                figures += _spend_lines(result.recording, run.budget)
+            figures = _metrics_lines(metrics) + _spend_lines(result.recording, run.budget)
         lines += ["", *_case_lines(result, figures)]
     lines += ["", _totals_line(measured), _result_line(passed=run.passed)]
-    if run.budget is not None:
-        if run.stopped_by_budget:
-            lines.append("stopped: budget")
-        lines.append(f"spent=${run.spent_usd} of --max-usd ${run.budget.max_usd}")
+    if run.stopped_by_budget:
+        lines.append("stopped: budget")
+    lines.append(f"spent=${run.spent_usd} of --max-usd ${run.budget.max_usd}")
     return "\n".join(lines)
 
 

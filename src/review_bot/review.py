@@ -27,7 +27,12 @@ from review_bot.errors import (
     ProviderError,
     SecretDetectedError,
 )
-from review_bot.policy import Decision, decide
+from review_bot.governance.policy import (
+    BUILTIN_POLICY,
+    Policy,
+    check_context_allowed,
+    check_settings,
+)
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
     PROMPT_VERSION,
@@ -39,6 +44,7 @@ from review_bot.report import PipelineResult, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
+from review_bot.threshold import Decision, decide
 from review_bot.verify import ProposalCheck, VerifyResult, verify_findings
 
 __all__ = ["ReviewContext", "review_diff", "run_pipeline", "tool_caps"]
@@ -84,7 +90,7 @@ class ReviewContext:
     read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()
 
 
-async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-only
+async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are keyword-only
     diff_path: Path,
     settings: Settings,
     provider: LLMProvider,
@@ -92,6 +98,7 @@ async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-
     *,
     context: ReviewContext | None = None,
     domain_rules: Sequence[DomainRule] = (),
+    policy: Policy = BUILTIN_POLICY,
 ) -> PipelineResult:
     """Read the diff at ``diff_path``, then review it as ``review_diff`` does.
 
@@ -103,11 +110,18 @@ async def run_pipeline(  # noqa: PLR0913 - context and domain_rules are keyword-
     diff = await asyncio.to_thread(load_diff, diff_path, max_bytes=settings.max_diff_bytes)
     name = redact(str(diff_path))
     return await review_diff(
-        diff, settings, provider, audit, name=name, context=context, domain_rules=domain_rules
+        diff,
+        settings,
+        provider,
+        audit,
+        name=name,
+        context=context,
+        domain_rules=domain_rules,
+        policy=policy,
     )
 
 
-async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rules are keyword-only
+async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules and policy are keyword-only
     diff: str,
     settings: Settings,
     provider: LLMProvider,
@@ -117,6 +131,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
     exclude: Sequence[str] = (),
     context: ReviewContext | None = None,
     domain_rules: Sequence[DomainRule] = (),
+    policy: Policy = BUILTIN_POLICY,
 ) -> PipelineResult:
     """Review ``diff`` with ``provider``, sending only the files not skipped.
 
@@ -140,17 +155,25 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
             tools.
         domain_rules: The domain rules the repository enables, which run with the built-in
             rules, and in context mode are named in the prompt too.
+        policy: The policy the review runs under: its tools are the only ones offered, and
+            its version and hash are recorded. ``settings`` must already be within it, as
+            ``check_settings`` makes them, since the provider was built from them.
 
     Raises:
         InputError: If the diff isn't a diff, holds a possible secret, or its files to review
             are over ``max_review_bytes``; the provider is not called. ``GitError`` if git
-            fails during a tool call.
+            fails during a tool call. ``ConfigError``, before anything is recorded, if the cost
+            cap is above the policy's ceiling, or ``context`` is given and the policy allows no
+            tool.
+        ValueError: If the policy has a ceiling and ``settings`` have no cost cap, so
+            ``check_settings`` wasn't applied.
         ProviderError: If the provider fails.
         AuditError: If a record can't be written.
     """
+    _require_within_policy(settings, policy, is_context=context is not None)
     prompt_version = PROMPT_VERSION if context is None else CONTEXT_PROMPT_VERSION
     context_commit = None if context is None else context.repo.commit
-    audit.record(Stage.RUN, "start", _start_data(settings, diff, prompt_version))
+    audit.record(Stage.RUN, "start", _start_data(settings, diff, prompt_version, policy))
     # Before the parser, so nothing the parser misreads or drops can carry a secret past the scan.
     _stop_on_secrets(scan_secrets(diff), audit)
     try:
@@ -176,6 +199,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
             parsed=parsed,
             model_called=False,
             prompt_version=prompt_version,
+            policy=policy,
             context_commit=context_commit,
         )
 
@@ -185,7 +209,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
         request = build_request(parsed.reviewable_text, model=settings.model)
     else:
         issues = await asyncio.to_thread(context.read_issues)
-        tools = RepoTools(context.repo, caps=tool_caps(settings))
+        tools = RepoTools(context.repo, caps=tool_caps(settings), allowed=policy.tools)
         request = build_context_request(
             parsed.reviewable_text,
             model=settings.model,
@@ -221,10 +245,27 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context and domain_rule
         model_called=True,
         warnings=response.warnings,
         prompt_version=prompt_version,
+        policy=policy,
         context_commit=context_commit,
         ledger=ledger,
         cost_usd=response.cost_usd,
     )
+
+
+def _require_within_policy(settings: Settings, policy: Policy, *, is_context: bool) -> None:
+    """Check ``settings``, and context mode if ``is_context``, are within ``policy``.
+
+    Raises:
+        ConfigError: If the cost cap is above the ceiling, or context mode needs a tool the
+            policy doesn't allow.
+        ValueError: If ``settings`` lack the cost cap the ceiling sets.
+    """
+    if is_context:
+        check_context_allowed(policy)
+    if policy.max_cost_usd is not None and settings.max_cost_usd is None:
+        raise ValueError("A review's settings get the policy's ceiling (check_settings) first.")
+    # Raises for a cost cap above the ceiling; the settings it returns are these.
+    check_settings(settings, policy)
 
 
 def tool_caps(settings: Settings) -> ToolCaps:
@@ -290,7 +331,9 @@ def _stop_if_too_large_to_review(
     )
 
 
-def _start_data(settings: Settings, diff: str, prompt_version: str) -> dict[str, JsonValue]:
+def _start_data(
+    settings: Settings, diff: str, prompt_version: str, policy: Policy
+) -> dict[str, JsonValue]:
     # The diff's reader decoded it as strict UTF-8, so encoding gives back its exact bytes.
     diff_bytes = diff.encode("utf-8")
     return {
@@ -302,6 +345,8 @@ def _start_data(settings: Settings, diff: str, prompt_version: str) -> dict[str,
         "format": settings.format,
         "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
         "diff_bytes": len(diff_bytes),
+        "policy_version": policy.version,
+        "policy_sha256": policy.sha256,
     }
 
 

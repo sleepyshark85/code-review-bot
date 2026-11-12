@@ -42,6 +42,12 @@ from review_bot.evals.score import (
     score_case,
 )
 from review_bot.findings import Finding, Source
+from review_bot.governance.policy import (
+    BUILTIN_POLICY,
+    Policy,
+    check_context_allowed,
+    check_settings,
+)
 from review_bot.pr.config import CONFIG_PATH, parse_config_file
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
@@ -79,16 +85,22 @@ _LIVE_CONTEXT_COMMAND: Final = (
 class _CaseReview:
     """How the pipeline reviews a case, worked out once per case.
 
-    ``context`` is the repository a context review's tools read, or None in diff mode, and
-    ``domain_rules`` the domain rules the case repo's ``.review-bot.toml`` enables.
+    ``context`` is the repository a context review's tools read, or None in diff mode,
+    ``domain_rules`` the domain rules the case repo's ``.review-bot.toml`` enables, and
+    ``policy`` the policy the review is under.
     """
 
     context: ReviewContext | None
     domain_rules: tuple[DomainRule, ...]
+    policy: Policy
 
 
-def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]:
+def freshness_fields(
+    case_file: Path, mode: EvalMode = "diff", policy: Policy = BUILTIN_POLICY
+) -> dict[str, str]:
     """Today's values of a recording's freshness fields, for the case at ``case_file``.
+
+    In context mode, the tools offered are those ``policy`` allows.
 
     A recording is fresh only if its ``case_sha256``, ``diff_sha256``, ``prompt_version`` and
     ``prompt_sha256``, and in context mode its ``repo_tree``, all equal these. ``prompt_sha256``
@@ -104,23 +116,27 @@ def freshness_fields(case_file: Path, mode: EvalMode = "diff") -> dict[str, str]
     """
     loaded = load_case(case_file)
     if mode == "diff":
-        return _case_freshness(loaded, None, ())
+        return _case_freshness(loaded, None, (), policy)
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
         repo = build_case_repo(loaded, Path(work_dir))
-        return _case_freshness(loaded, repo, case_domain_rules(loaded))
+        return _case_freshness(loaded, repo, case_domain_rules(loaded), policy)
 
 
 def _case_freshness(
-    loaded: LoadedCase, repo: FixtureRepo | None, domain_rules: Sequence[DomainRule]
+    loaded: LoadedCase,
+    repo: FixtureRepo | None,
+    domain_rules: Sequence[DomainRule],
+    policy: Policy,
 ) -> dict[str, str]:
     """``freshness_fields`` for a case already loaded: in context mode with its built ``repo``.
 
-    ``domain_rules`` are those the case's repo enables, which only the context prompt names.
+    ``domain_rules`` are those the case's repo enables, which only the context prompt names, and
+    ``policy`` says which tools it offers.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
     """
-    settings = _replay_settings()
+    settings = _replay_settings(policy)
     try:
         diff = load_diff(loaded.diff_path, max_bytes=settings.max_diff_bytes)
         reviewable_text = parse_diff(diff).reviewable_text
@@ -132,7 +148,7 @@ def _case_freshness(
         request = build_request(reviewable_text, model=settings.model)
         prompts = json.dumps([request.system_prompt, request.user_prompt])
         return fields | {"prompt_version": PROMPT_VERSION, "prompt_sha256": _sha256_text(prompts)}
-    tools = RepoTools(repo.repo, caps=tool_caps(settings))
+    tools = RepoTools(repo.repo, caps=tool_caps(settings), allowed=policy.tools)
     request = build_context_request(
         reviewable_text,
         model=settings.model,
@@ -157,19 +173,27 @@ def _tool_definitions(request: ReviewRequest) -> list[dict[str, object]]:
 
 
 async def replay_cases(
-    cases_dir: Path, control: Path | None, *, mode: EvalMode = "diff"
+    cases_dir: Path,
+    control: Path | None,
+    *,
+    mode: EvalMode = "diff",
+    policy: Policy = BUILTIN_POLICY,
 ) -> list[CaseResult]:
     """Score every case under ``cases_dir`` on its live recording of ``mode``, or on rules alone.
 
     ``control`` is a synthetic recording (``--recording``) of ``mode`` that replaces its case's
-    live one. A stale recording fails its case without scoring it.
+    live one. A stale recording fails its case without scoring it. Each case is reviewed under
+    ``policy``, which must allow a tool in context mode.
 
     Raises:
         EvalInputError: If a case or a recording read is invalid, a recording sits under the
             wrong kind's or mode's directory, ``control`` is live, of another mode or names no
             case, a case's repo has an invalid ``.review-bot.toml``, or in context mode a case's
             repository can't be built.
+        ConfigError: In context mode, before anything is read, if ``policy`` allows no tool.
     """
+    if mode == "context":
+        check_context_allowed(policy)
     cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
     recordings = {loaded.case.id: _live_recordings(loaded)[mode] for loaded in cases}
     for loaded in cases:
@@ -183,7 +207,8 @@ async def replay_cases(
             )
         recordings[recording.case_id] = recording
     return [
-        await score_recording(loaded, recordings[loaded.case.id], mode=mode) for loaded in cases
+        await score_recording(loaded, recordings[loaded.case.id], mode=mode, policy=policy)
+        for loaded in cases
     ]
 
 
@@ -244,7 +269,9 @@ async def check_sendable(loaded: LoadedCase) -> None:
             it is skipped, naming the case.
     """
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as audit_dir:
-        review = _CaseReview(context=None, domain_rules=case_domain_rules(loaded))
+        review = _CaseReview(
+            context=None, domain_rules=case_domain_rules(loaded), policy=BUILTIN_POLICY
+        )
         result = await _review(loaded, (), Path(audit_dir) / "audit.jsonl", review)
     if not result.model_called:
         raise EvalInputError(
@@ -254,11 +281,15 @@ async def check_sendable(loaded: LoadedCase) -> None:
 
 
 async def score_recording(
-    loaded: LoadedCase, recording: Recording | None, *, mode: EvalMode
+    loaded: LoadedCase,
+    recording: Recording | None,
+    *,
+    mode: EvalMode,
+    policy: Policy = BUILTIN_POLICY,
 ) -> CaseResult:
     """Score the case in ``mode`` on ``recording`` through today's pipeline, or on rules alone.
 
-    A stale recording fails the case without being scored.
+    The pipeline runs under ``policy``. A stale recording fails the case without being scored.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed, its repo has an invalid
@@ -269,7 +300,7 @@ async def score_recording(
     with tempfile.TemporaryDirectory(prefix="review-bot-eval-") as work_dir:
         repo = None if mode == "diff" else build_case_repo(loaded, Path(work_dir))
         if recording is not None:
-            today = _case_freshness(loaded, repo, domain_rules)
+            today = _case_freshness(loaded, repo, domain_rules, policy)
             stale = [name for name, value in today.items() if getattr(recording, name) != value]
             if stale:
                 verb = "differs" if len(stale) == 1 else "differ"
@@ -284,7 +315,7 @@ async def score_recording(
             if repo is None
             else ReviewContext(repo=repo.repo, read_issues=lambda: loaded.issues)
         )
-        review = _CaseReview(context=context, domain_rules=domain_rules)
+        review = _CaseReview(context=context, domain_rules=domain_rules, policy=policy)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
 
@@ -469,11 +500,12 @@ async def _review(
     try:
         return await run_pipeline(
             loaded.diff_path,
-            _replay_settings(),
+            _replay_settings(review.policy),
             provider,
             audit,
             context=review.context,
             domain_rules=review.domain_rules,
+            policy=review.policy,
         )
     except InputError as exc:
         raise _unreviewable(loaded, exc) from exc
@@ -499,9 +531,10 @@ def case_domain_rules(loaded: LoadedCase) -> tuple[DomainRule, ...]:
     return config.domain_rules
 
 
-def _replay_settings() -> Settings:
-    # Built here, not from the environment: replay always scores at the lowest threshold.
-    return Settings(provider="mock")
+def _replay_settings(policy: Policy) -> Settings:
+    # Built here, not from the environment: replay always scores at the lowest threshold. No
+    # cost cap is set, so the policy's ceiling, if any, is the cap, and never exceeded.
+    return check_settings(Settings(provider="mock"), policy)
 
 
 def _unreviewable(loaded: LoadedCase, exc: InputError) -> EvalInputError:

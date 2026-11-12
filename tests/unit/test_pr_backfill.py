@@ -64,13 +64,18 @@ def write_pulls(tmp_path: Path, pulls: object) -> Path:
     return path
 
 
-def backfill(
+# Covers every test's calls; every backfill needs both amounts, in either mode (P4-S1).
+BUDGET = ("--max-usd", "10", "--max-cost-usd", "1")
+
+
+def backfill(  # noqa: PLR0913 - the flags under test, then keyword-only defaults
     tmp_path: Path,
     repo: Path,
     pulls: object,
     *flags: str,
     provider: LLMProvider,
     max_calls: int = 10,
+    budget: tuple[str, ...] = BUDGET,
 ) -> int:
     return main(
         [
@@ -87,6 +92,7 @@ def backfill(
             str(max_calls),
             "--provider",
             "mock",
+            *budget,
             *flags,
         ],
         provider=provider,
@@ -135,7 +141,7 @@ def test_backfill_writes_one_backfill_report_per_pull_request_each_its_own_run(
     assert len(run_ids) == 3
     assert {record["run_id"] for record in read_records(audit_log_in_tmp_path)} == run_ids
     out = capsys.readouterr().out
-    assert "backfill: entries=3 already_in_out=0 run=3\n" in out
+    assert "backfill: entries=3 already_in_out=0 run=3 spent_usd=3\n" in out
     assert last_line(out) == {
         "reviewed": 3,
         "blocked_secret": 0,
@@ -160,7 +166,7 @@ def test_backfill_keeps_an_existing_report_and_doesnt_count_it_towards_max_calls
     assert existing.read_bytes() == b"kept as it is\n"
     assert len(provider.requests) == 1
     assert report(tmp_path, 2)["outcome"] == "reviewed"
-    assert "backfill: entries=2 already_in_out=1 run=1\n" in capsys.readouterr().out
+    assert "backfill: entries=2 already_in_out=1 run=1 spent_usd=1\n" in capsys.readouterr().out
 
 
 def test_backfill_over_max_calls_refuses_before_any_call_naming_both_counts(
@@ -356,7 +362,7 @@ def test_backfill_reviews_a_failed_report_again_and_keeps_the_others(
     assert len(second.requests) == 1
     assert report(tmp_path, 1)["outcome"] == "reviewed"
     assert {n: (tmp_path / "out" / str(n) / "shadow.json").read_bytes() for n in (2, 3)} == kept
-    assert "backfill: entries=3 already_in_out=2 run=1\n" in capsys.readouterr().out
+    assert "backfill: entries=3 already_in_out=2 run=1 spent_usd=1\n" in capsys.readouterr().out
 
 
 def test_backfill_counts_a_failed_report_towards_max_calls(
@@ -395,7 +401,7 @@ def test_backfill_stopped_by_git_after_a_provider_failure_exits_with_the_git_err
     assert not (tmp_path / "out" / "2").exists()
     captured = capsys.readouterr()
     assert "have no merge base" in captured.err
-    assert "backfill: entries=2 already_in_out=0 run=1\n" in captured.out
+    assert "backfill: entries=2 already_in_out=0 run=1 spent_usd=1\n" in captured.out
 
 
 def test_backfill_with_an_invalid_github_repo_exits_2(
@@ -436,7 +442,7 @@ def test_backfill_stops_at_a_git_failure_with_exit_19_and_still_shows_the_counts
     assert not (tmp_path / "out" / "1").exists()
     captured = capsys.readouterr()
     assert "git rev-parse failed" in captured.err
-    assert "backfill: entries=2 already_in_out=0 run=0\n" in captured.out
+    assert "backfill: entries=2 already_in_out=0 run=0 spent_usd=0\n" in captured.out
     assert read_records(audit_log_in_tmp_path)[-1]["data"] == {"exit_code": 19, "error": "GitError"}
 
 
@@ -450,27 +456,40 @@ def totals_line(out: str) -> str:
     return totals
 
 
+BOTH_MISSING = "backfill needs --max-usd and --max-cost-usd (or REVIEW_BOT_MAX_COST_USD): "
+CAP_MISSING = "backfill needs --max-cost-usd (or REVIEW_BOT_MAX_COST_USD): "
+ALLOWANCE_MISSING = "backfill needs --max-usd: "
+
+
 @pytest.mark.parametrize(
-    "flags",
+    ("flags", "named"),
     [
-        ("--context", "repo"),
-        ("--context", "repo", "--max-usd", "1.80"),
-        ("--context", "repo", "--max-cost-usd", "0.60"),
-        ("--max-usd", "1.80"),
+        ((), BOTH_MISSING),
+        (("--max-usd", "1.80"), CAP_MISSING),
+        (("--max-cost-usd", "0.60"), ALLOWANCE_MISSING),
+        (("--context", "repo"), BOTH_MISSING),
+        (("--context", "repo", "--max-usd", "1.80"), CAP_MISSING),
+        (("--context", "repo", "--max-cost-usd", "0.60"), ALLOWANCE_MISSING),
     ],
-    ids=["neither", "no-max-cost-usd", "no-max-usd", "max-usd-without-a-cap"],
+    ids=["diff-neither", "diff-no-cap", "diff-no-max-usd", "neither", "no-cap", "no-max-usd"],
 )
-def test_backfill_with_a_dollar_budget_missing_an_amount_refuses_before_any_call(
-    flags: tuple[str, ...], tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+def test_backfill_missing_a_dollar_amount_in_either_mode_refuses_naming_it_before_any_call(
+    flags: tuple[str, ...],
+    named: str,
+    tmp_path: Path,
+    repo: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     provider = MockProvider()
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 3), *flags, provider=provider)
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 3), *flags, provider=provider, budget=()
+    )
 
     assert exit_code == 2
     assert provider.requests == []
     err = capsys.readouterr().err
-    assert "needs both --max-usd and --max-cost-usd" in err
+    assert named in err
     assert "up to 3 calls" in err
     assert list((tmp_path / "out").iterdir()) == []
 
@@ -484,7 +503,7 @@ def test_backfill_in_context_mode_with_every_report_already_written_runs_without
     provider = MockProvider()
 
     exit_code = backfill(
-        tmp_path, repo, merged_pulls(repo, 1), "--context", "repo", provider=provider
+        tmp_path, repo, merged_pulls(repo, 1), "--context", "repo", provider=provider, budget=()
     )
 
     assert exit_code == 0
@@ -499,7 +518,9 @@ def test_backfill_whose_planned_calls_at_their_cap_exceed_max_usd_refuses_naming
     provider = MockProvider()
     flags = ("--context", context, "--max-usd", "1.50", "--max-cost-usd", "0.60")
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 3), *flags, provider=provider)
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 3), *flags, provider=provider, budget=()
+    )
 
     assert exit_code == 2
     assert provider.requests == []
@@ -516,7 +537,9 @@ def test_backfill_in_context_mode_within_its_budget_reviews_each_pull_requests_h
         findings=[], tool_calls=[("read", {"path": "app.py"})], cost_usd=Decimal("0.25")
     )
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 2), *CONTEXT_BUDGET, provider=provider)
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 2), *CONTEXT_BUDGET, provider=provider, budget=()
+    )
 
     assert exit_code == 0
     assert provider.tool_results[0].count("value = 1") == 1
@@ -538,7 +561,9 @@ def test_backfill_stops_once_less_than_a_call_is_left_and_writes_no_report_for_t
         MockProvider(findings=[], cost_usd=Decimal("0.55")),
     )
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 3), *CONTEXT_BUDGET, provider=provider)
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 3), *CONTEXT_BUDGET, provider=provider, budget=()
+    )
 
     assert exit_code == 0
     assert len(provider.requests) == 2
@@ -559,7 +584,9 @@ def test_backfill_counts_a_call_with_no_reported_cost_or_a_provider_failure_at_i
         MockProvider(error=ProviderError(ErrorCategory.PERMANENT, "Over.", cap="cost")),
     )
 
-    exit_code = backfill(tmp_path, repo, merged_pulls(repo, 2), *CONTEXT_BUDGET, provider=provider)
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 2), *CONTEXT_BUDGET, provider=provider, budget=()
+    )
 
     assert exit_code == 12
     assert report(tmp_path, 2)["reason"] == "permanent"
@@ -573,28 +600,37 @@ def test_backfill_charges_nothing_for_a_pull_request_skipped_without_a_call(
     pulls[0]["isCrossRepository"] = True
     provider = MockProvider(findings=[], cost_usd=Decimal("0.60"))
 
-    exit_code = backfill(tmp_path, repo, pulls, *CONTEXT_BUDGET, provider=provider)
+    exit_code = backfill(tmp_path, repo, pulls, *CONTEXT_BUDGET, provider=provider, budget=())
 
     assert exit_code == 0
     assert len(provider.requests) == 2
     assert totals_line(capsys.readouterr().out).endswith("run=3 spent_usd=1.20")
 
 
-def test_backfill_without_context_keeps_phase_2s_counts_and_caps(
+def test_backfill_without_context_keeps_phase_2s_caps_and_counts_the_spend(
     tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    provider = MockProvider(findings=[], cost_usd=Decimal("5"))
+    provider = MockProvider(findings=[], cost_usd=Decimal("0.40"))
+    flags = ("--max-usd", "0.60", "--max-cost-usd", "0.60")
 
     exit_code = backfill(
-        tmp_path, repo, merged_pulls(repo, 1), "--max-cost-usd", "0.60", provider=provider
+        tmp_path, repo, merged_pulls(repo, 1), *flags, provider=provider, budget=()
     )
 
     assert exit_code == 0
     assert provider.requests[0].tools is None
     document = report(tmp_path, 1)
-    assert "max_tool_calls" not in document["caps"]
+    assert set(document["caps"]) == {
+        "max_diff_bytes",
+        "max_review_bytes",
+        "max_output_tokens",
+        "max_retries",
+        "deadline_s",
+    }
     assert document["over_budget"] is False
-    assert totals_line(capsys.readouterr().out) == "backfill: entries=1 already_in_out=0 run=1"
+    assert totals_line(capsys.readouterr().out) == (
+        "backfill: entries=1 already_in_out=0 run=1 spent_usd=0.40"
+    )
 
 
 @pytest.mark.parametrize("amount", ["0", "-1", "nan", "inf", "abc"])
@@ -604,9 +640,64 @@ def test_backfill_with_an_invalid_max_usd_exits_2_naming_it(
     provider = MockProvider()
 
     exit_code = backfill(
-        tmp_path, repo, merged_pulls(repo, 1), "--max-usd", amount, provider=provider
+        tmp_path, repo, merged_pulls(repo, 1), "--max-usd", amount, provider=provider, budget=()
     )
 
     assert exit_code == 2
     assert provider.requests == []
     assert "--max-usd" in capsys.readouterr().err
+
+
+# The policy's cost ceiling (P4-S1).
+
+
+def ceiling_policy(tmp_path: Path) -> str:
+    path = tmp_path / "policy.toml"
+    path.write_text('version = "org-1"\n[cost]\nmax_cost_usd = "0.60"\n', encoding="utf-8")
+    return str(path)
+
+
+def test_backfill_under_a_ceiling_charges_each_call_at_it_without_max_cost_usd(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = MockProvider(findings=[])
+    flags = ("--policy", ceiling_policy(tmp_path), "--max-usd", "1.20")
+
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 2), *flags, provider=provider, budget=()
+    )
+
+    assert exit_code == 0
+    document = report(tmp_path, 1)
+    assert (document["caps"]["max_cost_usd"], document["policy"]["version"]) == ("0.60", "org-1")
+    assert totals_line(capsys.readouterr().out).endswith("run=2 spent_usd=1.20")
+
+
+def test_backfill_under_a_ceiling_refuses_planned_calls_over_max_usd_at_it(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = MockProvider()
+    flags = ("--policy", ceiling_policy(tmp_path), "--max-usd", "1.00")
+
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 2), *flags, provider=provider, budget=()
+    )
+
+    assert exit_code == 2
+    assert provider.requests == []
+    assert "1.20 USD in all, more than --max-usd 1.00" in capsys.readouterr().err
+
+
+def test_backfill_with_a_cap_above_the_ceiling_exits_2_before_any_call(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = MockProvider()
+    flags = ("--policy", ceiling_policy(tmp_path), "--max-usd", "9", "--max-cost-usd", "1")
+
+    exit_code = backfill(
+        tmp_path, repo, merged_pulls(repo, 2), *flags, provider=provider, budget=()
+    )
+
+    assert exit_code == 2
+    assert provider.requests == []
+    assert "above the ceiling of 0.60" in capsys.readouterr().err

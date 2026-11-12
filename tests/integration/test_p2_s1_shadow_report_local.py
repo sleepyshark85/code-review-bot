@@ -78,6 +78,8 @@ SHADOW_KEYS = (
     "context",
     # P3-S9 (Phase 3 design.md, Report keys: `shadow/v1` adds `issues`).
     "issues",
+    # P4-S1 (Phase 4 design.md, Report keys: `shadow/v1` adds `policy`).
+    "policy",
 )
 # `applied` joined in P2-S5, `owners` in P3-S11, `evidence` and `evidence_dropped` in P3-S4, and
 # `suggestion` in P3-S12 (design.md, `shadow/v1`: later slices add keys, never remove them).

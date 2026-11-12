@@ -17,7 +17,7 @@ from review_bot.findings import (
     Severity,
     Source,
 )
-from review_bot.policy import Decision
+from review_bot.governance.policy import BUILTIN_POLICY
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
 from review_bot.render import (
@@ -31,6 +31,7 @@ from review_bot.render import (
 from review_bot.report import PipelineResult, TriageDecision, TriagedFinding
 from review_bot.settings import Settings
 from review_bot.suggestion import SuggestionDropReason
+from review_bot.threshold import Decision
 from review_bot.verify import DropReason, ProposalCheck, VerifyResult
 
 # Assembled, so no key marker is written literally.
@@ -83,6 +84,7 @@ def pipeline_result(
         parsed=ParsedDiff(files=(), reviewable_text="", decoded_paths=()),
         model_called=True,
         prompt_version=PROMPT_VERSION,
+        policy=BUILTIN_POLICY,
     )
 
 
@@ -180,6 +182,11 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "usage": {"input_tokens": 12, "output_tokens": 3, "cost_usd": None},
         "mode": "diff",
         "context": None,
+        "policy": {
+            "version": "builtin-v1",
+            "sha256": BUILTIN_POLICY.sha256,
+            "source": "builtin",
+        },
     }
     assert list(json.loads(render(result))) == [
         "schema",
@@ -194,6 +201,7 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "usage",
         "mode",
         "context",
+        "policy",
     ]
 
 
