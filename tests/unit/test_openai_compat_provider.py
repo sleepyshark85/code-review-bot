@@ -11,6 +11,7 @@ from openai_samples import API_KEY, FakeTransport, completion, error_response, t
 from review_bot.errors import ConfigError, ErrorCategory, ProviderError
 from review_bot.findings import Finding
 from review_bot.providers.base import ReviewRequest, TokenUsage
+from review_bot.providers.openai_calls import ChatEndpoint
 from review_bot.providers.openai_compat import HttpResponse, OpenAICompatibleProvider
 from review_bot.settings import Settings
 
@@ -386,3 +387,18 @@ def test_provider_refuses_a_key_that_cant_go_in_a_header_without_quoting_it(suff
 def test_provider_refuses_an_unsendable_key_on_loopback_too() -> None:
     with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
         provider(transport(), base_url="http://127.0.0.1/v1", api_key=f"{API_KEY}\n")
+
+
+def test_no_repr_shows_the_key() -> None:
+    endpoint = ChatEndpoint(
+        url=f"{BASE_URL}/chat/completions",
+        api_key=API_KEY,
+        transport=transport(),
+        max_retries=0,
+        api_timeout_s=1,
+        sleep=Waits(),
+        clock=lambda: NOW,
+    )
+
+    assert API_KEY not in repr(endpoint)
+    assert API_KEY not in repr(provider(transport()))

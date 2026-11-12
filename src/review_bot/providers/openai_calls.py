@@ -85,13 +85,13 @@ class _Failure:
 class ChatEndpoint:
     """A Chat Completions URL, and how to send to it.
 
-    ``api_key`` None sends no ``Authorization`` header. ``sleep`` waits between retries, and
-    ``clock`` gives the current time, timezone-aware, against which a ``Retry-After`` date is
-    read.
+    ``api_key`` None sends no ``Authorization`` header, and no ``repr`` shows it, so no
+    traceback or log line can. ``sleep`` waits between retries, and ``clock`` gives the current
+    time, timezone-aware, against which a ``Retry-After`` date is read.
     """
 
     url: str
-    api_key: str | None
+    api_key: str | None = dataclasses.field(repr=False)
     transport: HttpTransport
     max_retries: int
     api_timeout_s: float
