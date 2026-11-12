@@ -19,7 +19,8 @@ from review_bot.context.ledger import ToolName
 from review_bot.errors import ConfigError
 
 if TYPE_CHECKING:
-    # Only for its type: ``settings`` imports ``report``, which imports this module.
+    # Only for its type: ``settings`` imports ``audit``, which imports ``report``, which imports
+    # this module.
     from review_bot.settings import Settings
 
 __all__ = [
@@ -80,11 +81,15 @@ BUILTIN_POLICY: Final = Policy(
 
 
 def _shown(text: str) -> str:
-    """At most 100 characters of ``text``, with every character that isn't printable ASCII escaped.
+    """At most 100 characters of ``text``, with each unprintable character escaped.
 
-    Not ``render.escape_unprintable``: ``render`` imports this module, through ``report``.
+    As ``render.escape_unprintable`` escapes, which can't be imported here: ``render`` imports
+    ``report``, which imports this module.
     """
-    return text[:_MAX_SHOWN_CHARS].encode("unicode_escape").decode("ascii")
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+        for char in text[:_MAX_SHOWN_CHARS]
+    )
 
 
 def _version(value: object) -> str:
@@ -237,5 +242,7 @@ def _problem(error: ErrorDetails) -> str:
         return f"unknown key '{shown}'. A policy may set only {_KNOWN_KEYS}"
     if error["type"] == "missing":
         return f"'{shown}' is missing"
+    if error["type"] == "model_type":
+        return f"invalid value for '{shown}': it must be a table, such as [{shown}]"
     reason = error["ctx"]["error"] if error["type"] == "value_error" else error["msg"]
     return f"invalid value for '{shown}': {reason}"

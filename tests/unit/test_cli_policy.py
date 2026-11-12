@@ -8,11 +8,12 @@ from audit_records import data_of
 from diff_samples import FINDING_DIFF
 from git_samples import commit, init_repo
 
-from review_bot.cli import main, read_policy, settings_within_policy
+from review_bot.cli import main, read_policy, read_policy_option, settings_within_policy
 from review_bot.context.ledger import ToolName
+from review_bot.errors import ConfigError
 from review_bot.governance.policy import BUILTIN_POLICY, MAX_POLICY_BYTES, PolicyError
 from review_bot.providers.mock import MockProvider
-from review_bot.settings import Settings
+from review_bot.settings import Settings, load_settings
 
 ORG_POLICY = (
     b'version = "org-1"\n[tools]\nallowed = ["read", "glob"]\n[cost]\nmax_cost_usd = "0.60"\n'
@@ -35,6 +36,41 @@ def policy_file(tmp_path: Path, data: bytes, name: str = "p.toml") -> Path:
 
 def test_read_policy_without_a_path_is_the_builtin_policy() -> None:
     assert read_policy(None) is BUILTIN_POLICY
+
+
+def test_read_policy_option_takes_the_flag_then_the_variable_then_the_builtin_policy(
+    tmp_path: Path,
+) -> None:
+    flagged = str(policy_file(tmp_path, ORG_POLICY))
+    variable = {"REVIEW_BOT_POLICY": str(policy_file(tmp_path, NO_TOOLS, name="v.toml"))}
+
+    assert read_policy_option(flagged, variable).version == "org-1"
+    assert read_policy_option(None, variable).version == "locked"
+    assert read_policy_option(None, {}) is BUILTIN_POLICY
+
+
+def test_read_policy_option_refuses_an_empty_flag_as_load_settings_does() -> None:
+    with pytest.raises(ConfigError) as raised:
+        read_policy_option("", {})
+    with pytest.raises(ConfigError) as from_settings:
+        load_settings({"policy": ""})
+
+    assert str(raised.value) == str(from_settings.value)
+    assert "--policy" in str(raised.value)
+
+
+def test_read_policy_option_refuses_an_empty_variable_as_load_settings_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_POLICY", "")
+
+    with pytest.raises(ConfigError) as raised:
+        read_policy_option(None, {"REVIEW_BOT_POLICY": ""})
+    with pytest.raises(ConfigError) as from_settings:
+        load_settings({})
+
+    assert str(raised.value) == str(from_settings.value)
+    assert "REVIEW_BOT_POLICY" in str(raised.value)
 
 
 def test_read_policy_records_the_path_as_given_and_the_files_hash(tmp_path: Path) -> None:

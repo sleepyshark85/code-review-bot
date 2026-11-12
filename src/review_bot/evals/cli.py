@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn, override
 
-from review_bot.cli import read_policy
+from review_bot.cli import read_policy_option
 from review_bot.console import keep_library_logs_off_stderr, write_diagnostic, write_output
 from review_bot.errors import ConfigError
 from review_bot.evals.compare import compare_cases
@@ -35,7 +35,6 @@ _PASS: Final = 0
 _FAIL: Final = 1
 _USAGE: Final = 2
 
-_POLICY_VARIABLE: Final = "REVIEW_BOT_POLICY"
 
 _INTERNAL_ERROR_MESSAGE: Final = (
     "review-bot evals: error: internal error. Its text isn't shown, as it can hold model or CLI "
@@ -68,7 +67,11 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     take_github_token()
     try:
         args = _parse_args(argv)
-        policy = BUILTIN_POLICY if args.command == "compare" else _read_policy(args.policy)
+        policy = (
+            BUILTIN_POLICY
+            if args.command == "compare"
+            else read_policy_option(args.policy, os.environ)
+        )
         output, exit_code = asyncio.run(_run(args, policy, sdk_call))
     except (EvalInputError, ConfigError) as exc:
         # Paths come from the command line and case files; redact them like the review's errors.
@@ -80,15 +83,6 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
         return _USAGE
     write_output(output)
     return exit_code
-
-
-def _read_policy(flag: str | None) -> Policy:
-    """The policy ``--policy`` names, else ``REVIEW_BOT_POLICY``, else the built-in policy.
-
-    Raises:
-        PolicyError: If the policy file can't be read or is invalid.
-    """
-    return read_policy(flag if flag is not None else os.environ.get(_POLICY_VARIABLE))
 
 
 async def _run(
@@ -217,7 +211,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def _add_policy_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--policy",
-        help=f"the policy file the reviews are under (default: {_POLICY_VARIABLE}, else the "
+        help="the policy file the reviews are under (default: REVIEW_BOT_POLICY, else the "
         "built-in policy)",
     )
 

@@ -27,7 +27,7 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.findings import ReviewedFinding
-from review_bot.governance.policy import Policy
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.comments import (
     blocked_summary,
     comment_body,
@@ -220,7 +220,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     finished_at: datetime,
     origin: Origin,
     pr: PullRequestRef | None,
-    policy: Policy,
+    policy: Policy = BUILTIN_POLICY,
     since: str | None = None,
     incremental: Incremental | None = None,
     codeowners: CodeOwners | None = None,
@@ -243,10 +243,11 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     than ``max_output_tokens``, or in context mode a cost over ``max_cost_usd``.
 
     ``settings`` are those the review ran with, the repository's threshold applied, ``policy``
-    the policy file the run ran under, and ``config`` the repository's policy, or None if the
-    run read none. Comments are planned up to its ``max_open_comments``. ``codeowners``, if the
-    run read it, names the owners of each entry, and a reviewed summary groups the findings by
-    owner. ``issues`` are the linked issues a context review read, none otherwise.
+    the policy file the run ran under (the built-in policy if not given), and ``config`` the
+    repository's policy, or None if the run read none. Comments are planned up to its
+    ``max_open_comments``. ``codeowners``, if the run read it, names the owners of each entry,
+    and a reviewed summary groups the findings by owner. ``issues`` are the linked issues a
+    context review read, none otherwise.
 
     Raises:
         ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it;

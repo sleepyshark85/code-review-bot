@@ -262,8 +262,10 @@ def _require_within_policy(settings: Settings, policy: Policy, *, is_context: bo
     """
     if is_context:
         check_context_allowed(policy)
-    if check_settings(settings, policy).max_cost_usd != settings.max_cost_usd:
+    if policy.max_cost_usd is not None and settings.max_cost_usd is None:
         raise ValueError("A review's settings get the policy's ceiling (check_settings) first.")
+    # Raises for a cost cap above the ceiling; the settings it returns are these.
+    check_settings(settings, policy)
 
 
 def tool_caps(settings: Settings) -> ToolCaps:

@@ -87,7 +87,8 @@ def test_parse_policy_accepts_a_ceiling_from_a_cent_to_1000(amount: str) -> None
         ('version = "v"\n[tools]\nallowed = [1]', "'tools.allowed[0]'"),
         ('version = "v"\n[tools]\nallowed = "read"', "'tools.allowed'"),
         ('version = "v"\n[tools]\nallowed = ["read", "read"]', "lists 'read' more than once"),
-        ('version = "v"\ntools = 3', "'tools'"),
+        ('version = "v"\ntools = "x"', "'tools': it must be a table, such as [tools]"),
+        ('version = "v"\ncost = 1', "'cost': it must be a table, such as [cost]"),
         ('version = "v"\n[cost]\nmax_cost_usd = 0.6', "must be a decimal string"),
         ('version = "v"\n[cost]\nmax_cost_usd = "-1"', "must be a decimal string"),
         ('version = "v"\n[cost]\nmax_cost_usd = "1e2"', "must be a decimal string"),
@@ -111,6 +112,23 @@ def test_parse_policy_refuses_a_file_over_64_kb() -> None:
 
     with pytest.raises(PolicyError, match="over the limit of 65536 bytes"):
         parse_policy(data, source=SOURCE)
+
+
+def test_parse_policy_shows_tomls_message_without_escaping_it_twice() -> None:
+    with pytest.raises(PolicyError) as raised:
+        parse('version = "\x1b"')
+
+    message = str(raised.value)
+    assert "isn't valid TOML: " in message
+    assert "\x1b" not in message
+    assert "\\\\" not in message
+
+
+def test_parse_policy_shows_a_value_with_a_backslash_as_it_is() -> None:
+    with pytest.raises(PolicyError) as raised:
+        parse('version = "v"\n[tools]\nallowed = ["a\\\\b"]')
+
+    assert "'a\\b' isn't a tool" in str(raised.value)
 
 
 def test_parse_policy_refuses_bytes_that_arent_utf8() -> None:

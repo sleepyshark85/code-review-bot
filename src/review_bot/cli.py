@@ -64,6 +64,7 @@ __all__ = [
     "main",
     "parse_args",
     "read_policy",
+    "read_policy_option",
     "record_failed_end",
     "report_failure",
     "run_review",
@@ -102,6 +103,8 @@ _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
 
 _INTERNAL_ERROR_EXIT_CODE: Final = 14
 _CONTEXT_FLAG: Final = "--context-repo"
+# The variable ``load_settings`` reads for the ``policy`` setting.
+_POLICY_VARIABLE: Final = "REVIEW_BOT_POLICY"
 _AUDIT_ERROR_EXIT_CODE: Final = 17
 # Only ``python -m review_bot.pr`` calls GitHub (Phase 2 design, Commands and exit codes).
 _GITHUB_ERROR_EXIT_CODE: Final = 18
@@ -325,6 +328,27 @@ def settings_within_policy(settings: Settings) -> tuple[Settings, Policy]:
     """
     policy = read_policy(settings.policy)
     return check_settings(settings, policy), policy
+
+
+def read_policy_option(flag: str | None, environ: Mapping[str, str]) -> Policy:
+    """The policy ``--policy`` names, else ``REVIEW_BOT_POLICY``, else the built-in policy.
+
+    For a command without the setting flags, so it resolves the policy as ``load_settings``
+    does for the others: an empty flag or variable is invalid, with the same message.
+
+    Raises:
+        ConfigError: If the flag, or the variable it falls back to, is empty.
+        PolicyError: If the policy file can't be read or is invalid.
+    """
+    if flag is not None:
+        source, path = "--policy", flag
+    elif _POLICY_VARIABLE in environ:
+        source, path = _POLICY_VARIABLE, environ[_POLICY_VARIABLE]
+    else:
+        return BUILTIN_POLICY
+    if not path:
+        raise ConfigError(f"Invalid value for {source}: String should have at least 1 character.")
+    return read_policy(path)
 
 
 def read_policy(path: str | None) -> Policy:

@@ -1,6 +1,6 @@
 # P4-S1: Run under a versioned policy file that every report records
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** none
 - **Touches:** `governance.policy` (new), `threshold` (renamed from `policy`, no behaviour change), `settings`, `cli`, `pr.cli`, `evals.cli`, `evals.live`, `context.tools`, `review`, `report`, `pr.shadow`
 
