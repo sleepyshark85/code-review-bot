@@ -930,10 +930,25 @@ def test_read_issue_refuses_another_repository(stub: Stub) -> None:
     assert stub.received == []
 
 
-def edited(node_id: str, *editors: str | None) -> dict:
-    """A comment node whose edits were made by ``editors`` in turn; GraphQL returns the last."""
-    edits = [{"editor": None if editor is None else {"login": editor}} for editor in editors]
-    return {"id": node_id, "userContentEdits": {"nodes": edits[-1:]}}
+def edited(
+    node_id: str, *editors: str | None, newest_first: bool = False, more: bool = False
+) -> dict:
+    """A comment node whose edits were made by ``editors`` in turn, a minute apart.
+
+    GraphQL lists them oldest first, or ``newest_first``; ``more`` says another page follows.
+    """
+    edits = [
+        {
+            "editedAt": f"2026-11-12T10:{minute:02d}:00Z",
+            "editor": None if editor is None else {"login": editor},
+        }
+        for minute, editor in enumerate(editors)
+    ]
+    nodes = edits[::-1] if newest_first else edits
+    return {
+        "id": node_id,
+        "userContentEdits": {"pageInfo": {"hasNextPage": more}, "nodes": nodes},
+    }
 
 
 def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
@@ -949,7 +964,7 @@ def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
     def respond(request: Received) -> Reply:
         if request.path == "/graphql":
             assert request.body["variables"] == {"ids": ["IC_6", "IC_8"]}
-            assert "userContentEdits(last: 1)" in request.body["query"]
+            assert "userContentEdits(first: 100)" in request.body["query"]
             nodes = [edited("IC_6"), edited("IC_8", "github-actions", "mallory")]
             return reply({"data": {"nodes": nodes}})
         assert request.path == "/repos/owner/repo/issues/7/comments"
@@ -968,10 +983,29 @@ def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
     [
         (edited("IC_6"), None),
         (edited("IC_6", "mallory", "github-actions"), "github-actions[bot]"),
+        (edited("IC_6", "mallory", "github-actions", newest_first=True), "github-actions[bot]"),
+        (edited("IC_6", "github-actions", "mallory"), "mallory"),
+        (edited("IC_6", "github-actions", "mallory", newest_first=True), "mallory"),
+        (edited("IC_6", "github-actions", more=True), "ghost"),
         (edited("IC_6", None), "ghost"),
-        ({"id": "IC_6", "userContentEdits": {"nodes": [None]}}, "ghost"),
+        (
+            {
+                "id": "IC_6",
+                "userContentEdits": {"pageInfo": {"hasNextPage": False}, "nodes": [None]},
+            },
+            "ghost",
+        ),
     ],
-    ids=["never-edited", "the-bot-last", "deleted-account", "null-edit"],
+    ids=[
+        "never-edited",
+        "the-bot-last-oldest-first",
+        "the-bot-last-newest-first",
+        "a-person-last-oldest-first",
+        "a-person-last-newest-first",
+        "more-edits-than-read",
+        "deleted-account",
+        "null-edit",
+    ],
 )
 def test_the_latest_editor_names_the_bot_as_rest_does_and_an_unknown_one_as_someone(
     stub: Stub, node: dict, last_editor: str | None
