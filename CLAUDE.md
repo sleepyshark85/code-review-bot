@@ -7,7 +7,7 @@ Read these before working. Don't restate them in other files; link to them.
 | File | Holds |
 |---|---|
 | `README.md` | Status, a short usage guide, and a summary of the plan |
-| `docs/usage.md` | Every command, option, setting and workflow |
+| `docs/usage.md` | Every command, its key options and exit codes, linking the specs for detail |
 | `docs/roadmap.md` | Current state, north star, phases and gates, ownership, risks |
 | `CONVENTIONS.md` | Python coding conventions (binding for all code) |
 | `docs/phases/phase-N/design.md` | Phase N goal, gate, architecture, and the ordered slice index |

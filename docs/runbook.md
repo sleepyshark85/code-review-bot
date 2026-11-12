@@ -37,7 +37,7 @@ A removed or invalid key never blocks a merge. A missing key ends the run `skipp
 1. Open the pull request's `review` workflow run and the failed job.
 2. When a report was written, the `Review the pull request` step prints a line ending `outcome=… reason=… comments=… withheld=… run_id=…`. For a `failed` run the error line follows it, and for a skip a hint may come before it. Exits `2` and `19` can stop before any report is written; the error line says why.
 3. The job summary shows the report. Download the artifact, `shadow-pr<N>-<head sha>-<attempt>` (shadow job) or `comment-pr<N>-<head sha>-<attempt>` (comment job). It holds `shadow.json` (outcome, reason, timings and token usage), `shadow.md`, and `audit.jsonl` (every stage decision, with scrubbed provider diagnostics and no diff text).
-4. The job's exit code matches the exit codes in [usage](usage.md#reviewing-a-diff):
+4. The job's exit code matches the exit codes in [usage](usage.md#exit-codes):
    - `2`: invalid settings or an invalid `.review-bot.toml`;
    - `7` to `13`: a provider failure;
    - `17`: the audit log couldn't be written;
