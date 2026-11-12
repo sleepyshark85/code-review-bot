@@ -7,35 +7,41 @@ Everything a response holds is untrusted. Each reader here returns our own types
 import email.utils
 import ipaddress
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import Final, Literal
+from typing import Final, Literal, cast
 from urllib.parse import urlsplit
 
 from review_bot.audit import JsonValue
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding, parse_findings
-from review_bot.providers.base import TokenUsage
+from review_bot.providers.base import TokenUsage, ToolDefinition
 
 __all__ = [
     "DEFAULT_BASE_URL",
     "MAX_RESPONSE_BYTES",
+    "MAX_TOOL_ARGUMENTS_BYTES",
     "ChatRequest",
     "Completion",
     "ErrorReply",
+    "ToolCall",
+    "ToolTurn",
     "check_base_url",
     "is_loopback_url",
     "is_plain_text",
     "read_completion",
     "read_error",
     "retry_after_s",
+    "tool_replies",
 ]
 
 DEFAULT_BASE_URL: Final = "https://api.openai.com/v1"
 # The most of a response body that is read; one byte more fails the call (P4-S2 Limits).
 MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+# The most of one tool call's arguments that is parsed; more is refused (P4-S6 Limits).
+MAX_TOOL_ARGUMENTS_BYTES: Final = 64 * 1024
 
 # OpenAI's newer models refuse ``max_tokens``; many self-hosted servers know only it.
 _OPENAI_HOST: Final = "api.openai.com"
@@ -59,9 +65,10 @@ type OutputCapField = Literal["max_completion_tokens", "max_tokens"]
 
 @dataclass(frozen=True, slots=True)
 class ChatRequest:
-    """One diff-mode Chat Completions request: two messages, no tools.
+    """A review's Chat Completions requests: the system and user prompts, then any replies.
 
-    ``max_output_tokens`` None sends no output cap, so the endpoint's own applies.
+    ``max_output_tokens`` None sends no output cap, so the endpoint's own applies. ``tools``
+    are offered as functions, in their order; with none, no ``tools`` are sent, as in diff mode.
     """
 
     model: str
@@ -69,16 +76,23 @@ class ChatRequest:
     user_prompt: str
     max_output_tokens: int | None
     base_url: str
+    tools: tuple[ToolDefinition, ...] = ()
 
-    def body(self) -> dict[str, JsonValue]:
-        """The JSON body, with the output cap under the field the base URL's host expects."""
+    def body(self, replies: Sequence[JsonValue] = ()) -> dict[str, JsonValue]:
+        """The JSON body of the request that follows ``replies`` (``tool_replies``), in order.
+
+        The output cap goes under the field the base URL's host expects.
+        """
         body: dict[str, JsonValue] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": self.user_prompt},
+                *replies,
             ],
         }
+        if self.tools:
+            body["tools"] = [_function(tool) for tool in self.tools]
         if self.max_output_tokens is not None:
             body[_output_cap_field(self.base_url)] = self.max_output_tokens
         return body
@@ -99,10 +113,35 @@ class ErrorReply:
 
 @dataclass(frozen=True, slots=True)
 class Completion:
-    """A successful completion's validated findings and token usage."""
+    """A successful completion's validated findings, and its token usage, None if unusable."""
 
     findings: tuple[Finding, ...]
-    usage: TokenUsage
+    usage: TokenUsage | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One tool call the model asked for; all of it is untrusted.
+
+    ``arguments`` are the call's arguments parsed, or empty if they couldn't be, so that the
+    executor refuses the call.
+    """
+
+    call_id: str
+    name: str
+    arguments: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolTurn:
+    """A successful completion that asks for tools: its text, its calls, and its usage.
+
+    ``content`` is None if it has none, and ``usage`` None if it is unusable.
+    """
+
+    content: str | None
+    calls: tuple[ToolCall, ...]
+    usage: TokenUsage | None
 
 
 def check_base_url(url: str) -> str:
@@ -146,13 +185,16 @@ def is_loopback_url(url: str) -> bool:
         return False
 
 
-def read_completion(body: bytes) -> Completion:
-    """Read a 200 response's body: the first choice's findings, and the usage.
+def read_completion(body: bytes) -> Completion | ToolTurn:
+    """Read a 200 response's body: the first choice's findings or tool calls, and the usage.
+
+    A message with at least one tool call is a ``ToolTurn``, whatever its content.
 
     Raises:
         ProviderError: ``refusal`` if the model refused or a content filter stopped it;
             ``invalid_output`` if the body is over 4 MB, isn't a completion, was cut short by
-            the output cap, or its content isn't the findings JSON.
+            the output cap, has malformed tool calls, or has none and its content isn't the
+            findings JSON.
     """
     completion = _json_object(body)
     choices = None if completion is None else completion.get("choices")
@@ -169,8 +211,36 @@ def read_completion(body: bytes) -> Completion:
     if finish_reason == "length":
         raise ProviderError(ErrorCategory.INVALID_OUTPUT, _CUT_SHORT)
     content = message.get("content")
-    findings = parse_findings(content if isinstance(content, str) else "")
-    return Completion(findings, _token_usage(completion.get("usage")))
+    text = content if isinstance(content, str) else None
+    usage = _token_usage(completion.get("usage"))
+    calls = _tool_calls(message.get("tool_calls"))
+    if calls:
+        return ToolTurn(text, calls, usage)
+    return Completion(parse_findings(text or ""), usage)
+
+
+def tool_replies(turn: ToolTurn, results: Sequence[str]) -> list[JsonValue]:
+    """The messages that answer ``turn``: its assistant message, then each call's result.
+
+    The assistant message is rebuilt from what was read, so each call's arguments go back as
+    the executor got them: an empty object for arguments that couldn't be parsed.
+
+    Raises:
+        ValueError: If there isn't exactly one result per call.
+    """
+    calls: list[JsonValue] = [
+        {
+            "id": call.call_id,
+            "type": "function",
+            "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+        }
+        for call in turn.calls
+    ]
+    answers: list[JsonValue] = [
+        {"role": "tool", "tool_call_id": call.call_id, "content": result}
+        for call, result in zip(turn.calls, results, strict=True)
+    ]
+    return [{"role": "assistant", "content": turn.content, "tool_calls": calls}, *answers]
 
 
 def read_error(status: int, body: bytes) -> ErrorReply:
@@ -213,6 +283,74 @@ def retry_after_s(value: str, *, now: datetime) -> float | None:
     return max((when - now).total_seconds(), 0.0)
 
 
+def _function(tool: ToolDefinition) -> JsonValue:
+    """``tool`` as Chat Completions offers a function."""
+    # A JSON Schema that pydantic generated, so it holds only JSON values.
+    parameters = cast("JsonValue", tool.input_schema)
+    return {
+        "type": "function",
+        "function": {"name": tool.name, "description": tool.description, "parameters": parameters},
+    }
+
+
+def _tool_calls(tool_calls: object) -> tuple[ToolCall, ...]:
+    """A message's untrusted ``tool_calls``, in order; none if it has none.
+
+    Raises:
+        ProviderError: ``invalid_output`` unless they are a list of calls, each with a string
+            ``id`` and a ``function`` with a string ``name``.
+    """
+    if tool_calls is None:
+        return ()
+    if not isinstance(tool_calls, list):
+        raise ProviderError(ErrorCategory.INVALID_OUTPUT, _NOT_A_COMPLETION)
+    return tuple(_tool_call(item) for item in tool_calls)
+
+
+def _tool_call(item: object) -> ToolCall:
+    """See ``_tool_calls``."""
+    call_id = item.get("id") if isinstance(item, dict) else None
+    function = item.get("function") if isinstance(item, dict) else None
+    if not isinstance(call_id, str) or not isinstance(function, dict):
+        raise ProviderError(ErrorCategory.INVALID_OUTPUT, _NOT_A_COMPLETION)
+    name = function.get("name")
+    if not isinstance(name, str):
+        raise ProviderError(ErrorCategory.INVALID_OUTPUT, _NOT_A_COMPLETION)
+    return ToolCall(call_id, name, _tool_arguments(function.get("arguments")))
+
+
+def _tool_arguments(arguments: object) -> Mapping[str, object]:
+    """A call's untrusted ``arguments`` parsed strictly, or empty if they can't be.
+
+    They must be a string of at most 64 KB holding one JSON object, with no repeated key and no
+    ``NaN`` or ``Infinity``.
+    """
+    if not isinstance(arguments, str):
+        return {}
+    # ``surrogatepass``, because a JSON string can hold a lone surrogate, which UTF-8 can't.
+    if len(arguments.encode("utf-8", "surrogatepass")) > MAX_TOOL_ARGUMENTS_BYTES:
+        return {}
+    try:
+        parsed = json.loads(
+            arguments, object_pairs_hook=_object_without_repeats, parse_constant=_refuse_constant
+        )
+    # Deep nesting exhausts the parser's recursion, well within 64 KB.
+    except (ValueError, RecursionError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _object_without_repeats(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    parsed = dict(pairs)
+    if len(parsed) < len(pairs):
+        raise ValueError("a key is repeated")
+    return parsed
+
+
+def _refuse_constant(name: str) -> object:
+    raise ValueError(f"{name} isn't JSON")
+
+
 def _output_cap_field(base_url: str) -> OutputCapField:
     is_openai = urlsplit(base_url).hostname == _OPENAI_HOST
     return "max_completion_tokens" if is_openai else "max_tokens"
@@ -242,17 +380,17 @@ def _body_text(body: bytes) -> str | None:
     return text or None
 
 
-def _token_usage(usage: object) -> TokenUsage:
-    """Read the endpoint's untrusted usage. Bad usage counts as 0: it never costs a valid review."""
+def _token_usage(usage: object) -> TokenUsage | None:
+    """Read the endpoint's untrusted usage: None unless both counts are integers of 0 or more."""
     if not isinstance(usage, Mapping):
-        return TokenUsage(0, 0)
-    return TokenUsage(
-        input_tokens=_token_count(usage, "prompt_tokens"),
-        output_tokens=_token_count(usage, "completion_tokens"),
-    )
+        return None
+    input_tokens = _token_count(usage.get("prompt_tokens"))
+    output_tokens = _token_count(usage.get("completion_tokens"))
+    if input_tokens is None or output_tokens is None:
+        return None
+    return TokenUsage(input_tokens, output_tokens)
 
 
-def _token_count(usage: Mapping[str, object], field: str) -> int:
-    count = usage.get(field)
+def _token_count(count: object) -> int | None:
     # ``type``, not ``isinstance``, because a bool is an int.
-    return count if type(count) is int and count >= 0 else 0
+    return count if type(count) is int and count >= 0 else None

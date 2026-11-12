@@ -7,7 +7,6 @@ import pytest
 from review_bot.pr.github import MergedPullRequest
 from review_bot.pr.metrics import (
     Baseline,
-    Prices,
     Spread,
     Verdicts,
     median,
@@ -17,9 +16,9 @@ from review_bot.pr.metrics import (
     render_baseline_text,
     summarise_baseline,
     to_cents,
-    token_cost_usd,
     wilson_interval,
 )
+from review_bot.price_flags import Prices, token_cost_usd
 
 SINCE = date(2026, 10, 1)
 UNTIL = date(2026, 10, 31)

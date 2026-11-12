@@ -16,7 +16,7 @@ from review_bot.evals.formats import EvalMode, Recording, RunErrorCategory
 from review_bot.evals.match import matches_bug
 from review_bot.evals.score import BugScore, CaseReplays, CaseResult, CaseScore
 from review_bot.findings import Source
-from review_bot.pr.metrics import Prices, token_cost_usd
+from review_bot.price_flags import Prices, token_cost_usd
 
 __all__ = [
     "BugRuns",

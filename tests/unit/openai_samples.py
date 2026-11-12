@@ -1,10 +1,13 @@
-"""A scripted `HttpTransport`, and Chat Completions responses, for offline tests (P4-S2)."""
+"""A scripted `HttpTransport`, Chat Completions responses and a tool executor, for offline tests
+(P4-S2, P4-S6)."""
 
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from review_bot.context.tool_args import TOOL_DEFINITIONS
+from review_bot.providers.base import ToolDefinition
 from review_bot.providers.openai_compat import HttpResponse
 
 # Built at run time, so it can't look like a real key to a secret scan.
@@ -79,3 +82,33 @@ def error_response(
     """An error response in OpenAI's shape: ``{"error": {"message": ..., "code": ...}}``."""
     body = json.dumps({"error": {"message": message, "type": "error", "code": code}}).encode()
     return HttpResponse(status, dict(headers), body)
+
+
+def tool_call(call_id: str, name: str, arguments: object) -> dict[str, Any]:
+    """One entry of a message's ``tool_calls``; a string ``arguments`` is sent as is."""
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": text}}
+
+
+def tool_turn(
+    *calls: Mapping[str, Any], content: str | None = None, usage: object = None
+) -> HttpResponse:
+    """A 200 response whose first choice asks for ``calls``."""
+    message = {"role": "assistant", "content": content, "tool_calls": list(calls)}
+    document = {
+        "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7} if usage is None else usage,
+    }
+    return HttpResponse(200, {}, json.dumps(document).encode())
+
+
+@dataclass
+class RecordingTools:
+    """A tool executor that records each call and answers it with ``result <n>``."""
+
+    definitions: tuple[ToolDefinition, ...] = TOOL_DEFINITIONS
+    calls: list[tuple[str, Mapping[str, object]]] = field(default_factory=list)
+
+    async def call(self, name: str, arguments: Mapping[str, object]) -> str:
+        self.calls.append((name, arguments))
+        return f"result {len(self.calls)}"

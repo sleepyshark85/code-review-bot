@@ -22,16 +22,10 @@ from review_bot.pr.feedback import (
     Unit,
 )
 from review_bot.pr.github import in_window
-from review_bot.pr.metrics import (
-    Precision,
-    Prices,
-    Verdicts,
-    nearest_rank,
-    to_cents,
-    token_cost_usd,
-)
+from review_bot.pr.metrics import Precision, Verdicts, nearest_rank, to_cents
 from review_bot.pr.outcome import Outcome
 from review_bot.pr.units import ShadowEntry, ShadowFile, distinct_runs, would_be_comments
+from review_bot.price_flags import Prices, token_cost_usd
 
 __all__ = [
     "OutcomeCount",

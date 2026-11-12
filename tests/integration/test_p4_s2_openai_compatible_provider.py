@@ -75,7 +75,6 @@ EXIT_CODES = {
     ErrorCategory.PERMANENT: 12,
     ErrorCategory.INVALID_OUTPUT: 13,
 }
-COST_REFUSAL = "--max-cost-usd isn't supported with --provider openai yet"
 PROSE_CANARY = "UPSTREAM-PROSE-CANARY-51c2"
 BODY_CANARY = "UPSTREAM-BODY-CANARY-8d0e"
 # Generous: they catch a hang or an honoured long wait, not a slow CI machine.
@@ -1031,20 +1030,32 @@ def test_p4_s2_ac8_pr_reviews_over_openai_and_never_write_the_key(pr, monkeypatc
     assert_key_gone()
 
 
-# --- AC9: no cost cap with openai until S6 --------------------------------------------------------
+# --- AC9, as P4-S6 AC7 replaces it: a cap with openai is never left unenforced -------------------
+#
+# S2 refused every cost cap with openai, since nothing enforced it. S6 enforces it from the
+# configured prices, so a cap now refuses (exit 2, before any request) only without both prices,
+# and runs with them. P4-S6's suite covers the rest of its AC7.
+
+PRICES = ("--price-input-usd-per-mtok", "2.50", "--price-output-usd-per-mtok", "10")
 
 
-def test_p4_s2_ac9_max_cost_usd_flag_exits_2_before_any_request(openai):
+def names_a_price_flag(stderr: str) -> bool:
+    return "--price-input-usd-per-mtok" in stderr or "--price-output-usd-per-mtok" in stderr
+
+
+def test_p4_s2_ac9_max_cost_usd_flag_without_prices_exits_2_before_any_request(openai):
     transport = fake(no_findings())
 
     done = openai.review(transport, "--max-cost-usd", "1")
 
     assert done.exit_code == USAGE_EXIT, done.stderr
-    assert COST_REFUSAL in done.stderr
+    assert names_a_price_flag(done.stderr), done.stderr
     assert transport.sent == []
 
 
-def test_p4_s2_ac9_max_cost_usd_variable_exits_2_before_any_request(openai, monkeypatch):
+def test_p4_s2_ac9_max_cost_usd_variable_without_prices_exits_2_before_any_request(
+    openai, monkeypatch
+):
     monkeypatch.setenv("REVIEW_BOT_MAX_COST_USD", "1")
     transport = fake(no_findings())
 
@@ -1054,7 +1065,7 @@ def test_p4_s2_ac9_max_cost_usd_variable_exits_2_before_any_request(openai, monk
     assert transport.sent == []
 
 
-def test_p4_s2_ac9_policy_cost_ceiling_exits_2_before_any_request(openai, tmp_path):
+def test_p4_s2_ac9_policy_cost_ceiling_without_prices_exits_2_before_any_request(openai, tmp_path):
     policy = tmp_path / "policy.toml"
     policy.write_text(policy_toml(max_cost_usd="0.60"), encoding="utf-8")
     transport = fake(no_findings())
@@ -1062,7 +1073,7 @@ def test_p4_s2_ac9_policy_cost_ceiling_exits_2_before_any_request(openai, tmp_pa
     done = openai.review(transport, "--policy", str(policy))
 
     assert done.exit_code == USAGE_EXIT, done.stderr
-    assert COST_REFUSAL in done.stderr
+    assert names_a_price_flag(done.stderr), done.stderr
     assert transport.sent == []
 
 
@@ -1076,7 +1087,9 @@ def test_p4_s2_ac9_policy_without_a_cost_ceiling_runs(openai, tmp_path):
 
 
 @pytest.mark.parametrize("subcommand", ["shadow", "run"])
-def test_p4_s2_ac9_pr_max_cost_usd_exits_2_before_any_request(pr, monkeypatch, subcommand):
+def test_p4_s2_ac9_pr_max_cost_usd_without_prices_exits_2_before_any_request(
+    pr, monkeypatch, subcommand
+):
     monkeypatch.setenv(KEY_VARIABLE, KEY)
     transport = fake(no_findings())
     use_fake_transport(monkeypatch, transport)
@@ -1084,17 +1097,37 @@ def test_p4_s2_ac9_pr_max_cost_usd_exits_2_before_any_request(pr, monkeypatch, s
     done = pr.run(subcommand, "--provider", "openai", "--model", "m1", "--max-cost-usd", "1")
 
     assert done.exit_code == USAGE_EXIT, done.stderr
-    assert COST_REFUSAL in done.stderr
+    assert names_a_price_flag(done.stderr), done.stderr
     assert transport.sent == []
 
 
-def test_p4_s2_ac9_cost_refusal_is_before_the_key_check(openai):
+def test_p4_s2_ac9_cap_without_prices_or_key_exits_2_before_any_request(openai):
     transport = fake(no_findings())
 
     done = openai.review(transport, "--max-cost-usd", "1", key=None)
 
     assert done.exit_code == USAGE_EXIT, done.stderr
     assert transport.sent == []
+
+
+def test_p4_s2_ac9_max_cost_usd_with_both_prices_now_runs(openai):
+    transport = fake(no_findings())
+
+    done = openai.review(transport, "--max-cost-usd", "1", *PRICES)
+
+    assert done.exit_code == 0, done.stderr
+    assert len(transport.sent) == 1
+
+
+def test_p4_s2_ac9_policy_cost_ceiling_with_both_prices_now_runs(openai, tmp_path):
+    policy = tmp_path / "policy.toml"
+    policy.write_text(policy_toml(max_cost_usd="0.60"), encoding="utf-8")
+    transport = fake(no_findings())
+
+    done = openai.review(transport, "--policy", str(policy), *PRICES)
+
+    assert done.exit_code == 0, done.stderr
+    assert len(transport.sent) == 1
 
 
 # --- AC10: openai needs a model of its own --------------------------------------------------------

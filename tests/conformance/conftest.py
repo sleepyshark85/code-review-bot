@@ -6,7 +6,17 @@ from typing import Literal
 import pytest
 from claude_agent_sdk import CLINotFoundError
 from fake_mcp import CHECKOUT, ToolCallLog, init_message, tool_call
-from fake_openai import KEY, api_error, completion, connection_failure, fake, findings_content, http
+from fake_openai import (
+    KEY,
+    api_error,
+    completion,
+    connection_failure,
+    fake,
+    findings_content,
+    http,
+    tool_calls_completion,
+)
+from fake_openai import tool_call as function_call
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -87,7 +97,8 @@ def claude_provider(scenario: Scenario) -> LLMProvider:
 
 
 # P4-S2 AC5: `openai` over a scripted `HttpTransport`. Error scenarios make no retry, so each
-# fails on its one response; "warned" is a 503 retried once, then a success.
+# fails on its one response; "warned" is a 503 retried once, then a success. P4-S6 AC9:
+# "tool_loop" asks for the read by function calling, then answers with the finding.
 OPENAI_SCRIPTS: dict[str, Callable[[], tuple[object, ...]]] = {
     "valid": lambda: (completion(findings_content(HIGH_FINDING)),),
     "empty": lambda: (completion(findings_content()),),
@@ -101,12 +112,14 @@ OPENAI_SCRIPTS: dict[str, Callable[[], tuple[object, ...]]] = {
     ErrorCategory.PERMANENT: lambda: (api_error(400),),
     ErrorCategory.UNAVAILABLE: lambda: (connection_failure("refused"),),
     ErrorCategory.INVALID_OUTPUT: lambda: (completion("not json"),),
+    "tool_loop": lambda: (
+        tool_calls_completion(function_call("call_1", *TOOL_LOOP_CALL)),
+        completion(findings_content(HIGH_FINDING)),
+    ),
 }
 
 
 def openai_provider(scenario: Scenario) -> LLMProvider:
-    if scenario == "tool_loop":
-        pytest.skip("tool_loop: the openai provider's tool calling lands in P4-S6")
     retries = "1" if scenario == "warned" else "0"
     _, settings = cli.parse_args(
         ["change.diff", "--provider", "openai", "--model", "m1", "--max-retries", retries]
