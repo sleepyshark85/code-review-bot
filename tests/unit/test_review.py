@@ -1050,3 +1050,38 @@ def test_run_pipeline_in_context_mode_sends_the_policy_and_records_each_denial(
         {"tool": "Bash", "layer": "hook", "policy_version": "read-only-2"},
         {"tool": "mcp__repo__grep", "layer": "can_use_tool", "policy_version": "read-only-2"},
     ]
+
+
+class DenyingThenCappedProvider:
+    """Fails at the cost cap after its runtime denied a tool."""
+
+    async def review(self, _request: ReviewRequest) -> ReviewResponse:
+        error = ProviderError(ErrorCategory.PERMANENT, "Capped.", cap="cost")
+        error.denied_tools = (DeniedTool("Bash", "hook"),)
+        raise error
+
+
+def test_run_pipeline_records_the_denials_of_a_failed_review_before_its_failure(
+    tmp_path: Path,
+) -> None:
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 12, tzinfo=UTC))
+    diff = write_diff(tmp_path, MINIMAL_DIFF)
+    review = run_pipeline(
+        diff,
+        Settings(provider="mock"),
+        DenyingThenCappedProvider(),
+        audit,
+        context=context_repo(tmp_path),
+        policy=READ_ONLY,
+    )
+
+    with pytest.raises(ProviderError):
+        asyncio.run(review)
+
+    log = tmp_path / "audit.jsonl"
+    assert events(log)[-2:] == ["agent.denied", "agent.failed"]
+    assert data_of(log, "agent.denied") == {
+        "tool": "Bash",
+        "layer": "hook",
+        "policy_version": "read-only-2",
+    }

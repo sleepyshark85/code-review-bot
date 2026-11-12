@@ -180,6 +180,8 @@ class ClaudeAgentProvider:
         except ProviderError as exc:
             # Only on failure: a successful call's CLI text is never kept (P1-S5).
             exc.diagnostics = tuple(cli_stderr)
+            if lockdown is not None:
+                exc.denied_tools = tuple(lockdown.denied)
             raise
         if lockdown is None:
             return response

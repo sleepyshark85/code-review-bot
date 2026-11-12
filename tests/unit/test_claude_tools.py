@@ -1,19 +1,27 @@
 """The Claude provider in context mode: its MCP server, permission layers, tool list and caps."""
 
 import dataclasses
-from collections.abc import Mapping
+import functools
+import warnings
+from collections.abc import AsyncIterator, Mapping
 from decimal import Decimal
 from typing import Any, cast
 
+import claude_agent_sdk
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    CanUseToolShadowedWarning,
     ClaudeAgentOptions,
+    CLIConnectionError,
     PermissionResultAllow,
     PermissionResultDeny,
     SystemMessage,
     ToolPermissionContext,
 )
+from claude_agent_sdk._internal.client import InternalClient
+from claude_agent_sdk._internal.transport import Transport
+from fake_mcp import can_use_tool_step, hook_step
 from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message, succeeds
 
 from review_bot.context.ledger import ToolName
@@ -516,30 +524,12 @@ async def test_diff_call_sends_a_string_prompt_and_no_can_use_tool() -> None:
     assert options.can_use_tool is None
 
 
-def asks_hook(tool_name: object) -> Any:
-    """A script step in which the CLI asks the hook whether the model may use ``tool_name``."""
-
-    async def step(options: ClaudeAgentOptions) -> None:
-        await pre_tool_use(options, cast(str, tool_name))
-
-    return step
-
-
-def asks_can_use_tool(tool_name: str) -> Any:
-    """A script step in which the CLI asks ``can_use_tool`` about ``tool_name``."""
-
-    async def step(options: ClaudeAgentOptions) -> None:
-        await can_use(options, tool_name)
-
-    return step
-
-
 async def test_response_carries_each_denial_in_order_and_the_review_goes_on() -> None:
     sdk = FakeSdk(
-        asks_hook("Bash"),
-        asks_hook("mcp__repo__read"),
-        asks_can_use_tool("mcp__repo__grep"),
-        asks_can_use_tool("mcp__repo__glob"),
+        hook_step("Bash"),
+        hook_step("mcp__repo__read"),
+        can_use_tool_step("mcp__repo__grep"),
+        can_use_tool_step("mcp__repo__glob"),
         result_message(findings_json(HIGH_FINDING)),
     )
 
@@ -572,8 +562,116 @@ async def test_response_without_a_denial_carries_none() -> None:
 async def test_denied_tool_name_is_at_most_100_characters_escaped(
     tool_name: object, shown: str
 ) -> None:
-    sdk = FakeSdk(asks_hook(tool_name), NO_FINDINGS)
+    sdk = FakeSdk(hook_step(tool_name), NO_FINDINGS)
 
     response = await review(sdk, tools=FakeTools())
 
     assert response.denied_tools == (DeniedTool(shown, "hook"),)
+
+
+async def test_review_failing_at_a_cap_still_carries_the_denials_before_it() -> None:
+    capped = result_message(None, is_error=True, subtype="error_max_budget_usd")
+    sdk = FakeSdk(hook_step("Bash"), can_use_tool_step("mcp__repo__grep"), capped)
+
+    with pytest.raises(ProviderError) as caught:
+        await review(sdk, tools=FakeTools(), policy=READ_AND_GLOB)
+
+    assert caught.value.cap == "cost"
+    assert caught.value.denied_tools == (
+        DeniedTool("Bash", "hook"),
+        DeniedTool("mcp__repo__grep", "can_use_tool"),
+    )
+
+
+async def test_review_failing_its_init_check_still_carries_the_denials_before_it() -> None:
+    sdk = FakeSdk(hook_step("Bash"), init_message([*ALLOWED, "Bash"]), NO_FINDINGS)
+
+    with pytest.raises(ProviderError) as caught:
+        await review(sdk, tools=FakeTools())
+
+    assert "unexpected Bash" in str(caught.value)
+    assert caught.value.denied_tools == (DeniedTool("Bash", "hook"),)
+
+
+async def test_diff_review_failure_carries_no_denials() -> None:
+    sdk = FakeSdk(result_message(None, is_error=True, subtype="error_max_budget_usd"))
+
+    with pytest.raises(ProviderError) as caught:
+        await review(sdk)
+
+    assert caught.value.denied_tools == ()
+
+
+class UnreachableCli(Transport):
+    """A transport whose CLI can't be reached, so the real ``query`` stops as it connects."""
+
+    async def connect(self) -> None:
+        raise CLIConnectionError("no CLI in this test")
+
+    async def write(self, data: str) -> None:
+        raise AssertionError("nothing is written before connecting")
+
+    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        raise AssertionError("nothing is read before connecting")
+
+    async def close(self) -> None:
+        pass
+
+    def is_ready(self) -> bool:
+        return False
+
+    async def end_input(self) -> None:
+        pass
+
+
+@pytest.fixture
+def real_query_without_a_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the provider reach the SDK's real ``query``, over a transport whose CLI is unreachable.
+
+    The suite's guard stops ``InternalClient.process_query``; this restores its path through the
+    SDK's own ``_process_query_inner``, minus the session resume no review uses.
+    """
+
+    async def process_query(
+        self: InternalClient,
+        prompt: Any,
+        options: ClaudeAgentOptions,
+        transport: Transport | None = None,
+    ) -> AsyncIterator[Any]:
+        async for message in self._process_query_inner(prompt, options, transport, None):
+            yield message
+
+    monkeypatch.setattr(InternalClient, "process_query", process_query)
+    monkeypatch.setattr(
+        "review_bot.providers.claude_agent.query",
+        functools.partial(claude_agent_sdk.query, transport=UnreachableCli()),
+    )
+
+
+@pytest.mark.usefixtures("real_query_without_a_cli")
+async def test_real_sdk_call_in_context_mode_shows_no_shadowed_can_use_tool_warning() -> None:
+    request = ReviewRequest(system_prompt="S", user_prompt="U", model="M", tools=FakeTools())
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(ProviderError) as failed:
+            await ClaudeAgentProvider(Settings()).review(request)
+
+    assert failed.value.category is ErrorCategory.TRANSIENT
+    assert [w for w in caught if issubclass(w.category, CanUseToolShadowedWarning)] == []
+
+
+@pytest.mark.usefixtures("real_query_without_a_cli")
+async def test_real_sdk_query_itself_warns_that_the_allowlist_shadows_can_use_tool() -> None:
+    # The control for the test above: the SDK does warn for these options.
+    sdk = succeeds()
+    await review(sdk, tools=FakeTools())
+    query = functools.partial(claude_agent_sdk.query, transport=UnreachableCli())
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(CLIConnectionError):
+            async for _message in query(prompt="U", options=sdk.options):
+                pass
+
+    assert any(issubclass(w.category, CanUseToolShadowedWarning) for w in caught)

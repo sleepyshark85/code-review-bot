@@ -39,7 +39,13 @@ from review_bot.prompt import (
     build_context_request,
     build_request,
 )
-from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
+from review_bot.providers.base import (
+    DeniedTool,
+    LLMProvider,
+    ReviewRequest,
+    ReviewResponse,
+    TokenUsage,
+)
 from review_bot.report import PipelineResult, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
@@ -284,13 +290,15 @@ async def _call_provider(
     """Send ``request``, record the call and the tools offered or denied, write and record warnings.
 
     Raises:
-        ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
+        ProviderError: If the provider fails; its denials and scrubbed diagnostics are recorded
+            first.
         AuditError: If a record can't be written.
     """
     started = time.perf_counter()
     try:
         response = await provider.review(request)
     except ProviderError as exc:
+        _record_denials(exc.denied_tools, request.policy, audit)
         diagnostics = _scrubbed(exc.diagnostics, diff)
         failure = {"category": exc.category, "cap": exc.cap, "diagnostics": diagnostics}
         audit.record(Stage.AGENT, "failed", failure)
@@ -307,16 +315,21 @@ async def _call_provider(
     )
     if response.offered_tools is not None:
         audit.record(Stage.AGENT, "tools", {"tools": list(response.offered_tools)})
-    for denied in response.denied_tools:
-        audit.record(
-            Stage.AGENT,
-            "denied",
-            {"tool": denied.tool, "layer": denied.layer, "policy_version": request.policy.version},
-        )
+    _record_denials(response.denied_tools, request.policy, audit)
     for warning in response.warnings:
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
     return response
+
+
+def _record_denials(denied_tools: Iterable[DeniedTool], policy: Policy, audit: AuditLog) -> None:
+    """Record each tool the provider's runtime denied, under ``policy``."""
+    for denied in denied_tools:
+        audit.record(
+            Stage.AGENT,
+            "denied",
+            {"tool": denied.tool, "layer": denied.layer, "policy_version": policy.version},
+        )
 
 
 def _stop_if_too_large_to_review(

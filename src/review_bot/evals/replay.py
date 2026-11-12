@@ -153,6 +153,7 @@ def _case_freshness(
         reviewable_text,
         model=settings.model,
         tools=tools,
+        policy=policy,
         domain_rules=domain_rules,
         issues=loaded.issues,
     )
