@@ -752,25 +752,30 @@ Measured by CI's full suite on PR #63 (`gate`, at least 90%).
 
 Spec: [p2-s12-close-phase-2.md](slices/p2-s12-close-phase-2.md). Released as 0.3.0 on 2026-11-09, at the owner's request, before the gate's evidence existed. The evidence was recorded on 2026-11-12, closing [#67](https://github.com/sleepyshark85/code-review-bot/issues/67).
 
-**Status: gate met except Q1's ≥ 3-week window, an accepted exception.** On 2026-11-12 the user chose to close #67 early: the window clause of [Q1](design.md#5-open-questions) is **waived**. The live window ran from 2026-11-08 to 2026-11-12, under one week. Every other Q1 clause is met. As with Phase 1's `double-tax` miss, this is the user's decision, recorded here, not a threshold change.
+**Status: gate met on the cut sample, with two owner-approved exceptions.** As with Phase 1's `double-tax` miss, both are the user's decisions of 2026-11-12, recorded here, not threshold changes.
+1. **The ≥ 3-week window of [Q1](design.md#5-open-questions) is waived.** The user chose to close #67 early. The sample's live window runs from 2026-11-08 17:03 to 2026-11-11 14:56 UTC, under one week.
+2. **The sample is cut at 2026-11-11 14:56 UTC** (PR #101's last run). Live shadow continued until comments were turned on (2026-11-12 04:34 UTC): 17 more shadow reports, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00), holding 5 unjudged units. The owner decided to ignore them, so they fall outside the sample. Over the full window to 04:34 UTC there would be 47 units and coverage would be 42/47 = **89.4%, below Q1's 90%**.
+
+Every other Q1 clause is met on the cut sample, and every number below is the cut sample's (`shadow-reports/` holds the cut set; `metrics` gives 42/42).
 
 | AC | State | Evidence |
 |---|---|---|
-| AC1 | Done (recorded) | [Window and sample](#p2-s12-window-and-sample): Q1 met except the waived window |
+| AC1 | Done (recorded) | [Window and sample](#p2-s12-window-and-sample): Q1 met on the cut sample, with the window waived |
 | AC2 | Done (recorded) | [Shadow precision](#p2-s12-shadow-precision): 100.0% (42/42), Wilson 95% 91.6% to 100.0%, full `metrics` output |
 | AC3 | Done (recorded) | [Baseline and cost](#p2-s12-baseline-and-cost): `baseline/v1` 2026-11-03 to 2026-11-12; $0.23 per accepted finding (backfill, reported cost); comment precision n/a (no comment posted yet) |
-| AC4 | Done (recorded) | [Start-up cost](#p2-s12-start-up-cost): Actions run 43151852223, review step 29 s of a 36 s job |
+| AC4 | Done (recorded) | [Start-up cost](#p2-s12-start-up-cost): Actions run 43151852223 (outside the cut sample), review step 29 s of a 39 s job |
 | AC5 | Done (recorded) | [Switch decision and dogfooding limits](#p2-s12-switch-decision-and-dogfooding-limits): comment mode on 2026-11-12 04:34 UTC |
-| AC6 | Pass | [The labelled set](#p2-s12-ac6-the-labelled-set): `tests/evals/labelled/` and `tests/evals/test_p2_s12_labelled_set.py` (21 tests) |
-| AC7 | Done, except the status line | README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65). The README status line still says the gate evidence is pending until [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) closes; the main session updates it |
+| AC6 | Pass | [The labelled set](#p2-s12-ac6-the-labelled-set): `tests/evals/labelled/` and `tests/evals/test_p2_s12_labelled_set.py` (28 tests) |
+| AC7 | Done | README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65). The README status line says Phase 2 is complete |
 | AC8 | Done | [Runbook](../../runbook.md) written (0.3.0); [branch protection](#p2-s12-branch-protection-ac8) confirmed 2026-11-12 |
 | AC9 | Done | `pyproject.toml` at `0.3.0`, [release notes](release-notes.md), tag `v0.3.0` |
 
 ### P2-S12: Window and sample
 
-Sources: 94 `shadow/v1` reports, all `mode` `shadow`, kept locally and never committed: 64 live shadow artifacts (`origin` `event`) and 30 backfill reports in `shadow-reports/backfill-p2/` (`origin` `backfill`, run 2026-11-12). Each has its own `run_id`, and none was unreadable.
+Sources: 94 `shadow/v1` reports, all `mode` `shadow`, kept locally and never committed: 64 live shadow artifacts (`origin` `event`) up to the cut, and 30 backfill reports in `shadow-reports/backfill-p2/` (`origin` `backfill`, run 2026-11-11 18:56 to 19:10 UTC). Each has its own `run_id`, and none was unreadable.
 
-- **Live window:** shadow runs start 2026-11-08 05:14 UTC (PR #53, `skipped/no_credential`). The first reviewed event is PR #66 at 2026-11-08 17:03 UTC, after `ANTHROPIC_API_KEY` was added. The window ends when comments were turned on, 2026-11-12 04:34 UTC: **about 3.5 days, 0.5 weeks.**
+- **Live window (the sample):** shadow runs start 2026-11-08 05:14 UTC (PR #53, `skipped/no_credential`). The first reviewed event is PR #66 at 2026-11-08 17:03 UTC, after `ANTHROPIC_API_KEY` was added. The sample ends at the owner's cut, 2026-11-11 14:56 UTC: **about 2.9 days, 0.4 weeks.**
+- **After the cut (outside the sample):** 17 live shadow reports from the cut to 2026-11-12 04:00 UTC, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00) with 5 unjudged units. Comments were turned on at 04:34 UTC. With them, the window would be about 3.5 days with 47 units, and coverage would be 89.4%.
 - **Live runs (64):** 12 `reviewed`, 19 `skipped/no_credential`, 13 `skipped/too_large`, 7 `skipped/nothing_to_review` and 13 `blocked_secret`, over PRs #53 to #101.
 - **Reviewed PRs: 28.** Live: 7 (#66, #68, #73, #75, #76, #78, #96), in 12 reviewed runs. Backfilled: 21 (#17, #18, #20, #25, #28, #30, #31, #32, #34, #35, #36, #38, #39, #40, #41, #42, #43, #44, #49, #50, #51). The backfill's other 9 PRs ended `skipped/nothing_to_review` (7) or `blocked_secret` (2).
 - **Would-be comments (units): 42,** from 24 PRs: 36 backfill units from 20 PRs, and 6 live units from 4 PRs (#73, #75, #76, #78).
@@ -778,11 +783,11 @@ Sources: 94 `shadow/v1` reports, all `mode` `shadow`, kept locally and never com
 
 | Q1 clause | Needed | Measured | Met |
 |---|---|---|---|
-| Live shadow from the first reviewed event | ≥ 3 weeks | 2026-11-08 17:03 to 2026-11-12 04:34 UTC, about 0.5 weeks | **No: waived by the user on 2026-11-12 (accepted exception)** |
-| Reviewed PRs | ≥ 12 | 28 | Yes |
-| ... of them live | ≥ 5 | 7 | Yes |
-| Judged would-be comments | ≥ 30 | 42 | Yes |
-| Coverage | ≥ 90% | 100.0% | Yes |
+| Live shadow from the first reviewed event | ≥ 3 weeks | 2026-11-08 17:03 to 2026-11-11 14:56 UTC (the cut), about 0.4 weeks | **No: waived by the user on 2026-11-12 (exception 1)** |
+| Reviewed PRs | ≥ 12 | 28 | Yes, on the cut sample |
+| ... of them live | ≥ 5 | 7 | Yes, on the cut sample |
+| Judged would-be comments | ≥ 30 | 42 | Yes, on the cut sample |
+| Coverage | ≥ 90% | 100.0% (42/42) on the cut sample; 89.4% (42/47) over the full window to 2026-11-12 04:34 UTC | Yes on the cut sample only: **the cut is the user's decision of 2026-11-12 (exception 2)** |
 
 ### P2-S12: Shadow precision
 
@@ -882,7 +887,7 @@ The capture ran 9 minutes after comment mode was turned on (04:34 UTC). No PR in
 
 From `metrics`: review time (`finished_at − started_at`) has p50 30.2 s and p95 69.6 s over 33 reviewed runs. End-to-end time (`finished_at − event_at`) has p50 35.0 s and p95 58.3 s over the 12 reviewed live runs; `metrics` reports it for live runs only.
 
-Steps of one shadow review job, Actions run 43151852223, 2026-11-12 (step times from the Actions API, to the second):
+Steps of one shadow review job, Actions run 43151852223 (PR #106, 2026-11-12 04:00 UTC; step times from the Actions API, to the second). The run is after the cut, so it is outside the precision sample; it is kept only as a timing example.
 
 | Step | Start (UTC) | Seconds |
 |---|---|---|
@@ -896,7 +901,7 @@ Steps of one shadow review job, Actions run 43151852223, 2026-11-12 (step times 
 | Upload the shadow report | 04:00:41 | 1 |
 | Post steps and Complete job | 04:00:42 | 0 |
 
-The job took 36 s: 6 s of set-up before the review, the review step's 29 s (81%), and 1 s after. The review step includes the SDK's start-up as well as the model call, and one-second step times can't separate them. Set-up is small next to the review.
+The job took 39 s from job start to end, 36 s of it in steps: 6 s of set-up before the review, 29 s for the review step, and 1 s after. The review step includes the SDK's start-up as well as the model call, and one-second step times can't separate them. Set-up is small next to the review.
 
 ### P2-S12: Switch decision and dogfooding limits
 
@@ -936,13 +941,13 @@ Committed under `tests/evals/labelled/`:
 | The owner's login appears only as the owner in `repo` | `..._the_owner_login_appears_only_as_the_repo_owner` ×3 | pass |
 | P3-S17 guard: no `scan_secrets` hit in the three files or the test | `..._committed_files_have_no_scanner_hit` ×3, `..._this_file_has_no_scanner_hit` | pass |
 
-21 passed. `tests/integration/test_p3_s17_shadow_sample_supply.py` (34) still passes; its AC3 guard scans tracked files, so it covers the new files once they are committed.
+28 passed (21 test functions, with parametrised cases). `tests/integration/test_p3_s17_shadow_sample_supply.py` (34) still passes; its AC3 guard scans tracked files, so it covers the new files once they are committed.
 
 **For the designer:** AC6 says "no ... username in any line", but `repo`, which the same AC requires, is `owner/name`, and the owner is a login. The test reads "username" as a person's identity beyond the repository's name: no user-like key, no @mention, and the owner's login nowhere outside `repo`.
 
 ### P2-S12: Branch protection (AC8)
 
-On 2026-11-12, branch protection on `main` requires only the `gate` status check (strict), with pull request reviews required. The user confirmed it by delegation that day.
+On 2026-11-12, branch protection on `main` requires only the `gate` status check (strict), and a pull request is required (0 approvals). The user confirmed it by delegation that day.
 
 ### P2-S12: Manual checks
 

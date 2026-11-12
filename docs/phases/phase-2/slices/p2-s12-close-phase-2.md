@@ -1,6 +1,6 @@
 # P2-S12: Close Phase 2: measure the gate, name the owner, release 0.3.0
 
-- **Status:** Done. Released early by the owner (0.3.0); the evidence ACs were recorded on 2026-11-12, when the owner closed [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) with Q1's 3-week window waived ([test report](../test-report.md#p2-s12-close-phase-2)).
+- **Status:** Done. Released early by the owner (0.3.0); the evidence ACs were recorded on 2026-11-12, when the owner closed [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) with Q1's 3-week window waived and the sample cut at 2026-11-11 14:56 UTC ([test report](../test-report.md#p2-s12-close-phase-2)).
 - **Depends on:** P2-S1 to P2-S11, P2-S13, and Q1's weeks of shadow mode
 - **Touches:** `tests/evals/labelled/`, `docs/phases/phase-2/test-report.md`, `pyproject.toml`; README, runbook and release notes by the main session
 
@@ -32,3 +32,4 @@ The main session derives `would-be.jsonl` from the shadow reports, grouping as `
 - **Closing designer task:** mark every spec `Done`, apply the user's answers to Q7 and Q11 (README changes go through the main session), and record the handover seams for Phase 3: the labelled set, `shadow/v1` and `feedback/v1`.
 
 - **Released early (main session, 2026-11-09):** the owner asked for the 0.3.0 release before the shadow-mode weeks. AC7, AC9 and the runbook part of AC8 are done. AC1 to AC6 and the branch-protection confirmation in AC8 wait for the weeks of shadow mode and labels, tracked in [#67](https://github.com/sleepyshark85/code-review-bot/issues/67).
+- **Evidence recorded (2026-11-12):** AC1 to AC6 and the branch-protection confirmation in AC8 are recorded in the [test report](../test-report.md#p2-s12-close-phase-2), by the owner's decisions of that day: Q1's ≥ 3-week window is waived, and the sample is cut at 2026-11-11 14:56 UTC.

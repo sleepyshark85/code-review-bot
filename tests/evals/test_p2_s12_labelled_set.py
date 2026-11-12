@@ -211,9 +211,11 @@ def test_p2_s12_ac6_pr_count_and_largest_share_reproduce_ac2(judged):
         (label["repo"], label["pr"]) for label, _ in judged if label["reason"] != "duplicate"
     )
 
+    largest = max(per_pr.values())
+
     assert len(per_pr) == EXPECTED_PRS
-    assert max(per_pr.values()) == EXPECTED_LARGEST_PR
-    assert percent(EXPECTED_LARGEST_PR / sum(per_pr.values())) == "7.1%"
+    assert largest == EXPECTED_LARGEST_PR
+    assert percent(largest / sum(per_pr.values())) == "7.1%"
 
 
 @pytest.mark.parametrize(
