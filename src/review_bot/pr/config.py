@@ -1,12 +1,13 @@
 """A repository's review policy, from the ``.review-bot.toml`` at a pull request's base commit.
 
 Pure: the runner reads the file through git and passes its bytes in. The file sets only the
-threshold, the excluded paths, the comment limit and the domain rules (P3-S10); the mode and the
-caps stay in the workflow, so a key for them is unknown, and invalid (P2-S9; Phase 2 design, CI
-settings and caps).
+threshold, the excluded paths, the comment limit, the domain rules (P3-S10) and the finding
+classes that gate a merge (P4-S5); the mode and the caps stay in the workflow, so a key for them
+is unknown, and invalid (P2-S9; Phase 2 design, CI settings and caps).
 """
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Final
 
@@ -22,6 +23,8 @@ from pydantic_core import ErrorDetails
 
 from review_bot.errors import ConfigFileError, RepoConfigError
 from review_bot.findings import RuleId, Severity
+from review_bot.governance.gate import GATE_CLASS_NAMES, GateClass, class_name_problem
+from review_bot.governance.policy import Policy
 from review_bot.pr.plan import DEFAULT_MAX_OPEN_COMMENTS
 from review_bot.render import escape_unprintable
 from review_bot.rules import DEFAULT_DOMAIN_RULE_SEVERITY, DOMAIN_RULE_IDS, DomainRule
@@ -32,6 +35,7 @@ __all__ = [
     "DEFAULT_REPO_CONFIG",
     "MAX_CONFIG_BYTES",
     "RepoConfig",
+    "gate_classes",
     "invalid_config",
     "parse_config_file",
     "parse_repo_config",
@@ -56,7 +60,8 @@ class RepoConfig:
     ``source`` is ``default`` when the base commit has no file, else where the file was read:
     ``.review-bot.toml@<SHA>`` for a base commit's.
     ``threshold`` is None when the file doesn't set one; ``exclude`` holds globs on a file's
-    path, as ``parse_diff`` matches them. ``domain_rules`` are the domain rules it enables.
+    path, as ``parse_diff`` matches them. ``domain_rules`` are the domain rules it enables, and
+    ``gate`` the names of the finding classes it gates a merge on (``gate_classes``).
     """
 
     source: str
@@ -64,6 +69,7 @@ class RepoConfig:
     exclude: tuple[str, ...] = ()
     max_open_comments: int = DEFAULT_MAX_OPEN_COMMENTS
     domain_rules: tuple[DomainRule, ...] = ()
+    gate: tuple[str, ...] = ()
 
 
 DEFAULT_REPO_CONFIG: Final = RepoConfig(source=_DEFAULT_SOURCE)
@@ -92,6 +98,22 @@ def _domain_rule_id(name: object) -> RuleId:
     return RuleId(name)
 
 
+def _gate_class_name(name: object) -> str:
+    """``name``, if it is a finding class's, which must be a string."""
+    if not isinstance(name, str) or name not in GATE_CLASS_NAMES:
+        text = name if isinstance(name, str) else ""
+        shown = escape_unprintable(text[:_MAX_SHOWN_KEY_CHARS])
+        raise ValueError(f"the class '{shown}' can't gate: {class_name_problem(text)}")
+    return name
+
+
+def _no_repeated_names(names: list[str]) -> list[str]:
+    repeated = next((name for index, name in enumerate(names) if name in names[:index]), None)
+    if repeated is not None:
+        raise ValueError(f"it lists '{repeated}' more than once")
+    return names
+
+
 class _DomainRuleEntry(BaseModel):
     """One ``[[domain_rules]]`` entry: any other key, or a value of another type, is invalid."""
 
@@ -112,6 +134,9 @@ class _ConfigFile(BaseModel):
     # Strict, so neither "3", 3.0 nor true passes for 3.
     max_open_comments: int = Field(default=DEFAULT_MAX_OPEN_COMMENTS, strict=True, ge=1, le=25)
     domain_rules: list[_DomainRuleEntry] = Field(default_factory=list, max_length=_MAX_DOMAIN_RULES)
+    gate: Annotated[
+        list[Annotated[str, PlainValidator(_gate_class_name)]], AfterValidator(_no_repeated_names)
+    ] = Field(default_factory=list)
 
 
 def parse_repo_config(data: bytes, *, base_sha: str) -> RepoConfig:
@@ -136,11 +161,12 @@ def parse_config_file(data: bytes, *, source: str) -> RepoConfig:
 
     Raises:
         ConfigFileError: If the file is over ``MAX_CONFIG_BYTES``, isn't UTF-8 or TOML, has a
-            key other than ``threshold``, ``exclude``, ``max_open_comments`` and
-            ``domain_rules``, an entry of ``domain_rules`` with a key other than ``rule``,
-            ``paths`` and ``severity``, a value out of its type or range, a rule not in the
-            catalogue, or a pattern with an empty segment. The message names the key, with its
-            entry, or the problem, but not ``source``: the caller says where the file is.
+            key other than ``threshold``, ``exclude``, ``max_open_comments``,
+            ``domain_rules`` and ``gate``, an entry of ``domain_rules`` with a key other than
+            ``rule``, ``paths`` and ``severity``, a value out of its type or range, a rule not
+            in the catalogue, a pattern with an empty segment, or a ``gate`` entry that isn't a
+            finding class or is listed twice. The message names the key, with its entry, or
+            the problem, but not ``source``: the caller says where the file is.
     """
     if len(data) > MAX_CONFIG_BYTES:
         raise ConfigFileError(f"it is over the limit of {MAX_CONFIG_BYTES} bytes")
@@ -166,7 +192,55 @@ def parse_config_file(data: bytes, *, source: str) -> RepoConfig:
             DomainRule(entry.rule, tuple(entry.paths), entry.severity)
             for entry in parsed.domain_rules
         ),
+        gate=tuple(parsed.gate),
     )
+
+
+def gate_classes(config: RepoConfig, policy: Policy, *, base_sha: str) -> tuple[GateClass, ...]:
+    """The classes ``config`` gates on, as ``policy`` approves them, in ``config``'s order.
+
+    A domain rule's class needs a ``[[domain_rules]]`` entry for that rule whose severity meets
+    the class's minimum, or it could never block.
+
+    Raises:
+        RepoConfigError: If ``policy`` doesn't approve a class, or a domain rule's class has no
+            entry, or only entries below its minimum severity; the message names the class,
+            the reason and the policy's version.
+    """
+    approved = {gate_class.rule_part: gate_class for gate_class in policy.gate_classes}
+    classes: list[GateClass] = []
+    for name in config.gate:
+        gate_class = approved.get(name)
+        problem = _gate_class_problem(gate_class, config.domain_rules)
+        if gate_class is None or problem is not None:
+            raise invalid_config(
+                base_sha,
+                f"gate names the class {name}, but {problem}, so it can't gate under the policy "
+                f"`{policy.version}`",
+            )
+        classes.append(gate_class)
+    return tuple(classes)
+
+
+def _gate_class_problem(
+    gate_class: GateClass | None, domain_rules: Sequence[DomainRule]
+) -> str | None:
+    """Why a class could never block, or None if it can.
+
+    It can't if the policy doesn't approve it (``gate_class`` is None), or if it is a domain
+    rule's class and ``domain_rules`` has no entry for that rule at its minimum severity.
+    """
+    if gate_class is None:
+        return "the policy doesn't approve it"
+    if gate_class.rule_part not in DOMAIN_RULE_IDS:
+        return None
+    severities = [rule.severity for rule in domain_rules if rule.rule == gate_class.rule_part]
+    if not severities:
+        return "no [[domain_rules]] entry enables that rule"
+    minimum = gate_class.min_severity
+    if all(severity.rank < minimum.rank for severity in severities):
+        return f"every [[domain_rules]] entry for that rule is below the class's {minimum}"
+    return None
 
 
 def invalid_config(base_sha: str, problem: str) -> RepoConfigError:
@@ -193,8 +267,8 @@ def _problem(error: ErrorDetails) -> str:
     if location[0] == "domain_rules":
         return f"unknown key '{shown}'. A domain rule may set only rule, paths and severity"
     return (
-        f"unknown key '{shown}'. It may set only threshold, exclude, max_open_comments and "
-        "domain_rules; the mode and the caps are set in the workflow"
+        f"unknown key '{shown}'. It may set only threshold, exclude, max_open_comments, "
+        "domain_rules and gate; the mode and the caps are set in the workflow"
     )
 
 

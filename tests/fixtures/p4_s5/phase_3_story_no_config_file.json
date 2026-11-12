@@ -1,0 +1,123 @@
+[
+ {
+  "step": "1 money line and an AI finding",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "list_bot_comments"
+   ],
+   [
+    "post_review",
+    [
+     [
+      "src/app.py",
+      3,
+      "**high** logic (source ai, confidence 0.90)\n\nR\\.\n\nIs this right and worth acting on? React with a thumbs-up if so, or a thumbs-down if not.\n\n<!-- review-bot:v1 fingerprint=a41c5ba3d21f1182 rule=ai:logic anchor=48118ab1c6d0c87e -->"
+     ]
+    ]
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `reviewed`. 1 comments, 0 withheld. Open bot comments on this pull request: 1."
+   ]
+  ],
+  "summary": "**Review bot:** `reviewed`. 1 comments, 0 withheld. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-1> -->"
+ },
+ {
+  "step": "2 README only",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ]
+  ],
+  "summary": "**Review bot:** `reviewed`. 1 comments, 0 withheld. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-1> -->"
+ },
+ {
+  "step": "3 re-run of the same head",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ]
+  ],
+  "summary": "**Review bot:** `reviewed`. 1 comments, 0 withheld. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-1> -->"
+ },
+ {
+  "step": "4 the fix",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "list_bot_comments"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `reviewed`. Changes since `<push-1:7>` reviewed. No new findings at or above low. Open bot comments on this pull request: 1."
+   ]
+  ],
+  "summary": "**Review bot:** `reviewed`. Changes since `<push-1:7>` reviewed. No new findings at or above low. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-4> -->"
+ },
+ {
+  "step": "5 a secret",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `blocked_secret`. The diff holds possible secrets, so it wasn't sent to the model:\n\n- aws-access-key at diff line 7\n\nRemove them, and rotate any that are real."
+   ]
+  ],
+  "summary": "**Review bot:** `blocked_secret`. The diff holds possible secrets, so it wasn't sent to the model:\n\n- aws-access-key at diff line 7\n\nRemove them, and rotate any that are real.\n\n<!-- review-bot:v1 summary reviewed=<push-4> -->"
+ },
+ {
+  "step": "6 the secret removed",
+  "exit_code": 0,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "list_bot_comments"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `reviewed`. Changes since `<push-4:7>` reviewed. No new findings at or above low. Open bot comments on this pull request: 1."
+   ]
+  ],
+  "summary": "**Review bot:** `reviewed`. Changes since `<push-4:7>` reviewed. No new findings at or above low. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-6> -->"
+ },
+ {
+  "step": "7 a draft",
+  "exit_code": 0,
+  "calls": [],
+  "summary": "**Review bot:** `reviewed`. Changes since `<push-4:7>` reviewed. No new findings at or above low. Open bot comments on this pull request: 1.\n\n<!-- review-bot:v1 summary reviewed=<push-6> -->"
+ },
+ {
+  "step": "8 a provider failure",
+  "exit_code": 11,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`transient`). The review is unavailable: it didn't complete, so there are no findings."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`transient`). The review is unavailable: it didn't complete, so there are no findings.\n\n<!-- review-bot:v1 summary reviewed=<push-6> -->"
+ },
+ {
+  "step": "9 over max_diff_bytes",
+  "exit_code": 0,
+  "calls": [],
+  "summary": "**Review bot:** `failed` (`transient`). The review is unavailable: it didn't complete, so there are no findings.\n\n<!-- review-bot:v1 summary reviewed=<push-6> -->"
+ }
+]

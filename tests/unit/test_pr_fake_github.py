@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -10,8 +10,10 @@ from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeCall, FakeGitHubClient, FakeReview
 from review_bot.pr.github import (
+    BOT_LOGIN,
     MAX_MERGED_PULLS,
     BotComment,
+    BotIssueComment,
     MergedPullRequest,
     NewComment,
     Resolver,
@@ -61,6 +63,7 @@ def test_list_bot_comments_reads_back_the_bots_comments_with_their_thread_and_re
             line=3,
             severity=Severity.LOW,
             resolved_by=Resolver.PERSON,
+            confidence=0.5,
         ),
     )
     assert github.calls == [FakeCall("list_bot_comments", (PR,))]
@@ -342,3 +345,80 @@ def test_read_issue_refuses_another_repository_as_the_rest_client_does() -> None
 
     with pytest.raises(ValueError, match=r"for owner/repo, not other/repo"):
         github.read_issue("other/repo", 12)
+
+
+def editors(github: FakeGitHubClient) -> Mapping[int, str | None]:
+    return github.read_inline_comments(PR).editors
+
+
+def test_a_person_editing_a_comment_becomes_its_last_editor_and_the_bot_after_an_update() -> None:
+    github = FakeGitHubClient()
+    own = github.add_comment(path="a.py", line=3, body=BODY)
+    theirs = github.add_comment(path="a.py", line=3, body="Hi.", author="alice", author_type="User")
+
+    github.edit_comment(own, BODY, by="mallory")
+
+    assert editors(github) == {own: "mallory"}
+    github.update_comment(own, BODY)
+    assert editors(github) == {own: BOT_LOGIN}
+    assert theirs not in editors(github)
+
+
+def test_read_inline_comments_reads_back_the_comments_and_lists_one_whose_marker_is_gone() -> None:
+    github = FakeGitHubClient()
+    kept = github.add_comment(path="a.py", line=3, body=BODY)
+    edited = github.add_comment(path="a.py", line=3, body=BODY)
+
+    github.edit_comment(edited, "Nothing to see.", by="mallory")
+
+    inline = github.read_inline_comments(PR)
+    assert inline.comments == github.list_bot_comments(PR)
+    assert [comment.comment_id for comment in inline.comments] == [kept]
+    assert inline.editors == {kept: None, edited: "mallory"}
+
+
+def test_a_deleted_comment_is_gone_and_its_id_is_never_given_out_again() -> None:
+    github = FakeGitHubClient()
+    first = github.add_comment(path="a.py", line=3, body=BODY)
+
+    github.delete_comment(first)
+    second = github.add_comment(path="a.py", line=3, body=BODY)
+
+    assert editors(github) == {second: None}
+    assert second != first
+
+
+def test_the_bots_issue_comments_carry_the_summarys_last_editor() -> None:
+    github = FakeGitHubClient()
+    assert github.list_bot_issue_comments(PR) == ()
+
+    github.write_summary(PR, "Body.", reviewed_sha=None)
+    (created,) = github.list_bot_issue_comments(PR)
+    assert (created.body, created.last_editor) == (github.summary, None)
+    github.write_summary(PR, "Again.", reviewed_sha=None)
+    assert github.list_bot_issue_comments(PR) == (
+        BotIssueComment(created.comment_id, github.summary or "", BOT_LOGIN),
+    )
+    github.delete_summary()
+    assert github.list_bot_issue_comments(PR) == ()
+
+
+def test_a_summary_whose_marker_was_edited_away_stays_when_the_bot_writes_a_new_one() -> None:
+    github = FakeGitHubClient()
+    github.write_summary(PR, "Body.", reviewed_sha=None)
+    github.edit_summary("All clear.", by="mallory")
+    assert github.read_summary(PR) is None
+
+    github.write_summary(PR, "New.", reviewed_sha=None)
+
+    old, new = github.list_bot_issue_comments(PR)
+    assert (old.body, old.last_editor) == ("All clear.", "mallory")
+    assert (new.body, new.last_editor) == (github.summary, None)
+    assert old.comment_id < new.comment_id
+
+
+def test_read_summary_says_whether_the_marker_holds_gate_state() -> None:
+    github = FakeGitHubClient()
+    github.summary = "Body.\n\n<!-- review-bot:v1 summary reviewed=none tampered -->"
+
+    assert github.read_summary(PR) == Summary(None, holds_gate_state=True)

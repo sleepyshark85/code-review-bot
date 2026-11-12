@@ -4,8 +4,9 @@ Pure: the caller runs the review and passes its result, the error that stopped i
 reason it was refused or had nothing new to review, to ``build_shadow_report``.
 """
 
+import dataclasses
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -27,10 +28,12 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.findings import ReviewedFinding
+from review_bot.governance.gate import NO_CONFIG, NOT_ENABLED, GateResult
 from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.comments import (
     blocked_summary,
     comment_body,
+    gate_summary,
     invalid_config_summary,
     no_new_changes_summary,
     not_reviewed_summary,
@@ -72,6 +75,7 @@ __all__ = [
     "build_shadow_report",
     "render_shadow_json",
     "render_shadow_markdown",
+    "with_gate",
 ]
 
 _SCHEMA: Final = "shadow/v1"
@@ -176,7 +180,9 @@ class ShadowReport:
     ``error`` is the error that ended the run, if any, for the caller's message and exit code;
     it is never written. ``cost_usd`` is the review's cost as the provider reported it, None if
     it reported none or the model wasn't called. ``issues`` are the issues a context review
-    read for the pull request, of which only each number and status is written.
+    read for the pull request, of which only each number and status is written. ``gate`` is the
+    run's merge-gate decision (``with_gate``): ``not_enabled`` until a gated run decides it, or
+    ``unjudged`` for ``no_config`` when the run read no valid config.
     """
 
     run_id: str
@@ -201,6 +207,7 @@ class ShadowReport:
     error: ReportedError | GitHubError | None
     cost_usd: Decimal | None = None
     issues: tuple[LinkedIssue, ...] = ()
+    gate: GateResult = NOT_ENABLED
 
     @property
     def scope(self) -> Scope:
@@ -319,7 +326,26 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         error=error,
         cost_usd=review.cost_usd if isinstance(review, PipelineResult) else None,
         issues=tuple(issues),
+        gate=NO_CONFIG if config is None else NOT_ENABLED,
     )
+
+
+def with_gate(
+    shadow: ShadowReport,
+    gate: GateResult,
+    *,
+    threaded: Collection[str],
+    kept_body: str | None = None,
+) -> ShadowReport:
+    """The report with an enabled ``gate``, its section closing the summary (P4-S5).
+
+    The section follows ``kept_body``, a summary kept from an earlier run, or else the report's
+    own summary. ``threaded`` holds the fingerprints of the bot's comments on the pull request,
+    which a blocker's override reply can go on (``comments.gate_summary``).
+    """
+    body = shadow.summary_body if kept_body is None else kept_body
+    section = gate_summary(gate, would=shadow.mode is Mode.SHADOW, threaded=threaded)
+    return dataclasses.replace(shadow, gate=gate, summary_body=f"{body}\n\n{section}")
 
 
 def _plan(
@@ -484,8 +510,29 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "issues": [{"number": issue.number, "status": issue.status} for issue in shadow.issues],
         # Redacted as ``report`` is, so the two agree.
         "policy": _redacted(policy_json(shadow.policy)),
+        "gate": _gate_json(shadow.gate),
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
+
+
+def _gate_json(gate: GateResult) -> dict[str, object]:
+    """The gate decision, with every blocker; a path in git's quoted form if it isn't UTF-8."""
+    return {
+        "enabled": gate.enabled,
+        "decision": gate.decision,
+        "reason": gate.reason,
+        "classes": list(gate.classes),
+        "blocking": [
+            {
+                "fingerprint": blocker.fingerprint,
+                "class": blocker.gate_class,
+                "file": None if blocker.file is None else path_fields(blocker.file)["file"],
+                "line": blocker.line,
+                "severity": blocker.severity,
+            }
+            for blocker in gate.blocking
+        ],
+    }
 
 
 def _pr_json(pr: PullRequestRef) -> dict[str, object]:

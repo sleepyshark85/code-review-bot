@@ -136,7 +136,8 @@ def assert_refused(
     assert (shadow.outcome, shadow.reason) == (Outcome.SKIPPED, reason)
     assert shadow.report is None
     assert factory.calls == 0
-    assert run.records()[-1]["data"] == {"reason": reason}
+    refused = [record["data"] for record in run.records() if record["event"] == "refused"]
+    assert refused == [{"reason": reason}]
 
 
 def unknown_commits(pr: PullRequestRef) -> PullRequestRef:

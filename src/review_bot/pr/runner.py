@@ -36,14 +36,31 @@ from review_bot.errors import (
     NotARegularFileError,
     RepoConfigError,
 )
+from review_bot.findings import Severity
 from review_bot.git import GitRepo
+from review_bot.governance.gate import (
+    NOTHING_FOUND,
+    GateClass,
+    GateReason,
+    WholeDiffChecks,
+    decide_gate,
+)
 from review_bot.governance.policy import Policy
 from review_bot.governance.redaction import RedactionKind
+from review_bot.pr.carried import (
+    FRESH,
+    Prior,
+    carried_blockers,
+    check_pr_diff,
+    read_prior,
+    standing_comments,
+)
 from review_bot.pr.config import (
     CONFIG_PATH,
     DEFAULT_REPO_CONFIG,
     MAX_CONFIG_BYTES,
     RepoConfig,
+    gate_classes,
     invalid_config,
     parse_repo_config,
     with_repo_threshold,
@@ -63,13 +80,14 @@ from review_bot.pr.shadow import (
     ShadowComment,
     ShadowReport,
     build_shadow_report,
+    with_gate,
 )
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, review_diff
 from review_bot.settings import Settings, in_ci
 
-__all__ = ["backfill_pull_request", "run_pull_request"]
+__all__ = ["backfill_pull_request", "record_gate", "run_pull_request"]
 
 # The ``pull_request`` actions that change what a review would see.
 _REVIEWED_ACTIONS: Final = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
@@ -92,6 +110,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     audit: AuditLog,
     environ: Mapping[str, str],
     clock: Callable[[], datetime],
+    gating_on: bool = False,
 ) -> ShadowReport:
     """Review ``pr``'s own changes, from its merge base to its head, and report the run.
 
@@ -112,6 +131,12 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     summary; a ``skipped`` one writes nothing, and reads at most the summary. A call that fails
     stops the rest, and the report holds its error.
 
+    A repository whose config names ``gate`` classes, each one ``policy`` approves, has its
+    merge gate decided (``_gated_report``; P4-S5). In comment mode, such a run first reads the
+    bot's comments, its summary and who last edited each (``_read_gated``), and every such run
+    writes its summary, skips included. A run that read no valid config, while gating may be on
+    (``gating_on``, or a summary marker with a gate field), writes no summary (AC11).
+
     Args:
         pr: The pull request, from its event.
         mode: Whether to post on the pull request, or only report.
@@ -125,6 +150,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         audit: Where the run's records go; its end is the caller's to record.
         environ: The environment, read for ``CI`` and ``ANTHROPIC_API_KEY``.
         clock: Returns the current time, timezone-aware.
+        gating_on: Whether ``REVIEW_BOT_GATE`` is ``on``, as the workflow says gating is.
 
     Raises:
         ValueError: If ``github`` is given in shadow mode, or missing in comment mode.
@@ -147,6 +173,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         policy=policy,
         audit=audit,
         clock=clock,
+        gating_on=gating_on,
     )
 
 
@@ -214,11 +241,13 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
     policy: Policy,
     audit: AuditLog,
     clock: Callable[[], datetime],
+    gating_on: bool = False,
 ) -> ShadowReport:
     """Review the pull request unless ``refusal`` says why not, then report and apply it.
 
-    A review runs under the base commit's repository config, which can set its threshold.
-    ``github`` is given exactly in comment mode, as ``run_pull_request`` checks.
+    A review runs under the base commit's repository config, which can set its threshold and
+    the classes that gate the merge. ``github`` is given exactly in comment mode, as
+    ``run_pull_request`` checks.
     """
     started_at = clock()
     audit.record(
@@ -228,33 +257,41 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
     )
     config: RepoConfig | None = None
     issues: _LinkedIssues | None = None
+    gated: _Gated | None = None
+    gate_may_be_on = gating_on
     if refusal is not None:
         audit.record(Stage.RUN, "refused", {"reason": refusal})
         review = _Review(refusal)
     else:
         try:
             config = await asyncio.to_thread(_repo_config, git, pr.base_sha)
+            classes = gate_classes(config, policy, base_sha=pr.base_sha)
         except RepoConfigError as exc:
+            # A file that parsed but gates on a class it can't is no valid config either.
+            config = None
             # Kept, so the summary still records the last commit reviewed, and the next run
             # with a valid config reviews from there.
-            recorded = (
-                None if github is None else await asyncio.to_thread(_recorded_sha, github, pr)
-            )
-            review = _Review(exc, recorded)
+            summary = None if github is None else await asyncio.to_thread(github.read_summary, pr)
+            review = _Review(exc, None if summary is None else summary.reviewed_sha)
+            gate_may_be_on = gating_on or (summary is not None and summary.holds_gate_state)
         else:
             settings = with_repo_threshold(settings, config)
+            if classes:
+                gated = await asyncio.to_thread(_read_gated, classes, github, pr)
             context = None
             if settings.context != "off":
                 issues = _LinkedIssues(pr, issue_reader)
                 context = _review_context(pr, git, issues)
             review = await _review(
-                pr, git, github, make_provider, settings, policy, config, context, audit
+                pr, git, github, make_provider, settings, policy, config, context, audit, gated
             )
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
     if review.plans_comments:
         codeowners = await asyncio.to_thread(_code_owners, git, pr.base_sha)
-        if github is not None:
+        if gated is not None:
+            existing = gated.existing
+        elif github is not None:
             existing = await asyncio.to_thread(github.list_bot_comments, pr)
     shadow = build_shadow_report(
         review.result,
@@ -273,11 +310,119 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         codeowners=codeowners,
         issues=() if issues is None else issues.read,
     )
-    # A skip posts and edits nothing (Phase 2 design, Comment state).
-    if github is None or shadow.outcome is Outcome.SKIPPED:
+    if gated is not None:
+        shadow = _gated_report(shadow, gated, review.whole_diff)
+    record_gate(audit, shadow)
+    if github is None or not _writes_summary(shadow, gate_may_be_on=gate_may_be_on):
         return shadow
-    applied = await asyncio.to_thread(_apply, shadow, pr, github, review.recorded)
+    recorded = review.recorded if gated is None else gated.prior.reviewed_sha
+    applied = await asyncio.to_thread(_apply, shadow, pr, github, recorded)
     return dataclasses.replace(applied, finished_at=clock())
+
+
+@dataclass(frozen=True, slots=True)
+class _Gated:
+    """A gated run's classes, and in comment mode what it read from the PR before its review.
+
+    ``existing`` are the bot's inline comments, and ``prior`` what its summary and comments
+    say the run carries; a shadow mode run reads nothing, so it carries nothing.
+    """
+
+    classes: tuple[GateClass, ...]
+    prior: Prior = FRESH
+    existing: tuple[BotComment, ...] = ()
+
+
+def _read_gated(
+    classes: tuple[GateClass, ...], github: GitHubClient | None, pr: PullRequestRef
+) -> _Gated:
+    """What a gated run reads from ``pr`` before its review: nothing in shadow mode.
+
+    Raises:
+        GitHubError: If a read fails.
+    """
+    if github is None:
+        return _Gated(classes)
+    inline = github.read_inline_comments(pr)
+    prior = read_prior(github.list_bot_issue_comments(pr), inline.editors)
+    return _Gated(classes, prior, inline.comments)
+
+
+def _gated_report(
+    shadow: ShadowReport, gated: _Gated, whole_diff: WholeDiffChecks | None
+) -> ShadowReport:
+    """``shadow`` with its merge gate decided, and the decision closing its summary.
+
+    The model's part counts as judged if the run reviewed, or had already reviewed the head.
+    The blockers carried from earlier runs follow ``gated.prior``; one drops only when this
+    run resolves its comment (``carried_blockers``). A run that had already
+    reviewed the head keeps its earlier summary's body, with only the gate section new.
+    """
+    resolved = {resolve.comment.comment_id for resolve in shadow.resolves}
+    standing = standing_comments(gated.existing, resolved)
+    checks_ran = whole_diff is not None
+    carried = carried_blockers(
+        gated.prior,
+        classes=gated.classes,
+        standing=standing,
+        resolved_now={resolve.comment.fingerprint for resolve in shadow.resolves},
+        checks_ran=checks_ran,
+    )
+    reported = [
+        *(comment.planned.reviewed for comment in shadow.comments),
+        *(item.reviewed for item in shadow.withheld),
+    ]
+    already_reviewed = shadow.reason is Reason.ALREADY_REVIEWED
+    gate = decide_gate(
+        reported,
+        whole_diff=whole_diff,
+        carried=carried,
+        enabled=gated.classes,
+        judged=shadow.outcome is Outcome.REVIEWED or already_reviewed,
+        tampered=gated.prior.is_tampered(checks_ran=checks_ran),
+        rebuilt=gated.prior.rebuild,
+    )
+    threaded = {
+        *(comment.planned.reviewed.fingerprint for comment in shadow.comments),
+        *(comment.fingerprint for comment in standing),
+    }
+    kept_body = gated.prior.body if already_reviewed else None
+    return with_gate(shadow, gate, threaded=threaded, kept_body=kept_body)
+
+
+def _writes_summary(shadow: ShadowReport, *, gate_may_be_on: bool) -> bool:
+    """Whether a comment mode run writes its summary (P4-S5 AC11).
+
+    A gated run always does. Otherwise a skip posts and edits nothing (Phase 2 design, Comment
+    state), and a run that read no valid config writes only while gating can't be on, so it
+    can't clear a gated summary's state.
+    """
+    if shadow.gate.enabled:
+        return True
+    if shadow.outcome is Outcome.SKIPPED:
+        return False
+    return not (shadow.gate.reason is GateReason.NO_CONFIG and gate_may_be_on)
+
+
+def record_gate(audit: AuditLog, shadow: ShadowReport) -> None:
+    """Record the run's gate decision as one ``policy``/``gate`` record (P4-S5 AC12).
+
+    Raises:
+        AuditError: If the record can't be written.
+    """
+    gate = shadow.gate
+    audit.record(
+        Stage.POLICY,
+        "gate",
+        {
+            "enabled": gate.enabled,
+            "decision": gate.decision,
+            "reason": gate.reason,
+            "classes": list(gate.classes),
+            "fingerprints": [blocker.fingerprint for blocker in gate.blocking],
+            "policy_version": shadow.policy.version,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,12 +431,15 @@ class _Review:
 
     ``result`` is the review, the error that ended it, or the reason it didn't run or called no
     model. ``recorded`` is the last reviewed commit the bot's summary held, if read, and
-    ``incremental`` the diffs of a review of only what changed since it.
+    ``incremental`` the diffs of a review of only what changed since it. ``whole_diff`` is what
+    a gated run's checks found over the whole PR diff; None if they couldn't run, or the run
+    isn't gated.
     """
 
     result: PipelineResult | ReportedError | Reason
     recorded: str | None = None
     incremental: Incremental | None = None
+    whole_diff: WholeDiffChecks | None = None
 
     @property
     def since(self) -> str | None:
@@ -388,6 +536,7 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     config: RepoConfig,
     context: ReviewContext | None,
     audit: AuditLog,
+    gated: _Gated | None,
 ) -> _Review:
     """Diff the pull request and review it: all of it, or only what changed since last time.
 
@@ -401,13 +550,21 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     it is an ancestor of the head, only the PR diff's hunks changed since then are reviewed.
     Otherwise, after a force-push, in a clone without that commit, or when the diff since then
     can't be used, the whole pull request is reviewed.
+
+    A ``gated`` run takes the last reviewed commit from its trusted marker instead, so after a
+    tamper it reviews the whole pull request; and it checks the whole PR diff for rule
+    findings and secrets (``_whole_diff_checks``), whatever the review then does. An empty diff
+    adds nothing, so its checks find nothing; one that can't be read or parsed can't be checked.
     """
     name = f"{pr.base_sha}...{pr.head_sha}"
     max_bytes = settings.max_diff_bytes
     try:
         diff = await asyncio.to_thread(git.diff, pr.base_sha, pr.head_sha, max_bytes=max_bytes)
     except REPORTED_ERRORS as exc:
-        return _Review(exc)
+        return _Review(exc, whole_diff=NOTHING_FOUND if isinstance(exc, DiffEmptyError) else None)
+    whole_diff = None
+    if gated is not None:
+        whole_diff = _whole_diff_checks(diff, config, settings.threshold, gated.existing)
     parsed = _reviewable(diff, config.exclude)
     review_part = functools.partial(
         _review_diff,
@@ -419,23 +576,40 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         audit=audit,
     )
     if github is None or parsed is None:
-        return _Review(await review_part(diff, name))
-    recorded = await asyncio.to_thread(_recorded_sha, github, pr)
+        return _Review(await review_part(diff, name), whole_diff=whole_diff)
+    if gated is None:
+        recorded = await asyncio.to_thread(_recorded_sha, github, pr)
+    else:
+        recorded = gated.prior.reviewed_sha
     if recorded == pr.head_sha:
         audit.record(Stage.RUN, "refused", {"reason": Reason.ALREADY_REVIEWED})
-        return _Review(Reason.ALREADY_REVIEWED, recorded)
+        return _Review(Reason.ALREADY_REVIEWED, recorded, whole_diff=whole_diff)
     changed = None
     if recorded is not None and await asyncio.to_thread(git.is_ancestor, recorded, pr.head_sha):
         changed = await asyncio.to_thread(_diff_since, git, recorded, pr.head_sha, max_bytes)
     if changed is None:
-        return _Review(await review_part(diff, name), recorded)
+        return _Review(await review_part(diff, name), recorded, whole_diff=whole_diff)
     incremental = Incremental(pr_diff=parsed, changed=changed)
     hunks = changed_hunks(diff, parsed, changed)
     if not hunks:
-        return _Review(Reason.NO_NEW_CHANGES, recorded, incremental)
+        return _Review(Reason.NO_NEW_CHANGES, recorded, incremental, whole_diff)
     name = f"{name}, its hunks changed since {recorded}"
     result = await review_part(hunks, name)
-    return _Review(result, recorded, incremental)
+    return _Review(result, recorded, incremental, whole_diff)
+
+
+def _whole_diff_checks(
+    diff: str, config: RepoConfig, threshold: Severity, existing: Sequence[BotComment]
+) -> WholeDiffChecks | None:
+    """The gate's checks over ``diff``, the whole PR diff, under ``config``; None if unparsable.
+
+    Rule findings pair with the bot's ``existing`` comments (``carried.check_pr_diff``).
+    """
+    try:
+        parsed = parse_diff(diff, exclude=config.exclude)
+    except DiffNotParsableError:
+        return None
+    return check_pr_diff(parsed, existing, domain_rules=config.domain_rules, threshold=threshold)
 
 
 class _LinkedIssues:
@@ -596,6 +770,7 @@ def _apply(
     so the run's result stays visible on the pull request. Its marker records the head as
     reviewed only if the run is ``reviewed`` and every call before it was done; otherwise it
     keeps ``recorded``, the commit the summary held, so the next run reviews from there again.
+    It records the run's gate too, if enabled.
 
     Returns:
         The report with each entry's ``applied``, and the first failed call's error, if any, in
@@ -625,7 +800,10 @@ def _apply(
     is_reviewed = shadow.outcome is Outcome.REVIEWED and error is None
     try:
         github.write_summary(
-            pr, shadow.summary_body, reviewed_sha=pr.head_sha if is_reviewed else recorded
+            pr,
+            shadow.summary_body,
+            reviewed_sha=pr.head_sha if is_reviewed else recorded,
+            gate=shadow.gate,
         )
     except GitHubError as exc:
         error = error or exc

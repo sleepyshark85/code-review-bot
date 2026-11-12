@@ -99,7 +99,7 @@ rule = "decimal-money"
 paths = ["billing/**"]
 ```
 
-It can't set the mode or any cap. Specs: [config](phases/phase-2/slices/p2-s9-repo-config.md), [domain rules](phases/phase-3/slices/p3-s10-domain-rules.md).
+It can't set the mode or any cap. A `gate = [<class>, ...]` key opts the repository into merge gating for classes the policy approves (`[[gate.classes]]`): shadow reports then say which findings would block, and comment-mode summaries say which block and how to appeal or override. Nothing enforces it until the `merge gate` check exists. Specs: [config](phases/phase-2/slices/p2-s9-repo-config.md), [domain rules](phases/phase-3/slices/p3-s10-domain-rules.md), [gate](phases/phase-4/slices/p4-s5-gate-decision.md).
 
 ## The `Review` workflow
 

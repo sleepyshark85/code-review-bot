@@ -27,6 +27,7 @@ __all__ = [
     "PlannedComment",
     "WithheldFinding",
     "WithholdReason",
+    "pair_fingerprints",
     "plan_comments",
 ]
 
@@ -201,13 +202,7 @@ def plan_comments(
         since = _Since.of(changed)
     pairable, withheld = _pairable_findings(findings, lines)
     duplicates = _duplicates(existing)
-    duplicate_ids = {comment.comment_id for comment in duplicates}
-    # A thread the bot resolved is never a candidate, so it can't capture a finding.
-    candidates = [
-        comment
-        for comment in existing
-        if comment.resolved_by is not Resolver.BOT and comment.comment_id not in duplicate_ids
-    ]
+    candidates = _candidates(existing, duplicates)
     pairs = _pair(pairable, candidates, renamed)
     paired_ids = {comment.comment_id for comment in pairs.values()}
     gone = [
@@ -221,9 +216,8 @@ def plan_comments(
     resolved = sorted((*duplicates, *gone), key=lambda comment: comment.comment_id)
     still_open = sum(comment.resolved_by is None for comment in existing) - len(resolved)
     open_slots = max_open_comments - still_open
-    held = {comment.fingerprint for comment in existing if comment.resolved_by is not Resolver.BOT}
-    # Every fingerprint in use is taken, so a new one is unique on the PR and in this run.
-    fingerprinter = Fingerprinter(taken=held | {reviewed.fingerprint for reviewed in findings})
+    held = _held(existing)
+    fingerprinter = _new_fingerprinter(held, findings)
     planned: list[PlannedComment] = []
     for position, finding in enumerate(pairable):
         paired = pairs.get(position)
@@ -238,6 +232,56 @@ def plan_comments(
     withheld.sort(key=lambda item: _comment_order(item.reviewed))
     open_after = still_open + sum(item.action is Action.CREATE for item in planned)
     return CommentPlan(tuple(planned), tuple(withheld), tuple(resolved), open_after)
+
+
+def pair_fingerprints(
+    findings: Sequence[ReviewedFinding], existing: Sequence[BotComment], *, pr_diff: ParsedDiff
+) -> tuple[ReviewedFinding, ...]:
+    """Each finding with the fingerprint its comment has, or would get, as ``plan_comments`` plans.
+
+    A finding that pairs with one of the bot's ``existing`` comments (``_pair``) takes that
+    comment's fingerprint, so a blocker's fingerprint names its thread even after an identical
+    line above it is removed (P4-S5). Any other keeps its own, unless a comment holds it, when it
+    takes the next free ordinal's, as a new comment would (``_unheld``). Every finding is
+    returned, in comment order.
+    """
+    lines = _new_side_lines(pr_diff)
+    pairable, withheld = _pairable_findings(findings, lines)
+    pairs = _pair(pairable, _candidates(existing, _duplicates(existing)), _renamed_paths(pr_diff))
+    held = _held(existing)
+    fingerprinter = _new_fingerprinter(held, findings)
+    named = [
+        _unheld(finding, held, fingerprinter)
+        if (paired := pairs.get(position)) is None
+        else dataclasses.replace(finding.reviewed, fingerprint=paired.fingerprint)
+        for position, finding in enumerate(pairable)
+    ]
+    return (*named, *(item.reviewed for item in withheld))
+
+
+def _candidates(
+    existing: Iterable[BotComment], duplicates: Iterable[BotComment]
+) -> list[BotComment]:
+    """The comments a finding may pair with: any not the bot's resolved, nor a duplicate.
+
+    A thread the bot resolved is never a candidate, so it can't capture a finding.
+    """
+    duplicate_ids = {comment.comment_id for comment in duplicates}
+    return [
+        comment
+        for comment in existing
+        if comment.resolved_by is not Resolver.BOT and comment.comment_id not in duplicate_ids
+    ]
+
+
+def _held(existing: Iterable[BotComment]) -> set[str]:
+    """The fingerprints the bot's open or person-resolved comments hold."""
+    return {comment.fingerprint for comment in existing if comment.resolved_by is not Resolver.BOT}
+
+
+def _new_fingerprinter(held: Collection[str], findings: Iterable[ReviewedFinding]) -> Fingerprinter:
+    """A fingerprinter that gives out no fingerprint in use, on the PR or in this run."""
+    return Fingerprinter(taken={*held, *(reviewed.fingerprint for reviewed in findings)})
 
 
 def _pairable_findings(

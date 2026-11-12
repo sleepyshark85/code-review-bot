@@ -5,7 +5,7 @@ tests. ``IssueReader`` is apart from ``GitHubClient``, since a shadow mode run h
 ``GitHubClient`` but may read linked issues (Phase 3 design, Interfaces).
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -14,6 +14,7 @@ from typing import Final, Protocol
 from review_bot.context.issues import IssueText
 from review_bot.errors import GitHubError
 from review_bot.findings import Severity
+from review_bot.governance.gate import GateResult
 from review_bot.pr.event import PullRequestRef
 
 __all__ = [
@@ -21,8 +22,10 @@ __all__ = [
     "BOT_USER_TYPE",
     "MAX_MERGED_PULLS",
     "BotComment",
+    "BotIssueComment",
     "CommentSignals",
     "GitHubClient",
+    "InlineComments",
     "IssueReader",
     "MergedPullRequest",
     "NewComment",
@@ -31,6 +34,7 @@ __all__ = [
     "in_window",
     "is_any_bot",
     "is_bot_user",
+    "is_edited_by_others",
     "too_many_merged_pulls",
 ]
 
@@ -44,6 +48,14 @@ MAX_MERGED_PULLS: Final = 1000
 def is_bot_user(login: str, user_type: str) -> bool:
     """Whether a REST user, by its ``login`` and ``type``, is the bot."""
     return login == BOT_LOGIN and user_type == BOT_USER_TYPE
+
+
+def is_edited_by_others(last_editor: str | None) -> bool:
+    """Whether a comment's last editor, by login, is someone other than the bot.
+
+    None means nobody edited it since it was posted.
+    """
+    return last_editor is not None and last_editor != BOT_LOGIN
 
 
 def is_any_bot(user_type: str) -> bool:
@@ -62,9 +74,10 @@ class Resolver(StrEnum):
 class BotComment:
     """One of the bot's own inline comments, read back from its author and marker.
 
-    ``fingerprint``, ``rule_part`` and ``anchor`` are its marker's, and ``severity`` is the one
-    its body shows. ``line`` is None when GitHub marks the comment outdated. ``resolved_by`` is
-    None while its thread is open.
+    ``fingerprint``, ``rule_part`` and ``anchor`` are its marker's, and ``severity`` and
+    ``confidence`` are the ones its body shows; ``confidence`` is None if the body shows none.
+    ``line`` is None when GitHub marks the comment outdated. ``resolved_by`` is None while its
+    thread is open.
     """
 
     comment_id: int
@@ -76,6 +89,7 @@ class BotComment:
     line: int | None
     severity: Severity
     resolved_by: Resolver | None
+    confidence: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +119,37 @@ class Summary:
     """The bot's summary comment, read back from its marker.
 
     ``reviewed_sha`` is the last commit the bot reviewed, or None if the marker records no
-    40-hex SHA, as before P2-S7 or when edited by hand.
+    40-hex SHA, as before P2-S7 or when edited by hand. ``holds_gate_state`` says the marker has
+    a gate field, ``gate=``, ``more=`` or ``tampered``, so gating may be on (P4-S5).
     """
 
     reviewed_sha: str | None
+    holds_gate_state: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class BotIssueComment:
+    """One of the bot's issue comments, whatever its body, and who last edited it.
+
+    ``last_editor`` is the login of whoever last edited it, ``BOT_LOGIN`` for the bot, or None
+    if nobody did since it was posted.
+    """
+
+    comment_id: int
+    body: str
+    last_editor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InlineComments:
+    """The bot's inline comments read back (``list_bot_comments``), and who last edited each.
+
+    ``editors`` maps every inline comment the bot wrote, by ID, to its last editor, as
+    ``BotIssueComment.last_editor`` says it; one whose marker was edited away is in it too.
+    """
+
+    comments: tuple[BotComment, ...]
+    editors: Mapping[int, str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +224,32 @@ class GitHubClient(IssueReader, Protocol):
         """Resolve a comment's thread."""
         ...
 
-    def write_summary(self, pr: PullRequestRef, body: str, *, reviewed_sha: str | None) -> None:
+    def list_bot_issue_comments(self, pr: PullRequestRef) -> tuple[BotIssueComment, ...]:
+        """Return every issue comment the bot wrote on ``pr``, oldest first, with its last editor.
+
+        Only a gated run reads them, so a run with gating off makes Phase 3's calls (P4-S5).
+        """
+        ...
+
+    def read_inline_comments(self, pr: PullRequestRef) -> InlineComments:
+        """Return ``list_bot_comments``' comments and who last edited each, listing them once.
+
+        Only a gated run reads them.
+        """
+        ...
+
+    def write_summary(
+        self,
+        pr: PullRequestRef,
+        body: str,
+        *,
+        reviewed_sha: str | None,
+        gate: GateResult | None = None,
+    ) -> None:
         """Create the bot's summary comment on ``pr``, or edit it in place if it exists.
 
-        Its marker records ``reviewed_sha``, the last commit reviewed, or ``none`` if None.
+        Its marker records ``reviewed_sha``, the last commit reviewed, or ``none`` if None, and
+        an enabled ``gate``'s blockers (``comments.with_summary_marker``).
         """
         ...
 

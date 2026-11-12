@@ -3,7 +3,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -13,9 +13,17 @@ import pytest
 from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
+from review_bot.governance.gate import Blocker, GateDecision, GateResult
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BotComment, MergedPullRequest, NewComment, Resolver, Summary
+from review_bot.pr.github import (
+    BotComment,
+    BotIssueComment,
+    MergedPullRequest,
+    NewComment,
+    Resolver,
+    Summary,
+)
 from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess, RestGitHubClient, github_access
 
@@ -262,6 +270,7 @@ def test_list_bot_comments_reads_every_page_and_keeps_only_the_bots_marked_comme
         line=3,
         severity=Severity.HIGH,
         resolved_by=Resolver.PERSON,
+        confidence=0.5,
     )
     assert [comment.comment_id for comment in comments] == [10, 20, 30]
     assert comments[0] == expected
@@ -919,3 +928,206 @@ def test_read_issue_refuses_another_repository(stub: Stub) -> None:
         client(stub).read_issue("other/repo", 12)
 
     assert stub.received == []
+
+
+def edited(node_id: str, *editors: str | None, newest_first: bool = False) -> dict:
+    """A comment node whose edits were made by ``editors`` in turn, a minute apart.
+
+    GraphQL holds them oldest first, or ``newest_first``, and the query reads only the first
+    and the last of them, under its aliases.
+    """
+    edits = [
+        {
+            "editedAt": (datetime(2026, 11, 12, tzinfo=UTC) + timedelta(minutes=index))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "editor": None if editor is None else {"login": editor},
+        }
+        for index, editor in enumerate(editors)
+    ]
+    ordered = edits[::-1] if newest_first else edits
+    return {
+        "id": node_id,
+        "firstEdit": {"nodes": ordered[:1]},
+        "lastEdit": {"nodes": ordered[-1:]},
+    }
+
+
+BOT_EDITS = ("github-actions",) * 150
+
+
+def read_issue_comment_editor(stub: Stub, node: dict) -> str | None:
+    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
+    stub.respond = lambda request: reply(
+        {"data": {"nodes": [node]}} if request.path == "/graphql" else [comment]
+    )
+    (read,) = client(stub).list_bot_issue_comments(PR)
+    return read.last_editor
+
+
+def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
+    stub: Stub,
+) -> None:
+    summary_body = f"Summary.\n\n{marker_for(SHA)}"
+    comments = [
+        {"id": 8, "node_id": "IC_8", "user": BOT, "body": "Marker edited away."},
+        {"id": 3, "node_id": "IC_3", "user": PERSON, "body": "A person's."},
+        {"id": 6, "node_id": "IC_6", "user": BOT, "body": summary_body},
+    ]
+
+    def respond(request: Received) -> Reply:
+        if request.path == "/graphql":
+            assert request.body["variables"] == {"ids": ["IC_6", "IC_8"]}
+            assert "firstEdit: userContentEdits(first: 1)" in request.body["query"]
+            assert "lastEdit: userContentEdits(last: 1)" in request.body["query"]
+            nodes = [edited("IC_6"), edited("IC_8", "github-actions", "mallory")]
+            return reply({"data": {"nodes": nodes}})
+        assert request.path == "/repos/owner/repo/issues/7/comments"
+        return reply(comments)
+
+    stub.respond = respond
+
+    assert client(stub).list_bot_issue_comments(PR) == (
+        BotIssueComment(6, summary_body, None),
+        BotIssueComment(8, "Marker edited away.", "mallory"),
+    )
+
+
+@pytest.mark.parametrize("newest_first", [False, True], ids=["oldest-first", "newest-first"])
+@pytest.mark.parametrize(
+    ("editors", "last_editor"),
+    [
+        ((), None),
+        (("mallory", "github-actions"), "github-actions[bot]"),
+        (BOT_EDITS, "github-actions[bot]"),
+        (("github-actions", "mallory"), "mallory"),
+        ((*BOT_EDITS, "mallory"), "mallory"),
+        (("github-actions", None), "ghost"),
+    ],
+    ids=[
+        "never-edited",
+        "the-bot-last",
+        "over-100-bot-edits",
+        "a-person-last",
+        "a-person-last-after-150-bot-edits",
+        "a-deleted-account-last",
+    ],
+)
+def test_the_latest_editor_is_the_newest_end_edit_whatever_the_order(
+    stub: Stub, editors: tuple[str | None, ...], last_editor: str | None, newest_first: bool
+) -> None:
+    node = edited("IC_6", *editors, newest_first=newest_first)
+
+    assert read_issue_comment_editor(stub, node) == last_editor
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"id": "IC_6", "firstEdit": {"nodes": [None]}, "lastEdit": {"nodes": [None]}},
+        {"id": "IC_6", "firstEdit": {"nodes": []}, "lastEdit": {"nodes": [None]}},
+    ],
+    ids=["both-ends-null", "one-end-null"],
+)
+def test_an_unreadable_end_edit_counts_as_someone_elses(stub: Stub, node: dict) -> None:
+    assert read_issue_comment_editor(stub, node) == "ghost"
+
+
+def test_list_bot_issue_comments_with_none_by_the_bot_makes_no_graphql_call(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([{"id": 3, "user": PERSON, "body": "Hi."}])
+
+    assert client(stub).list_bot_issue_comments(PR) == ()
+    assert len(stub.received) == 1
+
+
+def test_read_inline_comments_lists_once_for_the_comments_and_their_editors(stub: Stub) -> None:
+    comments = [
+        {**review_comment(10, BOT), "node_id": "RC_10"},
+        {**review_comment(20, BOT, body="edited away"), "node_id": "RC_20"},
+        {**review_comment(30, PERSON), "node_id": "RC_30"},
+    ]
+
+    def respond(request: Received) -> Reply:
+        if request.path != "/graphql":
+            return reply(comments)
+        if "ids" in request.body["variables"]:
+            return reply({"data": {"nodes": [edited("RC_10"), edited("RC_20", "mallory")]}})
+        return reply(threads_page([thread("T10", 10), thread("T20", 20)]))
+
+    stub.respond = respond
+
+    inline = client(stub).read_inline_comments(PR)
+
+    assert [comment.comment_id for comment in inline.comments] == [10]
+    assert inline.editors == {10: None, 20: "mallory"}
+    listings = [request for request in stub.received if request.path != "/graphql"]
+    assert len(listings) == 1
+
+
+def test_read_inline_comments_asks_for_editors_in_batches_of_100(stub: Stub) -> None:
+    comments = [
+        {**review_comment(index, BOT, body="edited away"), "node_id": f"RC_{index}"}
+        for index in range(1, 102)
+    ]
+    asked: list[list[str]] = []
+
+    def respond(request: Received) -> Reply:
+        if request.path != "/graphql":
+            page = request.query["page"][0]
+            return reply(comments[:100] if page == "1" else comments[100:])
+        ids = request.body["variables"].get("ids")
+        if ids is None:
+            return reply(threads_page([]))
+        asked.append(ids)
+        return reply({"data": {"nodes": [edited(node_id) for node_id in ids]}})
+
+    stub.respond = respond
+
+    inline = client(stub).read_inline_comments(PR)
+
+    assert [len(ids) for ids in asked] == [100, 1]
+    assert sorted(inline.editors) == list(range(1, 102))
+
+
+def test_reading_editors_fails_when_graphql_skips_a_comment(stub: Stub) -> None:
+    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": "x"}
+    stub.respond = lambda request: reply(
+        {"data": {"nodes": [None]}} if request.path == "/graphql" else [comment]
+    )
+
+    with pytest.raises(GitHubError, match="list_bot_issue_comments failed: GraphQL returned"):
+        client(stub).list_bot_issue_comments(PR)
+
+
+def test_reading_editors_fails_on_a_comment_with_no_node_id(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([{"id": 6, "user": BOT, "body": "x"}])
+
+    with pytest.raises(GitHubError, match="comment 6 has no node_id"):
+        client(stub).list_bot_issue_comments(PR)
+
+
+def test_write_summary_records_an_enabled_gate_in_its_marker(stub: Stub) -> None:
+    gate = GateResult(
+        True,
+        GateDecision.BLOCK,
+        None,
+        ("decimal-money",),
+        (Blocker("b" * 16, "decimal-money", "a.py", 3, Severity.HIGH),),
+    )
+    stub.respond = lambda request: (
+        reply([]) if request.method == "GET" else reply({"id": 9}, status=201)
+    )
+
+    client(stub).write_summary(PR, "Summary.", reviewed_sha=None, gate=gate)
+
+    assert stub.received[-1].body == {
+        "body": "Summary.\n\n<!-- review-bot:v1 summary reviewed=none "
+        f"gate={'b' * 16}:decimal-money -->"
+    }
+
+
+def test_read_summary_says_whether_its_marker_holds_gate_state(stub: Stub) -> None:
+    body = f"S.\n\n<!-- review-bot:v1 summary reviewed={SHA} more=2 -->"
+    stub.respond = lambda _request: reply([{"id": 6, "user": BOT, "body": body}])
+
+    assert client(stub).read_summary(PR) == Summary(SHA, holds_gate_state=True)
