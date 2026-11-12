@@ -17,6 +17,7 @@ from review_bot.audit import AuditLog
 from review_bot.context.issues import IssueStatus, LinkedIssue
 from review_bot.context.tools import RepoRef
 from review_bot.errors import (
+    ConfigError,
     DiffNotParsableError,
     DiffTooLargeError,
     ErrorCategory,
@@ -26,6 +27,7 @@ from review_bot.errors import (
 from review_bot.findings import Category, EvidenceSpan, Finding, RuleId, Severity, Source
 from review_bot.fingerprint import fingerprint_for
 from review_bot.git import GitRepo
+from review_bot.governance.policy import Policy
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.mock import MockProvider
@@ -946,3 +948,51 @@ def test_run_pipeline_stopped_before_the_model_call_reads_no_linked_issue(tmp_pa
     assert provider.requests == []
     log = tmp_path / "audit.jsonl"
     assert [r for r in read_records(log) if r["event"] == "issue"] == []
+
+
+# The policy (P4-S1).
+
+LOCKED = Policy(
+    version="locked",
+    sha256="0" * 64,
+    source="p.toml",
+    tools=frozenset(),
+    max_cost_usd=Decimal("0.60"),
+)
+WITHIN_LOCKED = Settings(provider="mock", max_cost_usd=Decimal("0.60"))
+
+
+def run_under_locked(
+    tmp_path: Path, settings: Settings, context: ReviewContext | None = None
+) -> PipelineResult:
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 6, tzinfo=UTC))
+    diff = write_diff(tmp_path, MINIMAL_DIFF)
+    review = run_pipeline(diff, settings, MockProvider(), audit, context=context, policy=LOCKED)
+    return asyncio.run(review)
+
+
+def test_run_pipeline_records_the_policy_and_returns_it(tmp_path: Path) -> None:
+    result = run_under_locked(tmp_path, WITHIN_LOCKED)
+
+    start = data_of(tmp_path / "audit.jsonl", "run.start")
+    assert (start["policy_version"], start["policy_sha256"]) == ("locked", "0" * 64)
+    assert result.policy == LOCKED
+
+
+def test_run_pipeline_under_a_ceiling_refuses_settings_it_was_not_applied_to(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="check_settings"):
+        run_under_locked(tmp_path, Settings(provider="mock"))
+
+    assert read_records(tmp_path / "audit.jsonl") == []
+
+
+def test_run_pipeline_in_context_mode_refuses_a_policy_with_no_tools(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "repo")
+    context = ReviewContext(RepoRef(GitRepo(repo, timeout_s=60), commit(repo, {"a.py": "x\n"})))
+
+    with pytest.raises(ConfigError, match="allows no tools"):
+        run_under_locked(tmp_path, WITHIN_LOCKED, context)
+
+    assert read_records(tmp_path / "audit.jsonl") == []

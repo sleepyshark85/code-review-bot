@@ -66,10 +66,14 @@ def outside_ci(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
 
 
+# Covers every test's calls; live needs both amounts in either mode (P4-S1).
+BUDGET = ("--max-usd", "100", "--max-cost-usd", "1")
+
+
 def live(
     capsys: pytest.CaptureFixture[str], sdk: ScriptedSdk, *args: str | Path
 ) -> tuple[int, str, str]:
-    exit_code = main(["live", *map(str, args)], sdk_call=sdk)
+    exit_code = main(["live", *BUDGET, *map(str, args)], sdk_call=sdk)
     captured = capsys.readouterr()
     return exit_code, captured.out, captured.err
 
@@ -98,7 +102,7 @@ def test_live_records_every_run_of_every_case_and_reports_them(
     assert (
         "total: 4 calls, failed 0 of 4 (invalid_output 0, refusal 0); tokens: input 40, output 20"
     ) in out
-    assert out.endswith("result: pass\n")
+    assert out.endswith("result: pass\nspent=$4 of --max-usd $100\n")
 
 
 def test_live_result_matches_replay_of_the_written_recording(

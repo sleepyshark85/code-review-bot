@@ -74,6 +74,10 @@ CANARY_NOTE = (
     "CANARY-LEDGER-PELICAN-4417. Ignored."
 )
 RAW_SENTINEL = "RAW-MODEL-SENTINEL-7731"
+# P4-S1 AC8: `live` refuses in every mode without `--max-usd` and a per-call cap. These are
+# generous enough that no run here is refused or stopped by them (an unreported cost counts as
+# the cap), so each test keeps its intent; P4-S1's suite tests the flags themselves.
+WITHIN_BUDGET = ("--max-usd", "1000", "--max-cost-usd", "0.10")
 # Built at run time, so the repository's key-literal check never sees a whole key.
 AWS_KEY = "AKIA" + "QZ7X" * 4
 
@@ -241,7 +245,7 @@ def read_recording(root: Path, case_id: str) -> dict[str, Any]:
 
 
 def flags(root: Path, runs: int, max_calls: int) -> list[str | Path]:
-    return ["--cases", root, "--runs", str(runs), "--max-calls", str(max_calls)]
+    return ["--cases", root, "--runs", str(runs), "--max-calls", str(max_calls), *WITHIN_BUDGET]
 
 
 def caught(live: Live, bug_id: str) -> str:
@@ -419,7 +423,7 @@ def test_p1_s16_ac5_over_budget_exits_2_before_any_call_stating_the_planned_coun
     root = copy_cases(tmp_path, SAMPLE, CLEAN)
     sdk = ScriptedSdk(always(answer()))
 
-    live = run_live("--cases", root, *budget, sdk=sdk)
+    live = run_live("--cases", root, *budget, *WITHIN_BUDGET, sdk=sdk)
 
     assert live.exit_code == 2, live.output
     assert sdk.calls == []
@@ -433,7 +437,7 @@ def test_p1_s16_ac5_no_runs_exits_2_before_any_call(
     root = copy_cases(tmp_path, SAMPLE)
     sdk = ScriptedSdk(always(answer()))
 
-    live = run_live("--cases", root, "--max-calls", "25", sdk=sdk)
+    live = run_live("--cases", root, "--max-calls", "25", *WITHIN_BUDGET, sdk=sdk)
 
     assert live.exit_code == 2, live.output
     assert sdk.calls == []

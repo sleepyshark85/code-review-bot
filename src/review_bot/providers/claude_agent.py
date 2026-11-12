@@ -95,7 +95,7 @@ _DIFF_CAP_ERRORS: Final[_CapErrors] = {
     "error_max_budget_usd": (
         "cost",
         "Claude reached the review's cost cap before it finished the review. Raise "
-        "--max-cost-usd, or review a smaller diff.",
+        "--max-cost-usd, up to the policy's ceiling if it has one, or review a smaller diff.",
     ),
 }
 _CONTEXT_CAP_ERRORS: Final[_CapErrors] = {

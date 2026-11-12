@@ -15,6 +15,7 @@ from review_bot.context.codeowners import MAX_CODEOWNERS_BYTES
 from review_bot.errors import ErrorCategory, GitError, GitHubError, ProviderError
 from review_bot.findings import Finding
 from review_bot.git import GitRepo
+from review_bot.governance.policy import BUILTIN_POLICY
 from review_bot.pr.comments import with_summary_marker
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeGitHubClient
@@ -88,6 +89,7 @@ class Runner:
                 issue_reader=None,
                 github=github,
                 settings=settings,
+                policy=BUILTIN_POLICY,
                 audit=self.audit,
                 environ={} if environ is None else environ,
                 clock=lambda: NOW,
@@ -286,6 +288,7 @@ def backfill(
             make_provider=factory,
             issue_reader=None,
             settings=settings,
+            policy=BUILTIN_POLICY,
             audit=run.audit,
             clock=lambda: NOW,
         )
@@ -568,6 +571,7 @@ def test_run_pull_request_needs_a_github_client_exactly_in_comment_mode(
                 issue_reader=None,
                 github=github,
                 settings=MOCK,
+                policy=BUILTIN_POLICY,
                 audit=AuditLog(tmp_path / "audit.jsonl", clock=lambda: NOW),
                 environ={},
                 clock=lambda: NOW,
@@ -1015,6 +1019,7 @@ def test_backfill_pull_request_applies_the_base_config(repo: Path, tmp_path: Pat
             make_provider=lambda: provider,
             issue_reader=None,
             settings=MOCK,
+            policy=BUILTIN_POLICY,
             audit=AuditLog(tmp_path / "backfill.jsonl", clock=lambda: NOW),
             clock=lambda: NOW,
         )

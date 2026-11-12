@@ -27,6 +27,7 @@ from review_bot.errors import (
     SecretDetectedError,
 )
 from review_bot.findings import ReviewedFinding
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.comments import (
     blocked_summary,
     comment_body,
@@ -50,6 +51,7 @@ from review_bot.render import (
     evidence_json,
     indented_in_list_item,
     markdown_path,
+    policy_json,
     report_document,
 )
 from review_bot.report import PipelineResult, path_fields
@@ -165,8 +167,9 @@ class ShadowReport:
     with any secret in it redacted, or None if nothing was reviewed. ``comments`` and
     ``withheld`` are in comment order, and ``resolves`` oldest first. ``caps`` are the run's
     effective limits, None where there is no cap; context mode adds its tool and cost caps, the
-    cost as a decimal string. ``config`` is the review policy the run used, or None if it read
-    none: it was refused, or its repository config was invalid.
+    cost as a decimal string, and diff mode adds the cost cap under a policy with a ceiling.
+    ``policy`` is the policy file the run ran under. ``config`` is the review policy the run
+    used, or None if it read none: it was refused, or its repository config was invalid.
     ``codeowners`` is the base commit's CODEOWNERS, which names each entry's owners, or None if
     the run read none: it planned no comments, or ran on a local diff. ``since`` is the last
     reviewed commit a comment mode run started from, the head or an ancestor of it, else None.
@@ -190,6 +193,7 @@ class ShadowReport:
     resolves: tuple[ShadowResolve, ...]
     withheld: tuple[WithheldFinding, ...]
     caps: Mapping[str, int | float | str | None]
+    policy: Policy
     config: Mapping[str, object] | None
     codeowners: CodeOwners | None
     over_budget: bool
@@ -216,6 +220,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     finished_at: datetime,
     origin: Origin,
     pr: PullRequestRef | None,
+    policy: Policy = BUILTIN_POLICY,
     since: str | None = None,
     incremental: Incremental | None = None,
     codeowners: CodeOwners | None = None,
@@ -237,11 +242,12 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     ``failed`` with its category. A review is over budget when it reports more output tokens
     than ``max_output_tokens``, or in context mode a cost over ``max_cost_usd``.
 
-    ``settings`` are those the review ran with, the repository's threshold applied, and
-    ``config`` the repository's policy, or None if the run read none. Comments are planned up
-    to its ``max_open_comments``. ``codeowners``, if the run read it, names the owners of each
-    entry, and a reviewed summary groups the findings by owner. ``issues`` are the linked issues
-    a context review read, none otherwise.
+    ``settings`` are those the review ran with, the repository's threshold applied, ``policy``
+    the policy file the run ran under (the built-in policy if not given), and ``config`` the
+    repository's policy, or None if the run read none. Comments are planned up to its
+    ``max_open_comments``. ``codeowners``, if the run read it, names the owners of each entry,
+    and a reviewed summary groups the findings by owner. ``issues`` are the linked issues a
+    context review read, none otherwise.
 
     Raises:
         ValueError: If ``pr`` is None for an ``origin`` other than ``local``, or given for it;
@@ -304,7 +310,8 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         comments=comments,
         resolves=resolves,
         withheld=withheld,
-        caps=_caps(settings),
+        caps=_caps(settings, policy),
+        policy=policy,
         config=None if config is None else _config_json(config, settings),
         codeowners=codeowners,
         over_budget=isinstance(review, PipelineResult) and _is_over_budget(review, settings),
@@ -361,8 +368,12 @@ def _planned(
     return comments, resolves, plan.withheld
 
 
-def _caps(settings: Settings) -> dict[str, int | float | str | None]:
-    """The run's effective caps: Phase 2's, then in context mode the tool and cost caps."""
+def _caps(settings: Settings, policy: Policy) -> dict[str, int | float | str | None]:
+    """The run's effective caps: Phase 2's, then in context mode the tool caps, then the cost cap.
+
+    The cost cap is shown in context mode, and in diff mode only under a policy with a ceiling,
+    so a diff mode run under the built-in policy shows Phase 2's caps.
+    """
     caps: dict[str, int | float | str | None] = {
         "max_diff_bytes": settings.max_diff_bytes,
         "max_review_bytes": settings.max_review_bytes,
@@ -370,14 +381,16 @@ def _caps(settings: Settings) -> dict[str, int | float | str | None]:
         "max_retries": settings.max_retries,
         "deadline_s": settings.deadline_s,
     }
-    if settings.context == "repo":
-        max_cost_usd = settings.max_cost_usd
+    is_context = settings.context == "repo"
+    if is_context:
         caps |= {
             "max_tool_calls": settings.max_tool_calls,
             "max_tool_result_bytes": settings.max_tool_result_bytes,
             "max_tool_total_bytes": settings.max_tool_total_bytes,
-            "max_cost_usd": None if max_cost_usd is None else str(max_cost_usd),
         }
+    if is_context or policy.max_cost_usd is not None:
+        max_cost_usd = settings.max_cost_usd
+        caps["max_cost_usd"] = None if max_cost_usd is None else str(max_cost_usd)
     return caps
 
 
@@ -469,6 +482,8 @@ def render_shadow_json(shadow: ShadowReport) -> str:
         "context": None if shadow.report is None else shadow.report["context"],
         # Never an issue's text, which is untrusted and may be long.
         "issues": [{"number": issue.number, "status": issue.status} for issue in shadow.issues],
+        # Redacted as ``report`` is, so the two agree.
+        "policy": _redacted(policy_json(shadow.policy)),
     }
     return json.dumps(document, ensure_ascii=True, allow_nan=False)
 

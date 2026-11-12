@@ -40,6 +40,7 @@ from review_bot.cli import (
     report_failure,
     run_review,
     run_to_completion,
+    settings_within_policy,
     then_discard_unraisable,
     uses_own_claude,
 )
@@ -52,6 +53,7 @@ from review_bot.console import (
 )
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
+from review_bot.governance.policy import Policy
 from review_bot.pr.compare import compare_runs
 from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
@@ -141,6 +143,7 @@ class _ShadowCommand:
     diff_path: Path
     out_dir: Path
     settings: Settings
+    policy: Policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +153,7 @@ class _RunCommand:
     out_dir: Path
     mode: Mode
     settings: Settings
+    policy: Policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +166,7 @@ class _BackfillCommand:
     max_usd: Decimal | None
     allow_dispatch: bool
     settings: Settings
+    policy: Policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,9 +238,11 @@ def main(
         ``GITHUB_API_URL`` isn't allowed, and so does ``run`` or ``backfill`` with
         ``--context repo`` and no ``github`` if either is set but unusable. ``backfill``
         returns the first provider failure's or invalid config's code, an error's code if one
-        stops it, and 2 over ``--max-calls`` or ``--max-usd``, without both dollar amounts
-        under ``--context repo``, or in CI, unless a ``workflow_dispatch`` run gave
-        ``--allow-dispatch``. ``label`` returns 0 when done or interrupted, and 2 with no
+        stops it, and 2 over ``--max-calls`` or ``--max-usd``, without ``--max-usd`` and a
+        per-call cap in either mode, or in CI, unless a ``workflow_dispatch`` run gave
+        ``--allow-dispatch``. ``shadow``, ``run`` and ``backfill`` exit 2 for a policy file
+        that can't be used, or settings beyond it. ``label`` returns 0 when done or
+        interrupted, and 2 with no
         terminal or an invalid labels file.
         ``collect`` returns 0 once ``feedback.jsonl`` is written; 2 with no ``github`` and an
         unusable ``GITHUB_TOKEN`` or ``GITHUB_API_URL``, or for an unwritable ``--out``; 18 for
@@ -397,8 +404,8 @@ def _parse_args(
     backfill.add_argument(
         "--max-usd",
         type=usd_amount,
-        help="the most all calls may cost, in USD; required with --context repo, with "
-        "--max-cost-usd, and checked against each call's --max-cost-usd before and during the run",
+        help="the most all calls may cost, in USD; required, and checked against each call's "
+        "cost cap (--max-cost-usd, else the policy's ceiling) before and during the run",
     )
     backfill.add_argument(
         "--allow-dispatch",
@@ -448,7 +455,7 @@ def _parse_args(
         diff_path = Path(flags.pop("diff_path"))
         # A local diff has no commit for tools to read, so REVIEW_BOT_CONTEXT doesn't apply.
         settings = load_settings(flags).model_copy(update={"context": "off"})
-        return _ShadowCommand(diff_path, out_dir, settings)
+        return _ShadowCommand(diff_path, out_dir, *settings_within_policy(settings))
     if name == "backfill":
         pulls_path, github_repo = flags.pop("pulls"), flags.pop("github_repo")
         repo_dir, max_calls = flags.pop("repo"), flags.pop("max_calls")
@@ -457,10 +464,18 @@ def _parse_args(
         # ``evals live`` makes, so --max-calls bounds the attempts.
         settings = load_settings(flags).model_copy(update={"max_retries": 0})
         return _BackfillCommand(
-            pulls_path, github_repo, repo_dir, out_dir, max_calls, max_usd, allow_dispatch, settings
+            pulls_path,
+            github_repo,
+            repo_dir,
+            out_dir,
+            max_calls,
+            max_usd,
+            allow_dispatch,
+            *settings_within_policy(settings),
         )
     event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
-    return _RunCommand(event_path, repo_dir, out_dir, mode, load_settings(flags))
+    settings, policy = settings_within_policy(load_settings(flags))
+    return _RunCommand(event_path, repo_dir, out_dir, mode, settings, policy)
 
 
 def _command_without_review(
@@ -952,7 +967,9 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
     started_at = utc_now()
     review: PipelineResult | ReportedError
     try:
-        review = run_review(command.diff_path, command.settings, provider, audit)
+        review = run_review(
+            command.diff_path, command.settings, provider, audit, policy=command.policy
+        )
     except REPORTED_ERRORS as exc:
         review = exc
     return build_shadow_report(
@@ -967,6 +984,7 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
         finished_at=utc_now(),
         origin=Origin.LOCAL,
         pr=None,
+        policy=command.policy,
     )
 
 
@@ -997,6 +1015,7 @@ def _run(
         github=None if make_github is None else make_github(pr.repo),
         issue_reader=None if make_issue_reader is None else make_issue_reader(pr.repo),
         settings=settings,
+        policy=command.policy,
         audit=audit,
         environ=os.environ,
         clock=utc_now,
@@ -1044,6 +1063,7 @@ def _backfill(
         make_provider=lambda: build_provider(settings) if provider is None else provider,
         issue_reader=None if make_issue_reader is None else make_issue_reader(command.github_repo),
         settings=settings,
+        policy=command.policy,
         out_dir=command.out_dir,
     )
     if uses_own_claude(settings, provider):
@@ -1056,29 +1076,26 @@ def _backfill(
 
 
 def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:
-    """The dollar budget the backfill's calls are charged to, or None if there is none.
+    """The dollar budget the backfill's calls are charged to, in either mode (ADR 0015).
 
-    ``--context repo`` needs one, and ``--max-usd`` makes one in either mode: ``--max-usd`` is
-    the allowance, and ``--max-cost-usd`` each call's cap (ADR 0015). With no calls planned,
-    nothing will be spent, so missing amounts mean no budget rather than an error.
+    ``--max-usd`` is the allowance, and each call's cap is the settings' cost cap: from
+    ``--max-cost-usd``, else the policy's ceiling. With no calls planned, nothing will be
+    spent, so missing amounts mean no budget rather than an error.
 
     Raises:
-        ConfigError: If calls are planned and one is needed but either amount is missing, or
-            the ``planned`` calls, each at its cap, could cost more than ``--max-usd``.
+        ConfigError: If calls are planned and either amount is missing, naming each one
+            missing, or the ``planned`` calls, each at its cap, could cost more than
+            ``--max-usd``.
     """
-    settings = command.settings
-    max_usd, max_cost_usd = command.max_usd, settings.max_cost_usd
-    if max_usd is None and settings.context == "off":
-        return None
+    max_usd, max_cost_usd = command.max_usd, command.settings.max_cost_usd
     if max_usd is None or max_cost_usd is None:
         if planned == 0:
             return None
-        given = "--context repo" if settings.context == "repo" else "--max-usd"
         raise ConfigError(
-            f"backfill with {given} needs both --max-usd and --max-cost-usd (or "
-            f"REVIEW_BOT_MAX_COST_USD): it would make up to {planned} calls. Pass --max-cost-usd, "
-            f"the most one call may cost, and --max-usd, at least {planned} times that, if that "
-            "budget is approved."
+            f"backfill needs {_missing_amounts(max_usd, max_cost_usd)}: it would make up to "
+            f"{planned} calls. Pass --max-cost-usd, the most one call may cost, or set the "
+            f"policy's [cost] max_cost_usd, and --max-usd, at least {planned} times that, if "
+            "that budget is approved."
         )
     budget = DollarBudget(max_usd=max_usd, max_cost_usd=max_cost_usd)
     if not budget.covers(planned):
@@ -1089,6 +1106,14 @@ def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget |
             f"{planned_usd} if that budget is approved."
         )
     return budget
+
+
+def _missing_amounts(max_usd: Decimal | None, max_cost_usd: Decimal | None) -> str:
+    """The dollar amounts missing, such as ``--max-usd and --max-cost-usd``."""
+    missing = [] if max_usd is not None else ["--max-usd"]
+    if max_cost_usd is None:
+        missing.append("--max-cost-usd (or REVIEW_BOT_MAX_COST_USD)")
+    return " and ".join(missing)
 
 
 @dataclass(slots=True)
@@ -1133,6 +1158,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
     make_provider: Callable[[], LLMProvider],
     issue_reader: IssueReader | None,
     settings: Settings,
+    policy: Policy,
     out_dir: Path,
 ) -> int:
     """Run and report each pull request in turn, adding each report to ``progress``.
@@ -1162,6 +1188,7 @@ async def _backfill_pulls(  # noqa: PLR0913 - keyword-only collaborators, as the
                 make_provider=make_provider,
                 issue_reader=issue_reader,
                 settings=settings,
+                policy=policy,
                 audit=audit,
                 clock=utc_now,
             )

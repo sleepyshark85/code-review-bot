@@ -9,7 +9,7 @@ Closes #
 - [ ] Follows `CONVENTIONS.md`; deviations justified below
 - [ ] Reviewer verdict is `approve`: no open `blocker`, `major` or `minor` findings, and the quality bar in `CLAUDE.md` is met
 - [ ] No secrets; no live model calls in tests
-- [ ] README updated if behaviour or usage changed
+- [ ] `docs/usage.md` (and the README summary) updated if behaviour or usage changed
 
 ## Deviations and follow-ups
 <!-- Anything that knowingly departs from the design or conventions, and why. "None" is fine. -->

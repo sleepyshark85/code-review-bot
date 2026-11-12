@@ -5,7 +5,7 @@
 - **Phase:** 3
 
 ## Context
-[The Phase 3 gate](../../README.md#phase-3-context-aware) asks that precision and recall improve over Phase 2 on the labelled set. Phase 2's labels judge only the comments Phase 2 produced, so a context review's new findings have no verdict, and true recall is unknowable without a full answer key. Phase 2's shadow weeks are still running, and changing its review mid-window would mix two systems in one measurement.
+[The Phase 3 gate](../roadmap.md#phase-3-context-aware) asks that precision and recall improve over Phase 2 on the labelled set. Phase 2's labels judge only the comments Phase 2 produced, so a context review's new findings have no verdict, and true recall is unknowable without a full answer key. Phase 2's shadow weeks are still running, and changing its review mid-window would mix two systems in one measurement.
 
 ## Decision
 Context mode is opt-in, with its own prompt version; diff mode and its prompt stay byte-for-byte Phase 2's, and Phase 2's shadow reports and Phase 1's recordings are the baseline. On the same PRs, each context report is paired with Phase 2's report of the same head SHA, and PRs without one are excluded. Precision is Phase 2's per-unit formula on each side, and every new unit is judged by a person to the same coverage. Recall is relative to a pool: the accepted issues either side found, grouped by file and anchored line. Eval cases are compared mode against mode with the existing scorer, by each bug's share of runs; runs that hit a cap count as misses. [Details](../phases/phase-3/design.md#how-the-gate-is-evidenced).

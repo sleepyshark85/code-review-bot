@@ -168,13 +168,10 @@ def test_failed_run_records_the_cap_that_ended_it_and_no_cap_otherwise(
     [
         (
             ["--max-cost-usd", "0.30"],
-            "live with --mode context needs both --max-usd and --max-cost-usd: this run would "
-            "make 6 calls (2 cases x 3 runs).",
+            "live needs --max-usd: this run would make 6 calls (2 cases x 3 runs).",
         ),
-        (
-            ["--max-usd", "8.10"],
-            "live with --mode context needs both --max-usd and --max-cost-usd",
-        ),
+        (["--max-usd", "8.10"], "live needs --max-cost-usd: "),
+        ([], "live needs --max-usd and --max-cost-usd: "),
         (
             ["--max-usd", "1.50", "--max-cost-usd", "0.30"],
             "live would make 6 calls (2 cases x 3 runs) of up to --max-cost-usd 0.30 each, 1.80 "
@@ -204,10 +201,10 @@ def test_context_mode_without_a_covering_dollar_budget_exits_2_before_any_call(
 
 
 @pytest.mark.parametrize(
-    ("amount", "given"), [("--max-usd", "--max-usd"), ("--max-cost-usd", "--max-cost-usd")]
+    ("amount", "missing"), [("--max-usd", "--max-cost-usd"), ("--max-cost-usd", "--max-usd")]
 )
-def test_diff_mode_with_only_one_amount_exits_2_naming_it(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], amount: str, given: str
+def test_diff_mode_with_only_one_amount_exits_2_naming_the_other(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], amount: str, missing: str
 ) -> None:
     write_case(tmp_path / "cases")
     sdk = ToolUsingSdk()
@@ -217,7 +214,7 @@ def test_diff_mode_with_only_one_amount_exits_2_naming_it(
     )
 
     assert (exit_code, sdk.options) == (2, [])
-    assert f"live with {given} needs both --max-usd and --max-cost-usd" in err
+    assert f"live needs {missing}: this run would make 1 call (1 case x 1 run)." in err
 
 
 @pytest.mark.parametrize("amount", ["0", "-1", "nan", "inf", "abc"])
@@ -391,22 +388,150 @@ def test_diff_mode_with_amounts_writes_the_diff_recording_and_reports_spend(
     assert exit_code == 0
 
 
-def test_diff_mode_without_amounts_sets_no_budget_and_reports_no_spend(
+def test_diff_mode_without_amounts_exits_2_naming_both_whatever_the_variable_says(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_case(tmp_path / "cases")
     monkeypatch.setenv("REVIEW_BOT_MAX_COST_USD", "0.50")
     sdk = ToolUsingSdk(0.05)
 
-    exit_code, out, _ = live(
-        capsys, sdk, "--cases", tmp_path / "cases", "--runs", 2, "--max-calls", 2
+    exit_code, out, err = live(
+        capsys, sdk, "--cases", tmp_path / "cases", "--mode", "diff", "--runs", 3, "--max-calls", 15
     )
 
-    assert [options.max_budget_usd for options in sdk.options] == [None, None]
-    assert "spent=" not in out
-    assert "cost:" not in out
-    assert out.endswith("result: pass\n")
+    assert (exit_code, out, sdk.options) == (2, "", [])
+    assert "live needs --max-usd and --max-cost-usd: this run would make 3 calls" in err
+    assert not LIVE_AUDIT.exists()
+
+
+# The policy's ceiling (P4-S1).
+
+
+def write_policy(directory: Path, text: str) -> Path:
+    path = directory / "policy.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+CEILING = 'version = "org-1"\n[cost]\nmax_cost_usd = "0.30"\n'
+
+
+def test_diff_mode_under_a_ceiling_caps_each_call_at_it_without_max_cost_usd(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, CEILING)
+    sdk = ToolUsingSdk(0.05)
+
+    exit_code, out, _ = live(
+        capsys,
+        sdk,
+        *["--cases", tmp_path / "cases", "--runs", 2, "--max-calls", 2],
+        *["--max-usd", "0.60", "--policy", policy],
+    )
+
     assert exit_code == 0
+    assert [options.max_budget_usd for options in sdk.options] == [0.3, 0.3]
+    assert out.endswith("spent=$0.10 of --max-usd $0.60\n")
+
+
+def test_a_ceiling_from_the_variable_counts_against_max_usd(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_case(tmp_path / "cases")
+    monkeypatch.setenv("REVIEW_BOT_POLICY", str(write_policy(tmp_path, CEILING)))
+    sdk = ToolUsingSdk()
+
+    exit_code, _, err = live(
+        capsys,
+        sdk,
+        *["--cases", tmp_path / "cases", "--runs", 3, "--max-calls", 3, "--max-usd", "0.60"],
+    )
+
+    assert (exit_code, sdk.options) == (2, [])
+    assert "of up to --max-cost-usd 0.30 each, 0.90 USD in all, more than --max-usd 0.60" in err
+
+
+def test_a_cost_cap_above_the_ceiling_exits_2_naming_both_before_any_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, CEILING)
+    sdk = ToolUsingSdk()
+
+    exit_code, _, err = live(
+        capsys,
+        sdk,
+        *["--cases", tmp_path / "cases", "--runs", 1, "--max-calls", 1, "--policy", policy],
+        *["--max-usd", "1", "--max-cost-usd", "0.50"],
+    )
+
+    assert (exit_code, sdk.options) == (2, [])
+    assert "0.50 is above the ceiling of 0.30 USD per call in the policy `org-1`" in err
+
+
+def test_context_mode_under_a_policy_with_no_tools_exits_2_before_any_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    context_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, 'version = "locked"\n[tools]\nallowed = []\n')
+    sdk = ToolUsingSdk()
+
+    exit_code, _, err = context_live(capsys, sdk, tmp_path / "cases", "--policy", policy)
+
+    assert (exit_code, sdk.options) == (2, [])
+    assert "The policy `locked` allows no tools, so context mode can't run" in err
+
+
+def test_context_mode_offers_only_the_tools_the_policy_allows_and_replays_fresh(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case_file = context_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, 'version = "org-1"\n[tools]\nallowed = ["read"]\n')
+    sdk = ToolUsingSdk()
+
+    # Two runs, as the case's bug needs, so the case passes when scored.
+    exit_code, _, _ = context_live(capsys, sdk, tmp_path / "cases", "--runs", 2, "--policy", policy)
+    replay_args = ["replay", "--cases", str(tmp_path / "cases"), "--mode", "context"]
+    stale_under_builtin = main(replay_args)
+    builtin_out = capsys.readouterr().out
+    fresh_under_policy = main([*replay_args, "--policy", str(policy)])
+
+    assert exit_code == 0
+    assert sdk.options[0].allowed_tools == ["mcp__repo__read"]
+    assert context_path(case_file).exists()
+    assert (stale_under_builtin, fresh_under_policy) == (1, 0)
+    assert "the recording is stale: its prompt_sha256 differs" in builtin_out
+
+
+def test_an_invalid_policy_exits_2_for_replay_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, 'version = "v"\nfoo = 1\n')
+
+    exit_code = main(["replay", "--cases", str(tmp_path / "cases"), "--policy", str(policy)])
+
+    assert exit_code == 2
+    assert "is invalid: unknown key 'foo'" in capsys.readouterr().err
+
+
+def test_replay_under_a_ceiling_scores_a_diff_recording_made_under_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path / "cases")
+    policy = write_policy(tmp_path, CEILING)
+    live(
+        capsys,
+        ToolUsingSdk(0.05),
+        *["--cases", tmp_path / "cases", "--runs", 2, "--max-calls", 2, "--max-usd", "0.60"],
+        *["--policy", policy],
+    )
+
+    exit_code = main(["replay", "--cases", str(tmp_path / "cases"), "--policy", str(policy)])
+
+    assert exit_code == 0
+    assert "stale" not in capsys.readouterr().out
 
 
 def test_context_report_shows_tool_calls_per_run_and_the_spend(

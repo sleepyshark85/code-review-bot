@@ -39,6 +39,14 @@ from review_bot.errors import (
 )
 from review_bot.findings import ReviewedFinding, Severity, Source
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
+from review_bot.governance.policy import (
+    BUILTIN_POLICY,
+    MAX_POLICY_BYTES,
+    Policy,
+    PolicyError,
+    check_settings,
+    parse_policy,
+)
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
 from review_bot.render import render_findings, render_json, render_markdown
@@ -55,16 +63,20 @@ __all__ = [
     "build_provider",
     "main",
     "parse_args",
+    "read_policy",
+    "read_policy_option",
     "record_failed_end",
     "report_failure",
     "run_review",
     "run_to_completion",
+    "settings_within_policy",
     "then_discard_unraisable",
     "uses_own_claude",
 ]
 
 _INPUT_ERROR_EXIT_CODES: Final[Mapping[type[InputError], int]] = {
     ConfigError: 2,
+    PolicyError: 2,
     DiffNotFoundError: 3,
     DiffUnreadableError: 4,
     DiffNotUtf8Error: 4,
@@ -91,6 +103,8 @@ _PROVIDER_ERROR_EXIT_CODES: Final[Mapping[ErrorCategory, int]] = {
 
 _INTERNAL_ERROR_EXIT_CODE: Final = 14
 _CONTEXT_FLAG: Final = "--context-repo"
+# The variable ``load_settings`` reads for the ``policy`` setting.
+_POLICY_VARIABLE: Final = "REVIEW_BOT_POLICY"
 _AUDIT_ERROR_EXIT_CODE: Final = 17
 # Only ``python -m review_bot.pr`` calls GitHub (Phase 2 design, Commands and exit codes).
 _GITHUB_ERROR_EXIT_CODE: Final = 18
@@ -159,8 +173,11 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-cost-usd",
         help=(
             "the most a review may cost, in USD, from 0.01 to 1000; the Claude CLI stops past it "
-            "(default: no cap)"
+            "(default: the policy's ceiling, else no cap)"
         ),
+    )
+    parser.add_argument(
+        "--policy", help="the policy file the run is under (default: the built-in policy)"
     )
 
 
@@ -285,6 +302,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
     try:
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
+        settings, policy = settings_within_policy(settings)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Before the audit log, like any other bad argument: no provider is called.
@@ -294,11 +312,71 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
     try:
-        return _review(diff_path, settings, provider, audit, context)
+        return _review(diff_path, settings, policy, provider, audit, context)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         exit_code = report_failure(exc)
         record_failed_end(audit, exit_code, exc)
         return exit_code
+
+
+def settings_within_policy(settings: Settings) -> tuple[Settings, Policy]:
+    """The policy ``settings.policy`` names, and ``settings`` checked against it.
+
+    Raises:
+        PolicyError: If the policy file can't be read or is invalid.
+        ConfigError: If ``settings`` ask for more than the policy allows (``check_settings``).
+    """
+    policy = read_policy(settings.policy)
+    return check_settings(settings, policy), policy
+
+
+def read_policy_option(flag: str | None, environ: Mapping[str, str]) -> Policy:
+    """The policy ``--policy`` names, else ``REVIEW_BOT_POLICY``, else the built-in policy.
+
+    For a command without the setting flags, so it resolves the policy as ``load_settings``
+    does for the others: an empty flag or variable is invalid, with the same message.
+
+    Raises:
+        ConfigError: If the flag, or the variable it falls back to, is empty.
+        PolicyError: If the policy file can't be read or is invalid.
+    """
+    if flag is not None:
+        source, path = "--policy", flag
+    elif _POLICY_VARIABLE in environ:
+        source, path = _POLICY_VARIABLE, environ[_POLICY_VARIABLE]
+    else:
+        return BUILTIN_POLICY
+    if not path:
+        raise ConfigError(f"Invalid value for {source}: String should have at least 1 character.")
+    return read_policy(path)
+
+
+def read_policy(path: str | None) -> Policy:
+    """The policy in the file at ``path``, or the built-in policy if ``path`` is None.
+
+    The file is read once, at most one byte past the limit, so an oversized file is reported.
+
+    Raises:
+        PolicyError: If the file is missing, can't be read or is invalid, naming it.
+    """
+    if path is None:
+        return BUILTIN_POLICY
+    try:
+        with Path(path).open("rb") as file:
+            data = file.read(MAX_POLICY_BYTES + 1)
+    except FileNotFoundError as exc:
+        raise _unusable_policy(path, "it doesn't exist") from exc
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise _unusable_policy(path, f"it can't be read: {reason}") from exc
+    return parse_policy(data, source=path)
+
+
+def _unusable_policy(path: str, problem: str) -> PolicyError:
+    return PolicyError(
+        f"The policy file {path} can't be used: {problem}. Pass a policy file you can read, or "
+        "leave out --policy and REVIEW_BOT_POLICY to use the built-in policy."
+    )
 
 
 def _require_terminal_for_triage(settings: Settings) -> None:
@@ -347,14 +425,15 @@ def record_failed_end(audit: AuditLog, exit_code: int, exc: Exception) -> None:
             write_diagnostic(f"review-bot: warning: {audit_exc}")
 
 
-def _review(
+def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     diff_path: Path,
     settings: Settings,
+    policy: Policy,
     provider: LLMProvider | None,
     audit: AuditLog,
     context: ReviewContext | None,
 ) -> int:
-    result = run_review(diff_path, settings, provider, audit, context=context)
+    result = run_review(diff_path, settings, provider, audit, policy=policy, context=context)
     # Before any output, so stdout holds only the report, written after the last decision.
     triage = None
     if settings.triage:
@@ -384,24 +463,28 @@ def _review(
     return exit_code
 
 
-def run_review(
+def run_review(  # noqa: PLR0913 - policy and context are keyword-only
     diff_path: Path,
     settings: Settings,
     provider: LLMProvider | None,
     audit: AuditLog,
     *,
+    policy: Policy,
     context: ReviewContext | None = None,
 ) -> PipelineResult:
     """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
 
-    ``context`` is the commit the model's tools read; None reviews in diff mode.
+    ``policy`` is the policy the review is under, which ``settings`` are within. ``context`` is
+    the commit the model's tools read; None reviews in diff mode.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
             becomes one too, so it can't set the exit code itself.
     """
     selected_provider = build_provider(settings) if provider is None else provider
-    review = run_pipeline(diff_path, settings, selected_provider, audit, context=context)
+    review = run_pipeline(
+        diff_path, settings, selected_provider, audit, context=context, policy=policy
+    )
     if uses_own_claude(settings, provider):
         review = then_discard_unraisable(review)
     return run_to_completion(review)
