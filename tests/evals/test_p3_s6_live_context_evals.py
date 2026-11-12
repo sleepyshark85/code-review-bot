@@ -22,7 +22,7 @@ Readings, each used in one helper:
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,14 +94,27 @@ class ScriptedSdk:
     """A fake `sdk_call` that records each call and plays the responder's steps for it."""
 
     respond: Responder
-    calls: list[tuple[str, ClaudeAgentOptions]] = field(default_factory=list)
+    calls: list[tuple[str | AsyncIterable[dict[str, Any]], ClaudeAgentOptions]] = field(
+        default_factory=list
+    )
     cases: list[str] = field(default_factory=list)
 
-    def __call__(self, prompt: str, options: ClaudeAgentOptions) -> Any:
+    def __call__(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> Any:
         self.calls.append((prompt, options))
+        return self._play(prompt, options)
+
+    async def _play(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> Any:
+        # Context mode sends the prompt as streaming input (P4-S3).
+        if not isinstance(prompt, str):
+            prompt = "".join([message["message"]["content"] async for message in prompt])
         case_id = case_of(prompt)
         self.cases.append(case_id)
-        return self._stream(self.respond(case_id, self.cases.count(case_id)), options)
+        async for step in self._stream(self.respond(case_id, self.cases.count(case_id)), options):
+            yield step
 
     @staticmethod
     async def _stream(steps: Steps, options: ClaudeAgentOptions) -> Any:
