@@ -22,6 +22,13 @@ def findings_json(*findings: dict[str, Any]) -> str:
     return json.dumps({"findings": list(findings)})
 
 
+async def prompt_text(prompt: str | AsyncIterable[dict[str, Any]]) -> str:
+    """The prompt's text: a string as it is, or streaming input's messages joined (P4-S3)."""
+    if isinstance(prompt, str):
+        return prompt
+    return "".join([message["message"]["content"] async for message in prompt])
+
+
 def result_message(
     result: str | None, *, is_error: bool = False, subtype: str = "success", **fields: Any
 ) -> ResultMessage:

@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from fake_mcp import ToolCallLog, init_message, tool_call
-from fake_sdk import error_result, findings_json, result_message
+from fake_sdk import error_result, findings_json, prompt_text, result_message
 from test_p1_s16_eval_live_command import nothing_written_to_the_repository
 from test_p3_s5_context_eval_cases import copy_cases
 
@@ -109,9 +109,7 @@ class ScriptedSdk:
         self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
     ) -> Any:
         # Context mode sends the prompt as streaming input (P4-S3).
-        if not isinstance(prompt, str):
-            prompt = "".join([message["message"]["content"] async for message in prompt])
-        case_id = case_of(prompt)
+        case_id = case_of(await prompt_text(prompt))
         self.cases.append(case_id)
         async for step in self._stream(self.respond(case_id, self.cases.count(case_id)), options):
             yield step
