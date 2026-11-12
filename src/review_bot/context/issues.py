@@ -1,15 +1,22 @@
 """The issues a pull request closes, and the part of each one a context review may send.
 
-Pure. Issue text is untrusted: it is capped, secret-scanned, and only ever sent framed as data
-(P3-S9).
+Pure. Issue text is untrusted: it is capped, secret-scanned, masked as the policy asks, and only
+ever sent framed as data (P3-S9, P4-S4).
 """
 
+import dataclasses
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from review_bot.governance.redaction import (
+    RedactionCounts,
+    RedactionKind,
+    add_counts,
+    mask_personal_data,
+)
 from review_bot.secret_scan import scan_secrets
 
 __all__ = [
@@ -22,6 +29,7 @@ __all__ = [
     "LinkedIssue",
     "linked_issue",
     "linked_issue_numbers",
+    "mask_issues",
     "read_linked_issues",
 ]
 
@@ -175,3 +183,21 @@ def _cut(text: str, max_chars: int, name: str) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return f"{text[:max_chars]} [{name} cut: over {max_chars:,} characters]", True
+
+
+def mask_issues(
+    issues: Sequence[LinkedIssue], kinds: frozenset[RedactionKind]
+) -> tuple[tuple[LinkedIssue, ...], RedactionCounts]:
+    """``issues`` with each one's text masked as ``mask_personal_data`` masks it, and the counts.
+
+    The text is masked as it is sent, already cut, so a value that a cut splits is masked only
+    if what is left of it still matches.
+    """
+    masked = [mask_personal_data(issue.text, kinds) for issue in issues]
+    return (
+        tuple(
+            dataclasses.replace(issue, text=text.text)
+            for issue, text in zip(issues, masked, strict=True)
+        ),
+        add_counts(text.counts for text in masked),
+    )

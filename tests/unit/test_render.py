@@ -18,6 +18,7 @@ from review_bot.findings import (
     Source,
 )
 from review_bot.governance.policy import BUILTIN_POLICY
+from review_bot.governance.redaction import RedactionKind
 from review_bot.prompt import PROMPT_VERSION
 from review_bot.providers.base import TokenUsage
 from review_bot.render import (
@@ -187,6 +188,7 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
             "sha256": BUILTIN_POLICY.sha256,
             "source": "builtin",
         },
+        "redaction": {},
     }
     assert list(json.loads(render(result))) == [
         "schema",
@@ -202,7 +204,23 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "mode",
         "context",
         "policy",
+        "redaction",
     ]
+
+
+def test_render_json_writes_the_values_masked_by_source_then_kind() -> None:
+    result = dataclasses.replace(
+        pipeline_result(),
+        redaction={
+            "diff": {RedactionKind.EMAIL: 2},
+            "tools": {RedactionKind.PHONE: 1, RedactionKind.IPV4: 3},
+        },
+    )
+
+    assert json.loads(render(result))["redaction"] == {
+        "diff": {"email": 2},
+        "tools": {"phone": 1, "ipv4": 3},
+    }
 
 
 @pytest.mark.parametrize(

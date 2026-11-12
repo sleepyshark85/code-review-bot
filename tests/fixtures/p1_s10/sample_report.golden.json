@@ -55,5 +55,6 @@
     "version": "builtin-v1",
     "sha256": "a8c7bd7ec776c6f0947712cb748c298223980bcf8127ec2a5d0b29326a28431c",
     "source": "builtin"
-  }
+  },
+  "redaction": {}
 }

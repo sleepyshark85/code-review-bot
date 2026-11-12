@@ -144,3 +144,20 @@ def test_fenced_block_fence_is_longer_than_any_backtick_run_inside(text: str, fe
 def test_fenced_block_refuses_a_character_a_suggestion_may_not_hold(text: str) -> None:
     with pytest.raises(ValueError, match="control or bidi character"):
         fenced_block(text)
+
+
+@pytest.mark.parametrize(
+    "anchored",
+    [ADDED, DiffLine(LineKind.CONTEXT, "x = 1", 3)],
+    ids=["added-line", "context-line"],
+)
+def test_suggestion_drop_reason_refuses_a_placeholder_for_masked_data_first(
+    anchored: DiffLine,
+) -> None:
+    suggestion = 'contact = "[REDACTED:email]"' + "x" * 1_000
+
+    assert suggestion_drop_reason(suggestion, anchored) is SuggestionDropReason.REDACTED
+
+
+def test_suggestion_drop_reason_keeps_a_suggestion_naming_redaction_without_a_placeholder() -> None:
+    assert suggestion_drop_reason('label = "[REDACTED]"', ADDED) is None

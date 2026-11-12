@@ -28,6 +28,8 @@ _INVISIBLE_LAYOUT: Final = frozenset(
 _TRAILING_WHITESPACE: Final = " \t\n"
 _BACKTICK_RUN: Final = re.compile("`+")
 _MIN_FENCE: Final = 3
+# What every placeholder for masked personal data starts with (``governance.redaction``).
+_PLACEHOLDER_START: Final = "[REDACTED:"
 
 
 class SuggestionDropReason(StrEnum):
@@ -39,17 +41,24 @@ class SuggestionDropReason(StrEnum):
     CONTROL_CHARACTERS = "control_characters"
     POSSIBLE_SECRET = "possible_secret"  # noqa: S105 - a reason's name, not a secret
     NOT_REQUESTED = "not_requested"
+    REDACTED = "redacted"
 
 
-def suggestion_drop_reason(suggestion: str, anchored: DiffLine) -> SuggestionDropReason | None:
+def suggestion_drop_reason(  # noqa: PLR0911 - one return per reason, in the order checked
+    suggestion: str, anchored: DiffLine
+) -> SuggestionDropReason | None:
     """Say why ``suggestion`` can't replace the ``anchored`` line, or None if it can.
 
-    Only an added line may be replaced. Every check is linear in the suggestion's length, and
-    the size check comes first, so the others, the secret scan included, read at most 1,000
+    A suggestion holding a placeholder for masked personal data would commit the placeholder,
+    so it is dropped ``redacted`` before any other check. Only an added line may be replaced.
+    Every check is linear in the suggestion's length, and the size check comes before the
+    others but the placeholder's, so they, the secret scan included, read at most 1,000
     characters. Control characters are checked before ``unchanged``, so a suggestion holding
     one is dropped for it even if it equals the line, as in a CRLF file. An empty suggestion
     deletes the line, so it is never ``unchanged``.
     """
+    if _PLACEHOLDER_START in suggestion:
+        return SuggestionDropReason.REDACTED
     if anchored.kind is not LineKind.ADDED:
         return SuggestionDropReason.NOT_ADDED_LINE
     if len(suggestion) > _MAX_CHARS or suggestion.count("\n") >= _MAX_LINES:

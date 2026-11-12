@@ -16,6 +16,7 @@ from review_bot.governance.policy import (
     check_settings,
     parse_policy,
 )
+from review_bot.governance.redaction import RedactionKind
 from review_bot.settings import Settings
 
 SOURCE = "p.toml"
@@ -94,6 +95,13 @@ def test_parse_policy_accepts_a_ceiling_from_a_cent_to_1000(amount: str) -> None
         ('version = "v"\n[cost]\nmax_cost_usd = "1e2"', "must be a decimal string"),
         ('version = "v"\n[cost]\nmax_cost_usd = "0.009"', "'0.009' is outside 0.01 to 1000"),
         ('version = "v"\n[cost]\nmax_cost_usd = "1000.01"', "is outside 0.01 to 1000"),
+        (
+            'version = "v"\n[redaction]\nkinds = ["name"]',
+            "'name' isn't a redaction kind; the kinds are email, phone and ipv4",
+        ),
+        ('version = "v"\n[redaction]\nkinds = [1]', "'redaction.kinds[0]'"),
+        ('version = "v"\n[redaction]\nkinds = ["ipv4", "ipv4"]', "lists 'ipv4' more than once"),
+        ('version = "v"\n[redaction]\nmask = []', "unknown key 'redaction.mask'"),
     ],
 )
 def test_parse_policy_refuses_an_invalid_file_naming_it_and_the_problem(
@@ -229,3 +237,15 @@ def test_check_context_allowed_names_the_policy_and_says_to_use_diff_mode() -> N
 
 def test_check_context_allowed_passes_with_one_tool() -> None:
     check_context_allowed(ceiling(None, tools=frozenset({ToolName.READ})))
+
+
+def test_parse_policy_reads_the_redaction_kinds() -> None:
+    policy = parse('version = "v"\n[redaction]\nkinds = ["email", "ipv4"]')
+
+    assert policy.redaction == frozenset({RedactionKind.EMAIL, RedactionKind.IPV4})
+
+
+def test_without_a_redaction_section_and_in_the_builtin_policy_nothing_is_masked() -> None:
+    assert parse('version = "v"').redaction == frozenset()
+    assert parse('version = "v"\n[redaction]').redaction == frozenset()
+    assert BUILTIN_POLICY.redaction == frozenset()

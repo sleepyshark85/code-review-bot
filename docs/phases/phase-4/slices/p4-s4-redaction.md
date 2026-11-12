@@ -1,6 +1,6 @@
 # P4-S4: Redact personal data before any vendor call
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P4-S1
 - **Touches:** `governance.redaction` (new), `governance.policy`, `review`, `context.tools`, `context.issues`, `suggestion`, `report`, `evals.replay`
 
@@ -30,3 +30,7 @@ Text is untrusted, up to `max_diff_bytes` for the diff and a tool's byte cap per
 - Other kinds (names, postal addresses, IPv6): [Q7](../design.md#6-open-questions).
 
 ## Notes
+- A diff line's leading `+`, `-` or space is a marker, not text, so an added `12025550143` isn't read as `+12025550143`. Paths are masked like any text, so a path holding an address can't be read back by the model or anchored.
+- Exempt domains, per the design: `example.com`, `.org`, `.net` and their subdomains, and the `.example`, `.test` and `.invalid` top-level domains. An email's top-level domain is letters only, so a pin such as `lib@1.2.3` isn't one.
+- Issue text is masked after its cut (P3-S9), so a value the cut splits goes out only as its unmatched part. Tool lines are masked before theirs.
+- A `[REDACTED:` suggestion is dropped whatever the policy, before any other check but diff mode's `not_requested`. `static`/`redaction` is written only under a policy with kinds, with `{"counts": ...}`; tool counts cover only the lines a result returns.

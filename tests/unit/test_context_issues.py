@@ -14,8 +14,10 @@ from review_bot.context.issues import (
     LinkedIssue,
     linked_issue,
     linked_issue_numbers,
+    mask_issues,
     read_linked_issues,
 )
+from review_bot.governance.redaction import RedactionKind
 
 REPO = "owner/repo"
 # An AWS-format access key ID, built so no scanner flags this file.
@@ -169,3 +171,26 @@ def test_read_linked_issues_reads_up_to_the_cap_and_lists_the_rest_as_over_limit
 def test_linked_issue_refuses_text_for_an_issue_that_isnt_sent() -> None:
     with pytest.raises(ValueError, match="#4 is over_limit"):
         LinkedIssue(4, IssueStatus.OVER_LIMIT, "text")
+
+
+def test_mask_issues_masks_each_sent_text_and_sums_the_counts() -> None:
+    issues = (
+        LinkedIssue(1, IssueStatus.INCLUDED, "Mail jane@rightship.com\n\nor +12025550143"),
+        LinkedIssue(2, IssueStatus.NOT_FOUND),
+        LinkedIssue(3, IssueStatus.CUT, "Ask bob@rightship.com"),
+    )
+
+    masked, counts = mask_issues(issues, frozenset(RedactionKind))
+
+    assert masked == (
+        LinkedIssue(1, IssueStatus.INCLUDED, "Mail [REDACTED:email]\n\nor [REDACTED:phone]"),
+        LinkedIssue(2, IssueStatus.NOT_FOUND),
+        LinkedIssue(3, IssueStatus.CUT, "Ask [REDACTED:email]"),
+    )
+    assert counts == {RedactionKind.EMAIL: 2, RedactionKind.PHONE: 1}
+
+
+def test_mask_issues_with_no_kinds_returns_the_issues_as_they_are() -> None:
+    issues = (LinkedIssue(1, IssueStatus.INCLUDED, "Mail jane@rightship.com\n\n"),)
+
+    assert mask_issues(issues, frozenset()) == (issues, {})
