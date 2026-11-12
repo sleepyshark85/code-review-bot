@@ -6,6 +6,7 @@ from typing import Literal
 import pytest
 from claude_agent_sdk import CLINotFoundError
 from fake_mcp import CHECKOUT, ToolCallLog, init_message, tool_call
+from fake_openai import KEY, api_error, completion, connection_failure, fake, findings_content, http
 from fake_sdk import (
     HIGH_FINDING,
     FakeSdk,
@@ -22,6 +23,7 @@ from review_bot.findings import Finding
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
+from review_bot.providers.openai_compat import OpenAICompatibleProvider
 
 type Scenario = (
     Literal["valid", "empty", "invalid", "warned", "diagnosed", "tool_loop"] | ErrorCategory
@@ -84,7 +86,38 @@ def claude_provider(scenario: Scenario) -> LLMProvider:
     return ClaudeAgentProvider(settings, sdk_call=FakeSdk(*script))
 
 
-PROVIDER_FACTORIES = {"mock": mock_provider, "claude": claude_provider}
+# P4-S2 AC5: `openai` over a scripted `HttpTransport`. Error scenarios make no retry, so each
+# fails on its one response; "warned" is a 503 retried once, then a success.
+OPENAI_SCRIPTS: dict[str, Callable[[], tuple[object, ...]]] = {
+    "valid": lambda: (completion(findings_content(HIGH_FINDING)),),
+    "empty": lambda: (completion(findings_content()),),
+    "invalid": lambda: (completion("not json"),),
+    "warned": lambda: (http(503, retry_after="0"), completion(findings_content())),
+    "diagnosed": lambda: (http(401, DIAGNOSTIC_LINE),),
+    ErrorCategory.AUTH: lambda: (api_error(401),),
+    ErrorCategory.RATE_LIMIT: lambda: (api_error(429),),
+    ErrorCategory.REFUSAL: lambda: (completion(None, finish_reason="content_filter"),),
+    ErrorCategory.TRANSIENT: lambda: (api_error(503),),
+    ErrorCategory.PERMANENT: lambda: (api_error(400),),
+    ErrorCategory.UNAVAILABLE: lambda: (connection_failure("refused"),),
+    ErrorCategory.INVALID_OUTPUT: lambda: (completion("not json"),),
+}
+
+
+def openai_provider(scenario: Scenario) -> LLMProvider:
+    if scenario == "tool_loop":
+        pytest.skip("tool_loop: the openai provider's tool calling lands in P4-S6")
+    retries = "1" if scenario == "warned" else "0"
+    _, settings = cli.parse_args(
+        ["change.diff", "--provider", "openai", "--model", "m1", "--max-retries", retries]
+    )
+    transport = fake(*OPENAI_SCRIPTS[scenario]())
+    return OpenAICompatibleProvider(
+        settings, base_url=settings.openai_base_url, api_key=KEY, transport=transport
+    )
+
+
+PROVIDER_FACTORIES = {"mock": mock_provider, "claude": claude_provider, "openai": openai_provider}
 
 
 @pytest.fixture(params=PROVIDER_FACTORIES.values(), ids=PROVIDER_FACTORIES.keys())
@@ -99,5 +132,5 @@ def provider_factories():
 
 @pytest.fixture
 def diagnostic_line():
-    """The CLI line the "diagnosed" scenario carries, for either provider."""
+    """The CLI line the "diagnosed" scenario carries, for every provider."""
     return DIAGNOSTIC_LINE

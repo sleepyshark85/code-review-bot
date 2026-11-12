@@ -36,6 +36,7 @@ from review_bot.cli import (
     add_setting_arguments,
     add_tool_cap_arguments,
     build_provider,
+    check_provider_settings,
     record_failed_end,
     report_failure,
     run_review,
@@ -102,6 +103,7 @@ from review_bot.settings import (
     live_run_refused,
     load_settings,
     take_github_token,
+    take_openai_api_key,
 )
 from review_bot.spend import DollarBudget, usd_amount
 
@@ -258,10 +260,14 @@ def main(
 
     Every subcommand first removes ``GITHUB_TOKEN`` from the environment
     (``take_github_token``); ``run --mode comment``, ``collect`` and ``baseline`` keep it for
-    their client, and ``run`` and ``backfill`` with ``--context repo`` for reading issues.
+    their client, and ``run`` and ``backfill`` with ``--context repo`` for reading issues. It
+    removes ``OPENAI_API_KEY`` too (``take_openai_api_key``), which only ``--provider openai``
+    uses: ``shadow``, ``run`` and ``backfill`` exit 2 with that provider and a cost cap, or
+    with no key for a base URL that isn't loopback (``check_provider_settings``).
     """
     keep_library_logs_off_stderr()
     github_token = take_github_token()
+    openai_api_key = take_openai_api_key()
     try:
         command = _parse_args(sys.argv[1:] if argv is None else argv)
         if isinstance(
@@ -269,6 +275,7 @@ def main(
             _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
         ):
             return _run_without_review(command, github, github_token)
+        check_provider_settings(command.settings, openai_api_key=openai_api_key)
         # Before --out is created: a CI run refused here touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci(allow_dispatch=command.allow_dispatch)
@@ -279,16 +286,18 @@ def main(
         # Before any input is read, so an unwritable --out costs no review.
         _require_writable_directory(command.out_dir)
         if isinstance(command, _BackfillCommand):
-            return _backfill(command, provider, make_issue_reader)
+            return _backfill(command, provider, make_issue_reader, openai_api_key)
         audit = AuditLog(command.settings.audit_log, clock=utc_now)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
         return report_failure(exc)
     try:
         match command:
             case _ShadowCommand():
-                shadow = _shadow(command, provider, audit)
+                shadow = _shadow(command, provider, audit, openai_api_key)
             case _RunCommand():
-                shadow = _run(command, provider, make_github, make_issue_reader, audit)
+                shadow = _run(
+                    command, provider, make_github, make_issue_reader, audit, openai_api_key
+                )
         _write_report(shadow, command.out_dir)
         return _finish(shadow, command.out_dir, audit)
     except Exception as exc:  # noqa: BLE001 - `report_failure` maps any failure to its code
@@ -963,12 +972,22 @@ def _require_writable_directory(out_dir: Path) -> None:
         raise _unwritable(out_dir, exc) from exc
 
 
-def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditLog) -> ShadowReport:
+def _shadow(
+    command: _ShadowCommand,
+    provider: LLMProvider | None,
+    audit: AuditLog,
+    openai_api_key: str | None,
+) -> ShadowReport:
     started_at = utc_now()
     review: PipelineResult | ReportedError
     try:
         review = run_review(
-            command.diff_path, command.settings, provider, audit, policy=command.policy
+            command.diff_path,
+            command.settings,
+            provider,
+            audit,
+            policy=command.policy,
+            openai_api_key=openai_api_key,
         )
     except REPORTED_ERRORS as exc:
         review = exc
@@ -988,12 +1007,13 @@ def _shadow(command: _ShadowCommand, provider: LLMProvider | None, audit: AuditL
     )
 
 
-def _run(
+def _run(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     command: _RunCommand,
     provider: LLMProvider | None,
     make_github: Callable[[str], GitHubClient] | None,
     make_issue_reader: Callable[[str], IssueReader] | None,
     audit: AuditLog,
+    openai_api_key: str | None,
 ) -> ShadowReport:
     """Review the pull request in the event file, and in comment mode apply it on GitHub.
 
@@ -1011,7 +1031,7 @@ def _run(
         pr,
         mode=command.mode,
         git=GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S),
-        make_provider=lambda: build_provider(settings) if provider is None else provider,
+        make_provider=lambda: _provider(settings, provider, openai_api_key),
         github=None if make_github is None else make_github(pr.repo),
         issue_reader=None if make_issue_reader is None else make_issue_reader(pr.repo),
         settings=settings,
@@ -1029,6 +1049,7 @@ def _backfill(
     command: _BackfillCommand,
     provider: LLMProvider | None,
     make_issue_reader: Callable[[str], IssueReader] | None,
+    openai_api_key: str | None,
 ) -> int:
     """Review each merged pull request in the pulls file that has no report in ``--out`` yet.
 
@@ -1060,7 +1081,7 @@ def _backfill(
         [pull.ref(command.github_repo) for pull in pending],
         progress,
         git=git,
-        make_provider=lambda: build_provider(settings) if provider is None else provider,
+        make_provider=lambda: _provider(settings, provider, openai_api_key),
         issue_reader=None if make_issue_reader is None else make_issue_reader(command.github_repo),
         settings=settings,
         policy=command.policy,
@@ -1073,6 +1094,15 @@ def _backfill(
     finally:
         already = len(pulls) - len(pending)
         write_output(_backfill_counts(progress, entries=len(pulls), already=already))
+
+
+def _provider(
+    settings: Settings, provider: LLMProvider | None, openai_api_key: str | None
+) -> LLMProvider:
+    """``provider`` if given, else the settings' own (``build_provider``)."""
+    if provider is not None:
+        return provider
+    return build_provider(settings, openai_api_key=openai_api_key)
 
 
 def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:
