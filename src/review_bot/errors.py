@@ -2,9 +2,13 @@
 
 from collections.abc import Sequence
 from enum import StrEnum, auto
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from review_bot.secret_scan import SecretHit
+
+if TYPE_CHECKING:
+    # Only for its type: ``providers.base`` imports ``findings``, which imports this module.
+    from review_bot.providers.base import DeniedTool
 
 __all__ = [
     "AuditError",
@@ -145,6 +149,8 @@ class ProviderError(ReviewBotError):
     ``diagnostics`` are raw, untrusted text, such as the CLI's stderr: only ``scrub_diagnostics``
     may turn them into output (ADR 0004). The message is shown to the user, so they never go in
     it. ``cap`` names the review's cap the call hit, if that is why it failed (ADR 0015).
+    ``denied_tools`` are the tools the provider's runtime denied before the call failed, so
+    they are recorded even then.
     """
 
     def __init__(
@@ -160,3 +166,4 @@ class ProviderError(ReviewBotError):
         self.category = category
         self.diagnostics = tuple(diagnostics)
         self.cap = cap
+        self.denied_tools: tuple[DeniedTool, ...] = ()

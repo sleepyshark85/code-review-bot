@@ -15,6 +15,7 @@ from git_samples import commit, init_repo
 
 from review_bot.audit import AuditLog
 from review_bot.context.issues import IssueStatus, LinkedIssue
+from review_bot.context.ledger import ToolName
 from review_bot.context.tools import RepoRef
 from review_bot.errors import (
     ConfigError,
@@ -30,7 +31,13 @@ from review_bot.git import GitRepo
 from review_bot.governance.policy import Policy
 from review_bot.governance.redaction import RedactionKind
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
-from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
+from review_bot.providers.base import (
+    DeniedTool,
+    LLMProvider,
+    ReviewRequest,
+    ReviewResponse,
+    TokenUsage,
+)
 from review_bot.providers.mock import MockProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, run_pipeline
@@ -997,3 +1004,85 @@ def test_run_pipeline_in_context_mode_refuses_a_policy_with_no_tools(tmp_path: P
         run_under_locked(tmp_path, WITHIN_LOCKED, context)
 
     assert read_records(tmp_path / "audit.jsonl") == []
+
+
+class DenyingProvider:
+    """Answers with no findings, reporting two tools its runtime denied, and keeps the request."""
+
+    def __init__(self) -> None:
+        self.requests: list[ReviewRequest] = []
+
+    async def review(self, request: ReviewRequest) -> ReviewResponse:
+        self.requests.append(request)
+        denied = (DeniedTool("Bash", "hook"), DeniedTool("mcp__repo__grep", "can_use_tool"))
+        return ReviewResponse(findings=(), usage=TokenUsage(0, 0), denied_tools=denied)
+
+
+READ_ONLY = Policy(
+    version="read-only-2",
+    sha256="1" * 64,
+    source="p.toml",
+    tools=frozenset({ToolName.READ}),
+    max_cost_usd=None,
+)
+
+
+def test_run_pipeline_in_context_mode_sends_the_policy_and_records_each_denial(
+    tmp_path: Path,
+) -> None:
+    provider = DenyingProvider()
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 12, tzinfo=UTC))
+    diff = write_diff(tmp_path, MINIMAL_DIFF)
+    context = context_repo(tmp_path)
+
+    asyncio.run(
+        run_pipeline(
+            diff, Settings(provider="mock"), provider, audit, context=context, policy=READ_ONLY
+        )
+    )
+
+    [request] = provider.requests
+    assert request.policy == READ_ONLY
+    log = tmp_path / "audit.jsonl"
+    recorded = events(log)
+    called = recorded.index("agent.called")
+    assert recorded[called + 1 : called + 3] == ["agent.denied", "agent.denied"]
+    assert [r["data"] for r in read_records(log) if r["event"] == "denied"] == [
+        {"tool": "Bash", "layer": "hook", "policy_version": "read-only-2"},
+        {"tool": "mcp__repo__grep", "layer": "can_use_tool", "policy_version": "read-only-2"},
+    ]
+
+
+class DenyingThenCappedProvider:
+    """Fails at the cost cap after its runtime denied a tool."""
+
+    async def review(self, _request: ReviewRequest) -> ReviewResponse:
+        error = ProviderError(ErrorCategory.PERMANENT, "Capped.", cap="cost")
+        error.denied_tools = (DeniedTool("Bash", "hook"),)
+        raise error
+
+
+def test_run_pipeline_records_the_denials_of_a_failed_review_before_its_failure(
+    tmp_path: Path,
+) -> None:
+    audit = AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime(2026, 11, 12, tzinfo=UTC))
+    diff = write_diff(tmp_path, MINIMAL_DIFF)
+    review = run_pipeline(
+        diff,
+        Settings(provider="mock"),
+        DenyingThenCappedProvider(),
+        audit,
+        context=context_repo(tmp_path),
+        policy=READ_ONLY,
+    )
+
+    with pytest.raises(ProviderError):
+        asyncio.run(review)
+
+    log = tmp_path / "audit.jsonl"
+    assert events(log)[-2:] == ["agent.denied", "agent.failed"]
+    assert data_of(log, "agent.denied") == {
+        "tool": "Bash",
+        "layer": "hook",
+        "policy_version": "read-only-2",
+    }

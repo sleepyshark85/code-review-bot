@@ -22,7 +22,7 @@ Readings, each used in one helper:
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from fake_mcp import ToolCallLog, init_message, tool_call
-from fake_sdk import error_result, findings_json, result_message
+from fake_sdk import error_result, findings_json, prompt_text, result_message
 from test_p1_s16_eval_live_command import nothing_written_to_the_repository
 from test_p3_s5_context_eval_cases import copy_cases
 
@@ -94,14 +94,25 @@ class ScriptedSdk:
     """A fake `sdk_call` that records each call and plays the responder's steps for it."""
 
     respond: Responder
-    calls: list[tuple[str, ClaudeAgentOptions]] = field(default_factory=list)
+    calls: list[tuple[str | AsyncIterable[dict[str, Any]], ClaudeAgentOptions]] = field(
+        default_factory=list
+    )
     cases: list[str] = field(default_factory=list)
 
-    def __call__(self, prompt: str, options: ClaudeAgentOptions) -> Any:
+    def __call__(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> Any:
         self.calls.append((prompt, options))
-        case_id = case_of(prompt)
+        return self._play(prompt, options)
+
+    async def _play(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> Any:
+        # Context mode sends the prompt as streaming input (P4-S3).
+        case_id = case_of(await prompt_text(prompt))
         self.cases.append(case_id)
-        return self._stream(self.respond(case_id, self.cases.count(case_id)), options)
+        async for step in self._stream(self.respond(case_id, self.cases.count(case_id)), options):
+            yield step
 
     @staticmethod
     async def _stream(steps: Steps, options: ClaudeAgentOptions) -> Any:

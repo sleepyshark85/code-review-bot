@@ -40,7 +40,13 @@ from review_bot.prompt import (
     build_context_request,
     build_request,
 )
-from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
+from review_bot.providers.base import (
+    DeniedTool,
+    LLMProvider,
+    ReviewRequest,
+    ReviewResponse,
+    TokenUsage,
+)
 from review_bot.report import PipelineResult, redaction_json, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
@@ -226,6 +232,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
             masked_diff.text,
             model=settings.model,
             tools=tools,
+            policy=policy,
             domain_rules=domain_rules,
             issues=issues,
         )
@@ -305,16 +312,18 @@ def tool_caps(settings: Settings) -> ToolCaps:
 async def _call_provider(
     provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog
 ) -> ReviewResponse:
-    """Send ``request``, record the call and any tools offered, and write and record warnings.
+    """Send ``request``, record the call and the tools offered or denied, write and record warnings.
 
     Raises:
-        ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
+        ProviderError: If the provider fails; its denials and scrubbed diagnostics are recorded
+            first.
         AuditError: If a record can't be written.
     """
     started = time.perf_counter()
     try:
         response = await provider.review(request)
     except ProviderError as exc:
+        _record_denials(exc.denied_tools, request.policy, audit)
         diagnostics = _scrubbed(exc.diagnostics, diff)
         failure = {"category": exc.category, "cap": exc.cap, "diagnostics": diagnostics}
         audit.record(Stage.AGENT, "failed", failure)
@@ -331,10 +340,21 @@ async def _call_provider(
     )
     if response.offered_tools is not None:
         audit.record(Stage.AGENT, "tools", {"tools": list(response.offered_tools)})
+    _record_denials(response.denied_tools, request.policy, audit)
     for warning in response.warnings:
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
     return response
+
+
+def _record_denials(denied_tools: Iterable[DeniedTool], policy: Policy, audit: AuditLog) -> None:
+    """Record each tool the provider's runtime denied, under ``policy``."""
+    for denied in denied_tools:
+        audit.record(
+            Stage.AGENT,
+            "denied",
+            {"tool": denied.tool, "layer": denied.layer, "policy_version": policy.version},
+        )
 
 
 def _stop_if_too_large_to_review(

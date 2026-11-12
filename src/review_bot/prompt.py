@@ -7,6 +7,7 @@ from typing import Final
 
 from review_bot.context.issues import LinkedIssue
 from review_bot.findings import Category, RuleId, Severity
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.providers.base import ReviewRequest, ToolExecutor
 from review_bot.rules import DomainRule
 
@@ -108,15 +109,18 @@ def build_request(diff: str, *, model: str) -> ReviewRequest:
     )
 
 
-def build_context_request(
+def build_context_request(  # noqa: PLR0913 - all but the diff are keyword-only
     diff: str,
     *,
     model: str,
     tools: ToolExecutor,
+    policy: Policy = BUILTIN_POLICY,
     domain_rules: Sequence[DomainRule] = (),
     issues: Sequence[LinkedIssue] = (),
 ) -> ReviewRequest:
     """Wrap a diff as ``build_request`` does, and pair it with the context prompt and ``tools``.
+
+    ``policy`` is the policy the review runs under, which decides each tool the model asks for.
 
     The prompt names each of ``domain_rules``, the repository's enabled domain rules, with its
     fixed description and its path patterns, and offers its name as a finding's rule. Each of
@@ -127,6 +131,7 @@ def build_context_request(
         user_prompt=_delimited("DIFF", diff) + _issues_section(issues),
         model=model,
         tools=tools,
+        policy=policy,
     )
 
 

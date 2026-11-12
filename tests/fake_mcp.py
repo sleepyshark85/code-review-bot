@@ -3,7 +3,8 @@
 The real CLI talks JSON-RPC to an in-process ("sdk") MCP server through the SDK's bridge, and
 calls `PreToolUse` hooks by name. These steps do the same through the SDK's own `SdkMcpBridge`,
 so a call reaches the server exactly as the CLI's would: `initialize`, then `tools/list` or
-`tools/call`. Nothing here knows how the provider builds its server or hook.
+`tools/call`. Nothing here knows how the provider builds its server or hook. Since P4-S3 a
+step can also run the hook, or ask `can_use_tool`, as the CLI does before it uses a tool.
 
 Also a small committed repository and a recording `ToolExecutor`, for criteria about what the
 executor sees.
@@ -15,7 +16,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, SystemMessage
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    SystemMessage,
+    ToolPermissionContext,
+)
 from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
 
 from review_bot.context.tools import RepoRef, RepoTools, ToolCaps
@@ -158,6 +165,54 @@ def denial_reason(output: Any) -> str | None:
     if output.get("decision") == "block":
         return str(output.get("reason", ""))
     return None
+
+
+async def call_can_use_tool(
+    options: ClaudeAgentOptions, tool_name: Any, tool_input: Mapping[str, Any] | None = None
+) -> Any:
+    """Ask the provider's `can_use_tool` callback, as the CLI does before it prompts."""
+    callback = options.can_use_tool
+    assert callback is not None, "no can_use_tool callback is set"
+    context = ToolPermissionContext(signal=None, suggestions=[], tool_use_id="toolu_2")
+    return await callback(tool_name, dict(tool_input or {}), context)
+
+
+def permission_denial(result: Any) -> str | None:
+    """The message if `can_use_tool`'s `result` denies the call, else None."""
+    if isinstance(result, PermissionResultDeny):
+        assert result.behavior == "deny", result
+        return result.message
+    assert isinstance(result, PermissionResultAllow), f"can_use_tool returned {result!r}"
+    return None
+
+
+@dataclass
+class PermissionLog:
+    """What each scripted hook or `can_use_tool` call answered, in order (P4-S3)."""
+
+    answers: list[Any] = field(default_factory=list)
+
+
+def hook_step(tool_name: Any, log: PermissionLog | None = None) -> Any:
+    """A script step in which the CLI runs the `PreToolUse` hook before using `tool_name`."""
+
+    async def step(options: ClaudeAgentOptions) -> None:
+        answer = await call_pre_tool_use(options, tool_name)
+        if log is not None:
+            log.answers.append(answer)
+
+    return step
+
+
+def can_use_tool_step(tool_name: Any, log: PermissionLog | None = None) -> Any:
+    """A script step in which the CLI asks `can_use_tool` whether `tool_name` may be used."""
+
+    async def step(options: ClaudeAgentOptions) -> None:
+        answer = await call_can_use_tool(options, tool_name)
+        if log is not None:
+            log.answers.append(answer)
+
+    return step
 
 
 # A committed repository and the executors over it.

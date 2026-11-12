@@ -23,12 +23,13 @@ Readings, each used in one helper:
 import hashlib
 import json
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_sdk import prompt_text
 from test_p1_s16_eval_live_command import nothing_written_to_the_repository
 from test_p3_s5_context_eval_cases import (
     CASES,
@@ -542,12 +543,12 @@ class PromptSdk:
 
     prompts: list[str] = field(default_factory=list)
 
-    def __call__(self, prompt: str, _options: Any) -> Any:
-        self.prompts.append(prompt)
-        return self._stream()
+    def __call__(self, prompt: str | AsyncIterable[dict[str, Any]], _options: Any) -> Any:
+        return self._stream(prompt)
 
-    @staticmethod
-    async def _stream() -> AsyncIterator[Any]:
+    async def _stream(self, prompt: str | AsyncIterable[dict[str, Any]]) -> AsyncIterator[Any]:
+        # Context mode sends the prompt as streaming input (P4-S3).
+        self.prompts.append(await prompt_text(prompt))
         for step in context_answer():
             yield step
 

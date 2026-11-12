@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterable
 from typing import Any
 
 from claude_agent_sdk import (
@@ -20,6 +20,13 @@ HIGH_FINDING = dict(FINDING_FIELDS)
 
 def findings_json(*findings: dict[str, Any]) -> str:
     return json.dumps({"findings": list(findings)})
+
+
+async def prompt_text(prompt: str | AsyncIterable[dict[str, Any]]) -> str:
+    """The prompt's text: a string as it is, or streaming input's messages joined (P4-S3)."""
+    if isinstance(prompt, str):
+        return prompt
+    return "".join([message["message"]["content"] async for message in prompt])
 
 
 def result_message(
@@ -100,27 +107,40 @@ class FakeSdk:
     message to yield. `forever` replays the script without end. `calls` is recorded when called
     and `started` when iterated, so a call that is never consumed shows up. `closed` is set only
     when the generator really finishes.
+
+    A prompt given as streaming input (an async iterable of messages, as `can_use_tool` needs) is
+    read concurrently with the script, as the SDK reads it, into `input_messages` (P4-S3).
     """
 
     def __init__(self, *script: Any, forever: bool = False) -> None:
-        self.calls: list[tuple[str, ClaudeAgentOptions]] = []
+        self.calls: list[tuple[str | AsyncIterable[dict[str, Any]], ClaudeAgentOptions]] = []
+        self.input_messages: list[Any] = []
         self.started = False
         self.closed = False
         self._script = script
         self._forever = forever
 
-    def __call__(self, prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+    def __call__(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> AsyncGenerator[object, None]:
         self.calls.append((prompt, options))
-        return self._stream(options)
+        return self._stream(prompt, options)
 
     @property
     def options(self) -> ClaudeAgentOptions:
         assert len(self.calls) == 1
         return self.calls[0][1]
 
-    async def _stream(self, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+    async def _stream(
+        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeAgentOptions
+    ) -> AsyncGenerator[object, None]:
         self.started = True
+        reader = None
         try:
+            if not isinstance(prompt, str):
+                reader = asyncio.ensure_future(self._read_input(prompt))
+                # One turn of the loop, so the reader takes every message the prompt has ready.
+                await asyncio.sleep(0)
             while True:
                 for step in self._script:
                     if isinstance(step, BaseException):
@@ -132,7 +152,13 @@ class FakeSdk:
                 if not self._forever:
                     return
         finally:
+            if reader is not None:
+                reader.cancel()
             self.closed = True
+
+    async def _read_input(self, prompt: AsyncIterable[dict[str, Any]]) -> None:
+        async for message in prompt:
+            self.input_messages.append(message)
 
 
 def succeeds() -> FakeSdk:

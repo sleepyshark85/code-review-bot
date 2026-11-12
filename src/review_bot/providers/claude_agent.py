@@ -2,14 +2,16 @@
 
 import asyncio
 import dataclasses
+import warnings
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Mapping
 from contextlib import aclosing
 from decimal import ROUND_DOWN, Decimal
 from typing import Final, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
+    CanUseToolShadowedWarning,
     ClaudeAgentOptions,
     ClaudeSDKError,
     CLIConnectionError,
@@ -23,12 +25,14 @@ from claude_agent_sdk import (
 from review_bot.errors import ErrorCategory, ProviderCap, ProviderError
 from review_bot.findings import parse_findings
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
-from review_bot.providers.claude_tools import ToolListCheck, open_to_tools
+from review_bot.providers.claude_tools import ToolLockdown, open_to_tools
 from review_bot.settings import Settings
 
-__all__ = ["ClaudeAgentProvider", "SdkCall"]
+__all__ = ["ClaudeAgentProvider", "SdkCall", "SdkPrompt"]
 
-type SdkCall = Callable[[str, ClaudeAgentOptions], AsyncGenerator[object, None]]
+# A string, or in context mode streaming input: the SDK's user messages, each a JSON object.
+type SdkPrompt = str | AsyncIterable[dict[str, object]]
+type SdkCall = Callable[[SdkPrompt, ClaudeAgentOptions], AsyncGenerator[object, None]]
 
 # ``usage["input_tokens"]`` excludes tokens served from or written to the prompt cache.
 _INPUT_TOKEN_FIELDS: Final = (
@@ -140,24 +144,28 @@ class ClaudeAgentProvider:
 
         Reading stops at the first successful result, which outranks anything else in the stream.
         Without one, the earliest signal decides, then whatever ended the stream. In context mode,
-        an init message listing tools other than the request's ends the call at once.
+        an init message listing tools other than the request's ends the call at once, and the
+        prompt goes as streaming input, which ``can_use_tool`` needs.
 
         Raises:
             ProviderError: For every failure of a known kind, with the tail of the CLI's stderr
                 as its diagnostics.
         """
         cli_stderr: deque[str] = deque(maxlen=_MAX_HELD_STDERR_LINES)
-        options, tool_check = _build_options(request, self._settings, on_stderr=cli_stderr.append)
-        caps = _DIFF_CAP_ERRORS if tool_check is None else _CONTEXT_CAP_ERRORS
-        stream = self._sdk_call(request.user_prompt, options)
+        options, lockdown = _build_options(request, self._settings, on_stderr=cli_stderr.append)
+        caps = _DIFF_CAP_ERRORS if lockdown is None else _CONTEXT_CAP_ERRORS
+        prompt: SdkPrompt = (
+            request.user_prompt if lockdown is None else _streamed(request.user_prompt)
+        )
+        stream = self._sdk_call(prompt, options)
         response: ReviewResponse | None = None
         signal: _Signal | None = None
         raised: Exception | None = None
         try:
             async with asyncio.timeout(self._settings.deadline_s), aclosing(stream):
                 async for message in stream:
-                    if tool_check is not None:
-                        tool_check.check(message)
+                    if lockdown is not None:
+                        lockdown.check(message)
                     outcome = _read_message(message, caps)
                     if isinstance(outcome, ReviewResponse):
                         response = outcome
@@ -172,16 +180,20 @@ class ClaudeAgentProvider:
         except ProviderError as exc:
             # Only on failure: a successful call's CLI text is never kept (P1-S5).
             exc.diagnostics = tuple(cli_stderr)
+            if lockdown is not None:
+                exc.denied_tools = tuple(lockdown.denied)
             raise
-        if tool_check is None:
+        if lockdown is None:
             return response
-        return dataclasses.replace(response, offered_tools=tool_check.listed)
+        return dataclasses.replace(
+            response, offered_tools=lockdown.listed, denied_tools=tuple(lockdown.denied)
+        )
 
 
 def _build_options(
     request: ReviewRequest, settings: Settings, *, on_stderr: Callable[[str], None]
-) -> tuple[ClaudeAgentOptions, ToolListCheck | None]:
-    """The call's options, and in context mode the check of the CLI's tool list."""
+) -> tuple[ClaudeAgentOptions, ToolLockdown | None]:
+    """The call's options, and in context mode the lockdown its messages must pass."""
     options = ClaudeAgentOptions(
         system_prompt=request.system_prompt,
         model=request.model,
@@ -201,7 +213,19 @@ def _build_options(
     )
     if request.tools is None:
         return options, None
-    return open_to_tools(options, request.tools, max_tool_calls=settings.max_tool_calls)
+    return open_to_tools(
+        options, request.tools, policy=request.policy, max_tool_calls=settings.max_tool_calls
+    )
+
+
+async def _streamed(prompt: str) -> AsyncIterator[dict[str, object]]:
+    """``prompt`` as streaming input: one user message, as the SDK sends a string prompt."""
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": prompt},
+        "parent_tool_use_id": None,
+    }
 
 
 def _budget_usd(max_cost_usd: Decimal | None) -> float | None:
@@ -360,12 +384,17 @@ def _cost_usd(cost: object) -> Decimal | None:
     return value if value.is_finite() and value >= 0 else None
 
 
-async def _call_sdk(prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
+async def _call_sdk(prompt: SdkPrompt, options: ClaudeAgentOptions) -> AsyncGenerator[object, None]:
     # ``query`` is an async generator annotated only as AsyncIterator. An async ``for`` doesn't
     # close its iterator, so closing this wrapper closes ``query`` explicitly. That is as far as
     # it reaches: ``query`` doesn't close the inner generator owning the subprocess, so after an
     # early exit the CLI is reaped when ``asyncio.run`` shuts the loop down.
     messages = cast(AsyncGenerator[Message, None], query(prompt=prompt, options=options))
-    async with aclosing(messages):
-        async for message in messages:
-            yield message
+    # The SDK warns that the allowlist means ``can_use_tool`` isn't consulted for the review's
+    # own tools. That is by design, since the hook decides each call, and a warning would reach
+    # stderr, where only the bot's own lines may go (ADR 0004).
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", CanUseToolShadowedWarning)
+        async with aclosing(messages):
+            async for message in messages:
+                yield message
