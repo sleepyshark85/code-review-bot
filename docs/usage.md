@@ -29,7 +29,7 @@ Specs: [parsing](phases/phase-1/slices/p1-s2-parse-and-skip.md), [secrets](phase
 | `18` | GitHub call failed |
 | `19` | Git failure, bad event file or missing commit |
 
-`python -m review_bot.pr` exits `0` whenever it writes a report, including with findings, `blocked_secret` or `skipped`. `evals` exits `0` pass, `1` fail, `2` invalid input. Full tables: [Phase 0](phases/phase-0/design.md#exit-codes), [Phase 1](phases/phase-1/design.md#exit-codes), [Phase 2](phases/phase-2/design.md#commands-and-exit-codes), [settings](phases/phase-0/design.md#settings).
+`python -m review_bot.pr` exits `0` when the report's outcome is `reviewed`, `blocked_secret` or `skipped`, findings or not. `evals` exits `0` pass, `1` fail, `2` invalid input. Full tables: [Phase 0](phases/phase-0/design.md#exit-codes), [Phase 1](phases/phase-1/design.md#exit-codes), [Phase 2](phases/phase-2/design.md#commands-and-exit-codes), [settings](phases/phase-0/design.md#settings).
 
 ## Repository context
 
@@ -51,7 +51,7 @@ Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [cost cap](phases/p
 
 ## Second provider
 
-`--provider openai --model MODEL` reviews through any OpenAI-compatible endpoint, diff mode only. `--model` (or `REVIEW_BOT_MODEL`) is required; `--provider` also reads `REVIEW_BOT_PROVIDER`. `--openai-base-url` (`REVIEW_BOT_OPENAI_BASE_URL`, default `https://api.openai.com/v1`). The key, `OPENAI_API_KEY`, is removed from the environment at start-up and never written anywhere. Cost caps aren't supported yet (exit `2`). Spec: [p4-s2](phases/phase-4/slices/p4-s2-openai-compatible-provider.md).
+`--provider openai --model MODEL` reviews through any OpenAI-compatible endpoint, diff mode only. `--model` (or `REVIEW_BOT_MODEL`) is required; `--provider` also reads `REVIEW_BOT_PROVIDER`. `--openai-base-url` (`REVIEW_BOT_OPENAI_BASE_URL`) sets the endpoint, default `https://api.openai.com/v1`. The key, `OPENAI_API_KEY`, is removed from the environment at start-up and never written anywhere. Cost caps aren't supported yet (exit `2`). Spec: [p4-s2](phases/phase-4/slices/p4-s2-openai-compatible-provider.md).
 
 ## Audit log
 
@@ -80,7 +80,7 @@ python -m review_bot.pr run --event EVENT.json --repo CLONE --out DIR
 
 `shadow` writes would-be comments to `shadow.json` and `shadow.md`; nothing goes to GitHub. `run` reviews a PR as CI does (clone with `fetch-depth: 0`).
 
-`pr run` and `backfill` options: `--mode shadow|comment` (default `shadow`), `--context off|repo` (`REVIEW_BOT_CONTEXT`, default `off`), `--max-review-bytes`, `--max-output-tokens`.
+`pr run` options: `--mode shadow|comment` (default `shadow`). `pr run` and `backfill`: `--context off|repo` (`REVIEW_BOT_CONTEXT`, default `off`), `--max-review-bytes`, `--max-output-tokens`.
 
 - One model call at most. Forks, docs-only changes and, in CI, a missing `ANTHROPIC_API_KEY` skip (exit `0`).
 - `comment` mode posts comments through `GITHUB_TOKEN`, reviewing only new commits; the token never reaches the model.
