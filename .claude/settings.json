@@ -19,6 +19,7 @@
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
       "Bash(uv add *)"
     ],
     "deny": [
@@ -40,9 +41,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [
-              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_paths.py"
-            ],
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_paths.py"],
             "timeout": 10
           }
         ]
@@ -55,9 +54,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [
-              "${CLAUDE_PROJECT_DIR}/.claude/hooks/format_python.py"
-            ],
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/format_python.py"],
             "timeout": 90
           }
         ]
