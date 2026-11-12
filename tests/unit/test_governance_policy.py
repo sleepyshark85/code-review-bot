@@ -1,4 +1,5 @@
 import hashlib
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -6,6 +7,8 @@ import pytest
 
 from review_bot.context.ledger import ToolName
 from review_bot.errors import ConfigError
+from review_bot.findings import Severity
+from review_bot.governance.gate import GateClass
 from review_bot.governance.policy import (
     BUILTIN_POLICY,
     BUILTIN_POLICY_TEXT,
@@ -269,3 +272,78 @@ def test_without_a_redaction_section_and_in_the_builtin_policy_nothing_is_masked
     assert parse('version = "v"').redaction == frozenset()
     assert parse('version = "v"\n[redaction]').redaction == frozenset()
     assert BUILTIN_POLICY.redaction == frozenset()
+
+
+GATE_CLASS = 'version = "v"\n[[gate.classes]]\napproved_by = "@owner"\napproved_on = 2026-12-01\n'
+
+
+def test_parse_policy_reads_gate_classes_with_their_defaults() -> None:
+    policy = parse(
+        f'{GATE_CLASS}rule = "ai:security"\n'
+        '[[gate.classes]]\nrule = "decimal-money"\nmin_severity = "high"\nmin_confidence = 1\n'
+        'approved_by = "@owner"\napproved_on = 2026-12-02\n'
+    )
+
+    assert policy.gate_classes == (
+        GateClass("ai:security", Severity.CRITICAL, 0.9, "@owner", date(2026, 12, 1)),
+        GateClass("decimal-money", Severity.HIGH, 1.0, "@owner", date(2026, 12, 2)),
+    )
+    assert BUILTIN_POLICY.gate_classes == ()
+
+
+@pytest.mark.parametrize(
+    ("rule", "severity"), [("swallowed-exception", "medium"), ("open-without-encoding", "low")]
+)
+def test_parse_policy_refuses_a_class_whose_rule_can_never_block(rule: str, severity: str) -> None:
+    with pytest.raises(PolicyError) as raised:
+        parse(f'{GATE_CLASS}rule = "{rule}"\n')
+
+    assert f"the class '{rule}' can't gate: its rule reports only {severity}" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("extra", "named"),
+    [
+        ('rule = "ai:style"', "'ai:style' can't gate: it isn't a finding class"),
+        ('rule = "ai:security"\nmin_severity = "medium"', "it must be high or critical"),
+        ('rule = "ai:security"\nmin_confidence = 0.4', "it must be a number from 0.5 to 1.0"),
+        ('rule = "ai:security"\nmin_confidence = true', "it must be a number from 0.5 to 1.0"),
+        ('rule = "ai:security"\nother = 1', "unknown key 'gate.classes[0].other'"),
+    ],
+)
+def test_parse_policy_refuses_an_invalid_gate_class(extra: str, named: str) -> None:
+    with pytest.raises(PolicyError) as raised:
+        parse(f"{GATE_CLASS}{extra}\n")
+
+    assert named in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        (
+            'version = "v"\n[[gate.classes]]\nrule = "ai:security"\napproved_on = 2026-12-01\n',
+            "'gate.classes[0].approved_by' is missing",
+        ),
+        (
+            'version = "v"\n[[gate.classes]]\nrule = "ai:security"\napproved_by = "@o"\n'
+            "approved_on = 2026-12-01T10:00:00\n",
+            "it must be a TOML date",
+        ),
+        (
+            'version = "v"\n[[gate.classes]]\nrule = "ai:security"\napproved_by = ""\n'
+            "approved_on = 2026-12-01\n",
+            "it must name who approved the class",
+        ),
+        (
+            f'{GATE_CLASS}rule = "ai:security"\n[[gate.classes]]\nrule = "ai:security"\n'
+            'approved_by = "@o"\napproved_on = 2026-12-01\n',
+            "lists 'ai:security' more than once",
+        ),
+    ],
+)
+def test_parse_policy_refuses_a_gate_class_without_its_approval(text: str, named: str) -> None:
+    with pytest.raises(PolicyError) as raised:
+        parse(text)
+
+    assert named in str(raised.value)

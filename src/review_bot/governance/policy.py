@@ -1,4 +1,4 @@
-"""The policy file, ``policy/v1``: the tools a review may use, its cost ceiling and what it masks.
+"""The policy file, ``policy/v1``: the tools, cost ceiling, masking and gate classes allowed.
 
 Pure: the command line reads the file and passes its bytes in (ADR 0018). Each slice adds the
 section it enforces, so any key this module doesn't know is invalid. Without a file, a run uses
@@ -9,6 +9,7 @@ import hashlib
 import re
 import tomllib
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated, Final
 
@@ -17,6 +18,8 @@ from pydantic_core import ErrorDetails
 
 from review_bot.context.ledger import ToolName
 from review_bot.errors import ConfigError
+from review_bot.findings import Severity
+from review_bot.governance.gate import GATE_CLASS_NAMES, GateClass, class_name_problem
 from review_bot.governance.redaction import RedactionKind
 
 if TYPE_CHECKING:
@@ -49,7 +52,14 @@ _MIN_COST_USD: Final = Decimal("0.01")
 _MAX_COST_USD: Final = Decimal(1000)
 # Bounds a key or value named in a message, since either can be as long as the file.
 _MAX_SHOWN_CHARS: Final = 100
-_KNOWN_KEYS: Final = "version, [tools] allowed, [cost] max_cost_usd and [redaction] kinds"
+_KNOWN_KEYS: Final = (
+    "version, [tools] allowed, [cost] max_cost_usd, [redaction] kinds and [[gate.classes]] "
+    "rule, min_severity, min_confidence, approved_by and approved_on"
+)
+_GATE_SEVERITIES: Final = (Severity.HIGH, Severity.CRITICAL)
+_DEFAULT_MIN_SEVERITY: Final = Severity.CRITICAL
+_MIN_CONFIDENCE_RANGE: Final = (0.5, 1.0)
+_DEFAULT_MIN_CONFIDENCE: Final = 0.9
 
 
 class PolicyError(ConfigError):
@@ -65,6 +75,8 @@ class Policy:
     path as given. ``tools`` are the tools a context review may use. ``max_cost_usd`` is the
     ceiling on every model call's cost cap, or None for no ceiling. ``redaction`` are the kinds
     of personal data masked in everything a request sends; none masks nothing.
+    ``gate_classes`` are the finding classes a repository may gate a merge on; none gates
+    nothing.
     """
 
     version: str
@@ -73,6 +85,7 @@ class Policy:
     tools: frozenset[ToolName]
     max_cost_usd: Decimal | None
     redaction: frozenset[RedactionKind] = frozenset()
+    gate_classes: tuple[GateClass, ...] = ()
 
 
 BUILTIN_POLICY: Final = Policy(
@@ -116,6 +129,42 @@ def _redaction_kind(value: object) -> RedactionKind:
     return RedactionKind(value)
 
 
+def _gate_class_name(value: object) -> str:
+    if not isinstance(value, str) or value not in GATE_CLASS_NAMES:
+        name = value if isinstance(value, str) else ""
+        raise ValueError(f"the class '{_shown(name)}' can't gate: {class_name_problem(name)}")
+    return value
+
+
+def _min_severity(value: object) -> Severity:
+    if not isinstance(value, str) or value not in _GATE_SEVERITIES:
+        raise ValueError("it must be high or critical")
+    return Severity(value)
+
+
+def _min_confidence(value: object) -> float:
+    low, high = _MIN_CONFIDENCE_RANGE
+    # A bool is an int, so it is refused by name.
+    if isinstance(value, bool) or not isinstance(value, int | float) or not low <= value <= high:
+        raise ValueError(f"it must be a number from {low} to {high}")
+    return float(value)
+
+
+def _approver(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > _MAX_SHOWN_CHARS:
+        raise ValueError(
+            f"it must name who approved the class, in 1 to {_MAX_SHOWN_CHARS} characters"
+        )
+    return value
+
+
+def _approval_date(value: object) -> date:
+    # TOML reads 2026-12-01 as a date; a datetime is a date too, so it is refused by name.
+    if type(value) is not date:
+        raise ValueError("it must be a TOML date, such as 2026-12-01")
+    return value
+
+
 def _no_repeats[T](items: list[T]) -> list[T]:
     repeated = next((item for index, item in enumerate(items) if item in items[:index]), None)
     if repeated is not None:
@@ -155,6 +204,29 @@ class _Redaction(BaseModel):
     ] = Field(default_factory=list)
 
 
+class _GateClassEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rule: Annotated[str, PlainValidator(_gate_class_name)]
+    min_severity: Annotated[Severity, PlainValidator(_min_severity)] = _DEFAULT_MIN_SEVERITY
+    min_confidence: Annotated[float, PlainValidator(_min_confidence)] = _DEFAULT_MIN_CONFIDENCE
+    approved_by: Annotated[str, PlainValidator(_approver)]
+    approved_on: Annotated[date, PlainValidator(_approval_date)]
+
+
+def _no_repeated_classes(entries: list[_GateClassEntry]) -> list[_GateClassEntry]:
+    _no_repeats([entry.rule for entry in entries])
+    return entries
+
+
+class _Gate(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    classes: Annotated[list[_GateClassEntry], AfterValidator(_no_repeated_classes)] = Field(
+        default_factory=list
+    )
+
+
 class _PolicyFile(BaseModel):
     """The file's schema: any other key, or a value of another type, is invalid.
 
@@ -167,6 +239,7 @@ class _PolicyFile(BaseModel):
     tools: _Tools = _Tools()
     cost: _Cost = _Cost()
     redaction: _Redaction = _Redaction()
+    gate: _Gate = _Gate()
 
 
 def parse_policy(data: bytes, *, source: str) -> Policy:
@@ -176,12 +249,17 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
 
     Raises:
         PolicyError: If the file is over ``MAX_POLICY_BYTES``, isn't UTF-8 or TOML, has a key
-            other than ``version``, ``[tools] allowed``, ``[cost] max_cost_usd`` and
-            ``[redaction] kinds``, has no ``version`` or one that isn't 1 to 64 of
+            other than ``version``, ``[tools] allowed``, ``[cost] max_cost_usd``,
+            ``[redaction] kinds`` and ``[[gate.classes]]``'s ``rule``, ``min_severity``,
+            ``min_confidence``, ``approved_by`` and ``approved_on``, has no ``version`` or one
+            that isn't 1 to 64 of
             ``[A-Za-z0-9._-]``, lists a tool other than ``read``, ``grep`` and ``glob`` or one
             tool twice, has a ``max_cost_usd`` that isn't a decimal string from 0.01 to 1000,
             or lists a redaction kind other than ``email``, ``phone`` and ``ipv4`` or one kind
-            twice. The message names ``source`` and the key or the problem.
+            twice, or has a gate class that isn't a class (``class_name_problem``), names one
+            class twice, has a ``min_severity`` other than ``high`` or ``critical``, a
+            ``min_confidence`` outside 0.5 to 1.0, no ``approved_by`` or no ``approved_on``
+            date. The message names ``source`` and the key or the problem.
     """
     if len(data) > MAX_POLICY_BYTES:
         raise _invalid(source, f"it is over the limit of {MAX_POLICY_BYTES} bytes")
@@ -205,6 +283,16 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
         tools=frozenset(parsed.tools.allowed),
         max_cost_usd=parsed.cost.max_cost_usd,
         redaction=frozenset(parsed.redaction.kinds),
+        gate_classes=tuple(
+            GateClass(
+                entry.rule,
+                entry.min_severity,
+                entry.min_confidence,
+                entry.approved_by,
+                entry.approved_on,
+            )
+            for entry in parsed.gate.classes
+        ),
     )
 
 

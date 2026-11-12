@@ -82,7 +82,7 @@ from review_bot.pr.rest_github import (
     github_access,
 )
 from review_bot.pr.run_metrics import summarise_runs
-from review_bot.pr.runner import backfill_pull_request, run_pull_request
+from review_bot.pr.runner import backfill_pull_request, record_gate, run_pull_request
 from review_bot.pr.shadow import (
     REPORTED_ERRORS,
     Mode,
@@ -110,6 +110,9 @@ from review_bot.spend import DollarBudget, usd_amount
 __all__ = ["main"]
 
 _AUDIT_LOG_VARIABLE: Final = "REVIEW_BOT_AUDIT_LOG"
+# Whether merge gating is on, read only by ``run`` (P4-S5 AC11).
+_GATE_VARIABLE: Final = "REVIEW_BOT_GATE"
+_GATE_VALUES: Final = ("on", "off")
 _AUDIT_LOG_NAME: Final = "audit.jsonl"
 _JSON_NAME: Final = "shadow.json"
 _MARKDOWN_NAME: Final = "shadow.md"
@@ -156,6 +159,7 @@ class _RunCommand:
     mode: Mode
     settings: Settings
     policy: Policy
+    gating_on: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +247,8 @@ def main(
         stops it, and 2 over ``--max-calls`` or ``--max-usd``, without ``--max-usd`` and a
         per-call cap in either mode, or in CI, unless a ``workflow_dispatch`` run gave
         ``--allow-dispatch``. ``shadow``, ``run`` and ``backfill`` exit 2 for a policy file
-        that can't be used, or settings beyond it. ``label`` returns 0 when done or
+        that can't be used, or settings beyond it, and ``run`` for a ``REVIEW_BOT_GATE`` other
+        than ``on`` or ``off``. ``label`` returns 0 when done or
         interrupted, and 2 with no
         terminal or an invalid labels file.
         ``collect`` returns 0 once ``feedback.jsonl`` is written; 2 with no ``github`` and an
@@ -484,7 +489,22 @@ def _parse_args(
         )
     event_path, repo_dir, mode = flags.pop("event"), flags.pop("repo"), Mode(flags.pop("mode"))
     settings, policy = settings_within_policy(load_settings(flags))
-    return _RunCommand(event_path, repo_dir, out_dir, mode, settings, policy)
+    gating_on = _gating_on(os.environ.get(_GATE_VARIABLE))
+    return _RunCommand(event_path, repo_dir, out_dir, mode, settings, policy, gating_on)
+
+
+def _gating_on(value: str | None) -> bool:
+    """Whether ``REVIEW_BOT_GATE`` says gating is on: ``on``; ``off`` or unset is off.
+
+    Raises:
+        ConfigError: For any other value, which isn't shown, as it may be anything.
+    """
+    if value not in (None, *_GATE_VALUES):
+        raise ConfigError(
+            f"{_GATE_VARIABLE} must be on or off, or unset, so nothing ran. Set it to on once "
+            "merge gating is turned on for this repository."
+        )
+    return value == "on"
 
 
 def _command_without_review(
@@ -991,12 +1011,12 @@ def _shadow(
         )
     except REPORTED_ERRORS as exc:
         review = exc
-    return build_shadow_report(
+    shadow = build_shadow_report(
         review,
         mode=Mode.SHADOW,
         existing=(),
         settings=command.settings,
-        # A local diff has no repository to read a config from.
+        # A local diff has no repository to read a config from, so nothing gates it.
         config=DEFAULT_REPO_CONFIG,
         run_id=audit.run_id,
         started_at=started_at,
@@ -1005,6 +1025,8 @@ def _shadow(
         pr=None,
         policy=command.policy,
     )
+    record_gate(audit, shadow)
+    return shadow
 
 
 def _run(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
@@ -1039,6 +1061,7 @@ def _run(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         audit=audit,
         environ=os.environ,
         clock=utc_now,
+        gating_on=command.gating_on,
     )
     if uses_own_claude(settings, provider):
         run = then_discard_unraisable(run)

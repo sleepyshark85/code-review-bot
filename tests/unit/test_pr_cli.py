@@ -1058,3 +1058,61 @@ def test_baseline_that_cannot_write_out_exits_2_naming_it_and_leaves_no_staged_f
     assert exit_code == 2
     assert "Can't write the baseline to --out" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == [out]
+
+
+@pytest.mark.parametrize("value", ["yes", "ON", ""])
+def test_run_with_an_invalid_review_bot_gate_exits_2_before_any_work(
+    value: str,
+    clone: tuple[Path, str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, base, head = clone
+    out = tmp_path / "out"
+    provider = MockProvider()
+    monkeypatch.setenv("REVIEW_BOT_GATE", value)
+
+    exit_code = run_pr(pull_request_event(repo, base, head), repo, out, provider=provider)
+
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert err.count("\n") == 1
+    assert "REVIEW_BOT_GATE must be on or off, or unset" in err
+    assert not out.exists()
+    assert provider.requests == []
+
+
+@pytest.mark.parametrize("value", ["on", "off"])
+def test_run_with_review_bot_gate_on_or_off_reviews_as_usual_without_a_gate_config(
+    value: str, clone: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    monkeypatch.setenv("REVIEW_BOT_GATE", value)
+    github = FakeGitHubClient()
+
+    exit_code = run_comment_mode(clone, out, github)
+
+    assert exit_code == 0
+    assert shadow_json(out)["gate"]["decision"] == "not_enabled"
+    assert github.summary is not None
+
+
+def test_shadow_records_the_gate_as_not_enabled(
+    diff_path: Path, tmp_path: Path, audit_log_in_tmp_path: Path
+) -> None:
+    run(diff_path, tmp_path / "out")
+
+    (gate,) = [
+        record["data"]
+        for record in read_records(audit_log_in_tmp_path)
+        if (record["stage"], record["event"]) == ("policy", "gate")
+    ]
+    assert gate == {
+        "enabled": False,
+        "decision": "not_enabled",
+        "reason": None,
+        "classes": [],
+        "fingerprints": [],
+        "policy_version": "builtin-v1",
+    }

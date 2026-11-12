@@ -132,6 +132,7 @@ def test_render_shadow_json_writes_every_key_in_order_for_a_review() -> None:
         "context",
         "issues",
         "policy",
+        "gate",
     ]
     assert document["schema"] == "shadow/v1"
     assert document["policy"] == {
