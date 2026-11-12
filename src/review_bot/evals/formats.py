@@ -31,6 +31,7 @@ from review_bot.context.issues import IssueText, LinkedIssue, linked_issue, read
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.errors import ErrorCategory, ProviderCap, ReviewBotError
 from review_bot.findings import Category, Finding, Severity, Source
+from review_bot.governance.redaction import RedactionKind
 
 __all__ = [
     "INTERNAL_ERROR",
@@ -361,8 +362,8 @@ class LoadedCase:
     """A valid case, its file, the SHA-256 of that file's bytes, its diff's path, and its repo.
 
     ``repo_files`` are the files of the case's ``repo``, sorted by path; none without one.
-    ``issues`` are the issues of its ``issues`` file, in order, each as a context review sends
-    it, or why it doesn't; none without one.
+    ``issues`` are the issues of its ``issues`` file, in order, as written; none without one.
+    ``linked_issues`` makes them what a context review sends.
     """
 
     case: EvalCase
@@ -370,7 +371,21 @@ class LoadedCase:
     case_sha256: str
     diff_path: Path
     repo_files: tuple[FixtureFile, ...] = ()
-    issues: tuple[LinkedIssue, ...] = ()
+    issues: tuple[CaseIssue, ...] = ()
+
+    def linked_issues(
+        self, kinds: frozenset[RedactionKind] = frozenset()
+    ) -> tuple[LinkedIssue, ...]:
+        """The case's issues, each as a context review sends it with ``kinds`` masked, or why not.
+
+        They are capped, scanned and masked as a pull request's linked issues are
+        (``linked_issue``).
+        """
+        texts = {issue.number: IssueText(issue.title, issue.body) for issue in self.issues}
+        numbers = [issue.number for issue in self.issues]
+        return read_linked_issues(
+            numbers, lambda number: linked_issue(number, texts[number], kinds)
+        )
 
     def live_recording_path(self, mode: EvalMode) -> Path:
         """Where the case's live recording of ``mode`` is, whether or not it exists."""
@@ -424,18 +439,13 @@ def load_case(case_file: Path) -> LoadedCase:
     return LoadedCase(case, case_file, case_sha256, diff_path, repo_files, issues)
 
 
-def _read_issues(path: Path) -> tuple[LinkedIssue, ...]:
-    """The issues in the issues file at ``path``, each as a context review sends it, or why not.
-
-    They are capped and scanned as a pull request's linked issues are (``linked_issue``).
+def _read_issues(path: Path) -> tuple[CaseIssue, ...]:
+    """The issues in the issues file at ``path``, in order.
 
     Raises:
         EvalInputError: If the file is unreadable or invalid.
     """
-    issues = _validate(_CaseIssues, _read(path), path, "issues file").root
-    texts = {issue.number: IssueText(issue.title, issue.body) for issue in issues}
-    numbers = [issue.number for issue in issues]
-    return read_linked_issues(numbers, lambda number: linked_issue(number, texts[number]))
+    return _validate(_CaseIssues, _read(path), path, "issues file").root
 
 
 def load_recording(path: Path) -> Recording:

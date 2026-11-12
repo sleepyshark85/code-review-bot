@@ -33,6 +33,7 @@ from review_bot.governance.policy import (
     check_context_allowed,
     check_settings,
 )
+from review_bot.governance.redaction import RedactionCounts, RedactionKind, add_counts, mask_diff
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
     PROMPT_VERSION,
@@ -40,7 +41,7 @@ from review_bot.prompt import (
     build_request,
 )
 from review_bot.providers.base import LLMProvider, ReviewRequest, ReviewResponse, TokenUsage
-from review_bot.report import PipelineResult, section_path
+from review_bot.report import PipelineResult, redaction_json, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
@@ -80,14 +81,14 @@ class ReviewContext:
 
     ``is_diff_head`` says that commit is the one the diff ends at, as in PR mode, so the lines
     the tools return count as evidence in the files the diff changes too. ``read_issues``
-    returns the linked issues; the review calls it only once the model will be called, so a
-    review stopped before then reads none. Those whose text is sent follow the diff in the
-    prompt.
+    returns the linked issues, with the redaction kinds it is given masked as ``linked_issue``
+    masks them; the review calls it only once the model will be called, so a review stopped
+    before then reads none. Those whose text is sent follow the diff in the prompt.
     """
 
     repo: RepoRef
     is_diff_head: bool = False
-    read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()
+    read_issues: Callable[[frozenset[RedactionKind]], tuple[LinkedIssue, ...]] = lambda _: ()
 
 
 async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are keyword-only
@@ -156,7 +157,9 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         domain_rules: The domain rules the repository enables, which run with the built-in
             rules, and in context mode are named in the prompt too.
         policy: The policy the review runs under: its tools are the only ones offered, and
-            its version and hash are recorded. ``settings`` must already be within it, as
+            its version and hash are recorded. Its redaction kinds are masked in the diff, the
+            tool results and the linked issues sent, after the secret scan, and if it has any,
+            the counts are recorded. ``settings`` must already be within it, as
             ``check_settings`` makes them, since the provider was built from them.
 
     Raises:
@@ -204,14 +207,23 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         )
 
     _stop_if_too_large_to_review(parsed, settings, name, audit)
+    # Masked only now, after the secret scan, so a secret still stops the review (ADR 0022).
+    masked_diff = mask_diff(parsed.reviewable_text, policy.redaction)
     tools: RepoTools | None = None
+    issue_counts: RedactionCounts = {}
     if context is None:
-        request = build_request(parsed.reviewable_text, model=settings.model)
+        request = build_request(masked_diff.text, model=settings.model)
     else:
-        issues = await asyncio.to_thread(context.read_issues)
-        tools = RepoTools(context.repo, caps=tool_caps(settings), allowed=policy.tools)
+        issues = await asyncio.to_thread(context.read_issues, policy.redaction)
+        issue_counts = add_counts(issue.redacted for issue in issues)
+        tools = RepoTools(
+            context.repo,
+            caps=tool_caps(settings),
+            allowed=policy.tools,
+            redaction=policy.redaction,
+        )
         request = build_context_request(
-            parsed.reviewable_text,
+            masked_diff.text,
             model=settings.model,
             tools=tools,
             domain_rules=domain_rules,
@@ -224,6 +236,13 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         # Every call is recorded, even when the review then fails.
         ledger = () if tools is None else tools.ledger
         _record_tool_calls(ledger, audit)
+        redaction = _by_source(
+            diff=masked_diff.counts,
+            tools={} if tools is None else tools.redacted,
+            issues=issue_counts,
+        )
+        if policy.redaction:
+            audit.record(Stage.STATIC, "redaction", {"counts": redaction_json(redaction)})
     # The model proposes, code disposes: nothing it returns is reported before both checks.
     verification = verify_findings(
         response.findings,
@@ -249,6 +268,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         context_commit=context_commit,
         ledger=ledger,
         cost_usd=response.cost_usd,
+        redaction=redaction,
     )
 
 
@@ -266,6 +286,11 @@ def _require_within_policy(settings: Settings, policy: Policy, *, is_context: bo
         raise ValueError("A review's settings get the policy's ceiling (check_settings) first.")
     # Raises for a cost cap above the ceiling; the settings it returns are these.
     check_settings(settings, policy)
+
+
+def _by_source(**counts: RedactionCounts) -> dict[str, RedactionCounts]:
+    """The values masked, by the source of the text, leaving out any source with none."""
+    return {source: each for source, each in counts.items() if each}
 
 
 def tool_caps(settings: Settings) -> ToolCaps:

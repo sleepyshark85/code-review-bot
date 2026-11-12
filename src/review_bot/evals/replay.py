@@ -48,6 +48,7 @@ from review_bot.governance.policy import (
     check_context_allowed,
     check_settings,
 )
+from review_bot.governance.redaction import mask_diff
 from review_bot.pr.config import CONFIG_PATH, parse_config_file
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
@@ -100,7 +101,9 @@ def freshness_fields(
 ) -> dict[str, str]:
     """Today's values of a recording's freshness fields, for the case at ``case_file``.
 
-    In context mode, the tools offered are those ``policy`` allows.
+    In context mode, the tools offered are those ``policy`` allows. The diff and the linked
+    issues are masked as ``policy`` asks, as a review masks them, so a case with no match keeps
+    the same prompts whatever the policy's redaction kinds.
 
     A recording is fresh only if its ``case_sha256``, ``diff_sha256``, ``prompt_version`` and
     ``prompt_sha256``, and in context mode its ``repo_tree``, all equal these. ``prompt_sha256``
@@ -131,7 +134,7 @@ def _case_freshness(
     """``freshness_fields`` for a case already loaded: in context mode with its built ``repo``.
 
     ``domain_rules`` are those the case's repo enables, which only the context prompt names, and
-    ``policy`` says which tools it offers.
+    ``policy`` says which tools it offers and what is masked.
 
     Raises:
         EvalInputError: If the case's diff can't be reviewed.
@@ -139,7 +142,7 @@ def _case_freshness(
     settings = _replay_settings(policy)
     try:
         diff = load_diff(loaded.diff_path, max_bytes=settings.max_diff_bytes)
-        reviewable_text = parse_diff(diff).reviewable_text
+        reviewable_text = mask_diff(parse_diff(diff).reviewable_text, policy.redaction).text
     except InputError as exc:
         raise _unreviewable(loaded, exc) from exc
     fields = {"case_sha256": loaded.case_sha256, "diff_sha256": _sha256_text(diff)}
@@ -154,7 +157,7 @@ def _case_freshness(
         model=settings.model,
         tools=tools,
         domain_rules=domain_rules,
-        issues=loaded.issues,
+        issues=loaded.linked_issues(policy.redaction),
     )
     prompts = json.dumps([request.system_prompt, request.user_prompt, _tool_definitions(request)])
     return fields | {
@@ -313,7 +316,7 @@ async def score_recording(
         context = (
             None
             if repo is None
-            else ReviewContext(repo=repo.repo, read_issues=lambda: loaded.issues)
+            else ReviewContext(repo=repo.repo, read_issues=loaded.linked_issues)
         )
         review = _CaseReview(context=context, domain_rules=domain_rules, policy=policy)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")

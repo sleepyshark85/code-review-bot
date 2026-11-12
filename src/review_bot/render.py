@@ -15,6 +15,7 @@ from review_bot.report import (
     TriagedFinding,
     not_rejected,
     path_fields,
+    redaction_json,
     section_path,
 )
 from review_bot.settings import Settings
@@ -135,6 +136,7 @@ def report_document(
         "mode": "diff" if result.context_commit is None else "context",
         "context": _context_json(result),
         "policy": policy_json(result.policy),
+        "redaction": redaction_json(result.redaction),
     }
 
 

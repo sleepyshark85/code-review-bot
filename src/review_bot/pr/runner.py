@@ -38,6 +38,7 @@ from review_bot.errors import (
 )
 from review_bot.git import GitRepo
 from review_bot.governance.policy import Policy
+from review_bot.governance.redaction import RedactionKind
 from review_bot.pr.config import (
     CONFIG_PATH,
     DEFAULT_REPO_CONFIG,
@@ -449,8 +450,10 @@ class _LinkedIssues:
         self._issue_reader = issue_reader
         self.read: tuple[LinkedIssue, ...] = ()
 
-    def __call__(self) -> tuple[LinkedIssue, ...]:
+    def __call__(self, kinds: frozenset[RedactionKind]) -> tuple[LinkedIssue, ...]:
         """Each issue the pull request closes, read and made safe to send, or why it isn't sent.
+
+        The ``kinds`` of personal data are masked in what is sent (``linked_issue``).
 
         As many are read as ``read_linked_issues`` allows. With no ``issue_reader`` each is
         ``no_token``. An issue whose read fails is ``unavailable``, with a line on stderr saying
@@ -460,7 +463,9 @@ class _LinkedIssues:
         if self._issue_reader is None:
             read_one = functools.partial(LinkedIssue, status=IssueStatus.NO_TOKEN)
         else:
-            read_one = functools.partial(_read_linked_issue, self._pr.repo, self._issue_reader)
+            read_one = functools.partial(
+                _read_linked_issue, self._pr.repo, self._issue_reader, kinds=kinds
+            )
         self.read = read_linked_issues(self._pr.linked_issues, read_one)
         return self.read
 
@@ -477,7 +482,9 @@ def _review_context(pr: PullRequestRef, git: GitRepo, issues: _LinkedIssues) -> 
     )
 
 
-def _read_linked_issue(repo: str, issue_reader: IssueReader, number: int) -> LinkedIssue:
+def _read_linked_issue(
+    repo: str, issue_reader: IssueReader, number: int, *, kinds: frozenset[RedactionKind]
+) -> LinkedIssue:
     try:
         issue = issue_reader.read_issue(repo, number)
     except GitHubError as exc:
@@ -486,7 +493,7 @@ def _read_linked_issue(repo: str, issue_reader: IssueReader, number: int) -> Lin
             f"it: {exc}"
         )
         return LinkedIssue(number, IssueStatus.UNAVAILABLE)
-    return linked_issue(number, issue)
+    return linked_issue(number, issue, kinds)
 
 
 async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only

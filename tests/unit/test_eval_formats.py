@@ -31,6 +31,7 @@ from review_bot.evals.formats import (
     load_recording,
 )
 from review_bot.findings import Severity
+from review_bot.governance.redaction import RedactionKind
 
 
 def write_text(path: Path, text: str) -> Path:
@@ -498,13 +499,13 @@ def test_load_case_reads_its_issues_as_a_context_review_sends_them(tmp_path: Pat
 
     loaded = load_case(case_file)
 
-    assert [(issue.number, issue.status) for issue in loaded.issues] == [
+    assert [(issue.number, issue.status) for issue in loaded.linked_issues()] == [
         (12, IssueStatus.INCLUDED),
         (7, IssueStatus.INCLUDED),
         (9, IssueStatus.INCLUDED),
         (4, IssueStatus.OVER_LIMIT),
     ]
-    assert loaded.issues[0].text == "Issue 12\n\nBody."
+    assert loaded.linked_issues()[0].text == "Issue 12\n\nBody."
 
 
 def test_load_case_without_issues_has_none(tmp_path: Path) -> None:
@@ -538,3 +539,14 @@ def test_load_case_names_a_missing_issues_file(tmp_path: Path) -> None:
     case_file = write_case(tmp_path, issues="issues.json")
 
     assert "issues.json can't be read" in rejected_case(case_file)
+
+
+def test_load_case_issues_are_masked_as_a_review_asks(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, issues="issues.json")
+    issue = {"number": 3, "title": "Mail ops", "body": "Ask jane@rightship.com."}
+    write_text(case_file.parent / "issues.json", json.dumps([issue]))
+
+    [linked] = load_case(case_file).linked_issues(frozenset({RedactionKind.EMAIL}))
+
+    assert linked.text == "Mail ops\n\nAsk [REDACTED:email]."
+    assert linked.redacted == {RedactionKind.EMAIL: 1}

@@ -3,7 +3,8 @@
 Every argument comes from the model, so each call is checked against its tool's schema and the
 path rules before git runs, and every way a call can fail returns a refusal rather than raising
 (ADR 0014). No file under ``.git``, secrets file, symbolic link or submodule, and no line that
-may hold a secret, reaches a result (Phase 3 design, Tool safety).
+may hold a secret, reaches a result (Phase 3 design, Tool safety). Personal data of the kinds the
+policy names is masked in every result (P4-S4).
 """
 
 import asyncio
@@ -11,7 +12,7 @@ import hashlib
 import itertools
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 from review_bot.context.commit_files import MAX_LISTED_ENTRIES, CommitFiles, Refusal
@@ -37,6 +38,13 @@ from review_bot.diff_parser import glob_matches
 from review_bot.errors import GitError, GitTimeoutError, ListingTooLargeError
 from review_bot.git import GitRepo
 from review_bot.git_output import GrepMatch
+from review_bot.governance.redaction import (
+    Masked,
+    RedactionCounts,
+    RedactionKind,
+    add_counts,
+    mask_personal_data,
+)
 from review_bot.prompt import frame_tool_result
 from review_bot.providers.base import ToolDefinition
 
@@ -88,28 +96,37 @@ class ToolCaps:
 
 @dataclass(frozen=True, slots=True)
 class _Answer:
-    """A call's result text, and what goes in its ledger entry."""
+    """A call's result text, what goes in its ledger entry, and the values masked in the text."""
 
     text: str
     outcome: ToolOutcome
     reason: RefusalReason | None = None
     spans: tuple[LineSpan, ...] = ()
     listed: tuple[str, ...] = ()
+    redacted: RedactionCounts = field(default_factory=dict)
 
 
 class RepoTools:
     """The read-only tools a policy allows over one commit, recording every call in a ledger."""
 
     def __init__(
-        self, repo: RepoRef, *, caps: ToolCaps, allowed: frozenset[ToolName] = frozenset(ToolName)
+        self,
+        repo: RepoRef,
+        *,
+        caps: ToolCaps,
+        allowed: frozenset[ToolName] = frozenset(ToolName),
+        redaction: frozenset[RedactionKind] = frozenset(),
     ) -> None:
         """Serve ``repo`` within ``caps``, offering only the ``allowed`` tools.
 
-        Git runs only when a tool is called.
+        Each result has the ``redaction`` kinds of personal data masked before it is fitted
+        within the caps. Git runs only when a tool is called.
         """
         self._repo = repo
         self._caps = caps
         self._allowed = allowed
+        self._redaction = redaction
+        self._redacted: list[RedactionCounts] = []
         self._ledger: list[ToolCall] = []
         self._calls_started = 0
         self._bytes_returned = 0
@@ -125,6 +142,11 @@ class RepoTools:
     def ledger(self) -> tuple[ToolCall, ...]:
         """Every call so far, in the order each finished."""
         return tuple(self._ledger)
+
+    @property
+    def redacted(self) -> RedactionCounts:
+        """How many values of each kind were masked in the results returned so far."""
+        return add_counts(self._redacted)
 
     async def call(self, name: str, arguments: Mapping[str, object]) -> str:
         """Run one call, record it, and return its result between delimiter lines.
@@ -164,6 +186,7 @@ class RepoTools:
             self._is_out_of_bytes = True
             return _out_of_bytes()
         self._bytes_returned += size
+        self._redacted.append(answer.redacted)
         return answer
 
     def _runnable(self, tool: ToolName | None) -> ToolName | _Answer:
@@ -235,12 +258,18 @@ class RepoTools:
                 RefusalReason.POSSIBLE_SECRET,
                 "Some of those lines may hold a secret, so none is shown; read other lines.",
             )
+        masked = [self._masked(line) for line in window]
         numbered = [
-            f"{number}\t{cut_line(line)}" for number, line in enumerate(window, start=first)
+            f"{number}\t{cut_line(line.text)}" for number, line in enumerate(masked, start=first)
         ]
         kept, result = fit_lines(numbered, (), self._caps.max_result_bytes)
         spans = (LineSpan(args.path, first, first + kept - 1),) if kept else ()
-        return _Answer(result, _outcome(is_cut=kept < len(numbered)), spans=spans)
+        return _Answer(
+            result,
+            _outcome(is_cut=kept < len(numbered)),
+            spans=spans,
+            redacted=add_counts(line.counts for line in masked[:kept]),
+        )
 
     def _grep(self, arguments: Mapping[str, object]) -> _Answer:
         """Lines holding a literal, as ``path:line:text``, by path then line, at most 50."""
@@ -270,10 +299,21 @@ class RepoTools:
         notes += [_MORE_MATCHES_NOTE] if has_more else []
         if not shown and not notes:
             return _Answer("No line matches.", ToolOutcome.OK)
-        lines = [f"{shown_path(match.path)}:{match.line}:{cut_line(match.text)}" for match in shown]
+        masked = [
+            (self._masked(shown_path(match.path)), self._masked(match.text)) for match in shown
+        ]
+        lines = [
+            f"{path.text}:{match.line}:{cut_line(text.text)}"
+            for match, (path, text) in zip(shown, masked, strict=True)
+        ]
         kept, text = fit_lines(lines, notes, self._caps.max_result_bytes)
         spans = tuple(LineSpan(match.path, match.line, match.line) for match in shown[:kept])
-        return _Answer(text, _outcome(is_cut=has_more or kept < len(lines)), spans=spans)
+        return _Answer(
+            text,
+            _outcome(is_cut=has_more or kept < len(lines)),
+            spans=spans,
+            redacted=add_counts(part.counts for parts in masked[:kept] for part in parts),
+        )
 
     def _shown_matches(self, matches: Iterable[GrepMatch]) -> tuple[list[GrepMatch], int, bool]:
         """The ``matches`` a result may show, how many were withheld, and if files went unread.
@@ -314,12 +354,17 @@ class RepoTools:
         shown = paths[:MAX_GLOB_PATHS]
         has_more = len(paths) > MAX_GLOB_PATHS
         notes = [_MORE_PATHS_NOTE] if has_more else []
-        kept, text = fit_lines(
-            [shown_path(path) for path in shown], notes, self._caps.max_result_bytes
-        )
+        masked = [self._masked(shown_path(path)) for path in shown]
+        kept, text = fit_lines([path.text for path in masked], notes, self._caps.max_result_bytes)
         return _Answer(
-            text, _outcome(is_cut=has_more or kept < len(shown)), listed=tuple(shown[:kept])
+            text,
+            _outcome(is_cut=has_more or kept < len(shown)),
+            listed=tuple(shown[:kept]),
+            redacted=add_counts(path.counts for path in masked[:kept]),
         )
+
+    def _masked(self, text: str) -> Masked:
+        return mask_personal_data(text, self._redaction)
 
 
 def _outcome(*, is_cut: bool) -> ToolOutcome:
