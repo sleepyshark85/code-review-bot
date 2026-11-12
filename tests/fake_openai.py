@@ -9,6 +9,9 @@ getting the same answer.
 This module and `use_fake_transport` are the only places that know how the developer's code takes
 a transport: the CLI builds its own provider, so the fake replaces the real `UrllibTransport` that
 the provider builds when it is given none.
+
+Since P4-S6, a response can ask for function calls (`tool_calls_completion`), and `Sent.messages`
+is the conversation a request carries, so a test can follow the tool loop turn by turn.
 """
 
 import asyncio
@@ -37,6 +40,12 @@ class Sent:
     body: dict[str, Any]
     headers: dict[str, str]
     timeout_s: float
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        messages = self.body["messages"]
+        assert isinstance(messages, list), self.body
+        return messages
 
     def header(self, name: str) -> str | None:
         """The header's value, matched without regard to case, as HTTP does."""
@@ -133,6 +142,50 @@ def api_error(status: int, message: str = "error prose", code: str | None = None
     return http(
         status, {"error": {"message": message, "type": "api_error", "code": code}}, **headers
     )
+
+
+# --- Function calling (P4-S6) ---------------------------------------------------------------------
+
+
+def tool_call(call_id: str, name: Any, arguments: Mapping[str, Any] | str | Any) -> dict[str, Any]:
+    """One entry of `message.tool_calls`.
+
+    A mapping is sent as its JSON text, as the API does; anything else (a string that isn't JSON,
+    a number) is sent as it is.
+    """
+    text = json.dumps(arguments) if isinstance(arguments, Mapping) else arguments
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": text}}
+
+
+def tool_calls_body(
+    *calls: Any,
+    content: str | None = None,
+    prompt_tokens: int = 123,
+    completion_tokens: int = 45,
+) -> dict[str, Any]:
+    """A completion whose message asks for `calls`, with `finish_reason` `tool_calls`."""
+    body = completion_body(
+        content,
+        finish_reason="tool_calls",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    body["choices"][0]["message"]["tool_calls"] = list(calls)
+    return body
+
+
+def tool_calls_completion(*calls: Any, **fields: Any) -> Any:
+    return http(200, tool_calls_body(*calls, **fields))
+
+
+def delayed(delay_s: float, step: Step) -> Callable[[], Awaitable[Any]]:
+    """A step that answers `step` after `delay_s` seconds, as a slow endpoint would."""
+
+    async def wait() -> Any:
+        await asyncio.sleep(delay_s)
+        return step
+
+    return wait
 
 
 # --- Failures below HTTP --------------------------------------------------------------------------

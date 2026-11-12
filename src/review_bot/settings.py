@@ -6,11 +6,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
 from review_bot.audit import DEFAULT_AUDIT_LOG_PATH
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
+from review_bot.price_flags import read_price
 from review_bot.providers.openai_wire import DEFAULT_BASE_URL, check_base_url
 
 __all__ = [
@@ -33,6 +34,15 @@ GITHUB_TOKEN_VARIABLE: Final = "GITHUB_TOKEN"  # noqa: S105 - the variable's nam
 OPENAI_API_KEY_VARIABLE: Final = "OPENAI_API_KEY"
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
+
+
+def _price(value: object) -> Decimal:
+    """Read a price setting: its text from a flag or variable, or any value whose text is one.
+
+    Raises:
+        ValueError: If it isn't a price (``read_price``).
+    """
+    return read_price(value if isinstance(value, str) else str(value))
 
 
 class Settings(BaseModel):
@@ -71,6 +81,10 @@ class Settings(BaseModel):
     max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0.01"), le=Decimal(1000))
     # The Chat Completions endpoint of ``provider`` ``openai`` (ADR 0020).
     openai_base_url: Annotated[str, AfterValidator(check_base_url)] = DEFAULT_BASE_URL
+    # USD per million tokens, from which ``provider`` ``openai`` reports its cost and enforces
+    # ``max_cost_usd`` (ADR 0020). Never stored in code; unused by other providers.
+    price_input_usd_per_mtok: Annotated[Decimal, PlainValidator(_price)] | None = None
+    price_output_usd_per_mtok: Annotated[Decimal, PlainValidator(_price)] | None = None
     # The policy file's path as given, which reports record (ADR 0018); None means the built-in
     # policy.
     policy: str | None = Field(default=None, min_length=1)

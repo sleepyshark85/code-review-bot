@@ -49,7 +49,11 @@ from review_bot.governance.policy import (
 )
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
-from review_bot.providers.openai_compat import OpenAICompatibleProvider, check_api_key
+from review_bot.providers.openai_compat import (
+    OpenAICompatibleProvider,
+    check_api_key,
+    token_prices,
+)
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import ReviewContext, run_pipeline
@@ -128,12 +132,6 @@ _OPENAI_MODEL_MISSING: Final = (
     "--provider openai needs --model (or REVIEW_BOT_MODEL), since the default model is "
     "Claude's, so nothing was sent. Pass the model the endpoint serves."
 )
-# Until P4-S6, nothing would enforce a cost cap on the OpenAI-compatible provider.
-_OPENAI_COST_CAP_REFUSED: Final = (
-    "--max-cost-usd isn't supported with --provider openai yet, as nothing would enforce it. "
-    "Leave out --max-cost-usd and REVIEW_BOT_MAX_COST_USD, and run under a policy without a "
-    "[cost] ceiling."
-)
 
 _NOTHING_REVIEWED_WARNING: Final = (
     "review-bot: warning: nothing was reviewed: every changed file was skipped: "
@@ -190,8 +188,9 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-cost-usd",
         help=(
-            "the most a review may cost, in USD, from 0.01 to 1000; the Claude CLI stops past it "
-            "(default: the policy's ceiling, else no cap)"
+            "the most a review may cost, in USD, from 0.01 to 1000; the review stops past it "
+            "(default: the policy's ceiling, else no cap); --provider openai needs both prices "
+            "for it"
         ),
     )
     parser.add_argument(
@@ -201,6 +200,14 @@ def add_setting_arguments(parser: argparse.ArgumentParser) -> None:
         "--openai-base-url",
         help="the Chat Completions endpoint of --provider openai, https unless on a loopback "
         "host (default: https://api.openai.com/v1); its key is read from OPENAI_API_KEY",
+    )
+    parser.add_argument(
+        "--price-input-usd-per-mtok",
+        help="USD per million input tokens, from which --provider openai reports its cost",
+    )
+    parser.add_argument(
+        "--price-output-usd-per-mtok",
+        help="USD per million output tokens, from which --provider openai reports its cost",
     )
 
 
@@ -325,17 +332,16 @@ def check_provider_settings(settings: Settings, *, openai_api_key: str | None) -
     Called once ``settings`` are within the policy, so a cost cap from its ceiling counts.
 
     Raises:
-        ConfigError: For ``openai``, if no model was given, since the default is Claude's; if a
-            cost cap is set, which it can't enforce yet; or if there is no key and its base
-            URL's host isn't loopback.
+        ConfigError: For ``openai``, if no model was given, since the default is Claude's; if
+            only one price is set, or a cost cap without both (``token_prices``); or if there
+            is no key and its base URL's host isn't loopback.
     """
     if settings.provider != "openai":
         return
     # Given by a flag or variable, whatever its value: the default names a Claude model.
     if "model" not in settings.model_fields_set:
         raise ConfigError(_OPENAI_MODEL_MISSING)
-    if settings.max_cost_usd is not None:
-        raise ConfigError(_OPENAI_COST_CAP_REFUSED)
+    token_prices(settings)
     check_api_key(settings.openai_base_url, openai_api_key)
 
 

@@ -16,9 +16,9 @@ from metrics_samples import (
 from shadow_samples import entry, report
 
 from review_bot.pr.feedback import FeedbackLabel, FeedbackRecord, RejectReason
-from review_bot.pr.metrics import Prices
 from review_bot.pr.outcome import Outcome
 from review_bot.pr.run_metrics import OutcomeCount, Percentiles, TokenTotals, duration_percentiles
+from review_bot.price_flags import Prices
 
 # --- Runs: outcomes, latency, tokens and cost ---------------------------------------------------
 

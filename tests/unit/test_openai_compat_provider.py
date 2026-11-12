@@ -8,10 +8,9 @@ import pytest
 from diff_samples import FINDING_FIELDS
 from openai_samples import API_KEY, FakeTransport, completion, error_response, transport
 
-from review_bot.context.tool_args import TOOL_DEFINITIONS
 from review_bot.errors import ConfigError, ErrorCategory, ProviderError
 from review_bot.findings import Finding
-from review_bot.providers.base import ReviewRequest, TokenUsage, ToolDefinition
+from review_bot.providers.base import ReviewRequest, TokenUsage
 from review_bot.providers.openai_compat import HttpResponse, OpenAICompatibleProvider
 from review_bot.settings import Settings
 
@@ -359,23 +358,6 @@ async def test_review_past_the_deadline_fails_transient_naming_the_deadline() ->
         ).review(REQUEST)
 
     assert caught.value.category is ErrorCategory.TRANSIENT
-
-
-async def test_review_with_tools_fails_permanent_before_any_request() -> None:
-    class Tools:
-        definitions: tuple[ToolDefinition, ...] = TOOL_DEFINITIONS
-
-        async def call(self, name: str, arguments: object) -> str:
-            raise AssertionError
-
-    fake = transport()
-    request = ReviewRequest(system_prompt="S", user_prompt="U", model="m1", tools=Tools())
-
-    with pytest.raises(ProviderError) as caught:
-        await provider(fake).review(request)
-
-    assert caught.value.category is ErrorCategory.PERMANENT
-    assert fake.sent == []
 
 
 @pytest.mark.parametrize("api_key", [None, ""])

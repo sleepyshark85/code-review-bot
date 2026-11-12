@@ -1,29 +1,33 @@
 """The second real provider: any OpenAI-compatible Chat Completions endpoint (ADR 0020).
 
 It speaks HTTP through an injected ``HttpTransport``, so tests stay offline. The wire format,
-and what each response means, are ``openai_wire``'s; this module adds the calls, the retries and
-the deadline.
+and what each response means, are ``openai_wire``'s; this module adds the calls, the retries,
+the tool loop through the request's executor (ADR 0014), the caps and the deadline.
 """
 
 import asyncio
 import dataclasses
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
+from decimal import Decimal
 from http.client import HTTPException
 from typing import Final, Protocol
 
 from review_bot.audit import JsonValue, utc_now
 from review_bot.errors import ConfigError, ErrorCategory, ProviderError
-from review_bot.providers.base import ReviewRequest, ReviewResponse
+from review_bot.price_flags import Prices, token_cost_usd
+from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage, ToolExecutor
 from review_bot.providers.openai_wire import (
     ChatRequest,
     Completion,
+    ToolTurn,
     check_base_url,
     is_loopback_url,
     is_plain_text,
     read_completion,
     read_error,
     retry_after_s,
+    tool_replies,
 )
 from review_bot.providers.urllib_transport import HttpResponse, UrllibTransport
 from review_bot.settings import OPENAI_API_KEY_VARIABLE, Settings
@@ -34,6 +38,7 @@ __all__ = [
     "OpenAICompatibleProvider",
     "UrllibTransport",
     "check_api_key",
+    "token_prices",
 ]
 
 # A longer wait fails the call at once rather than holding the review (P4-S2 AC4).
@@ -50,8 +55,26 @@ _UNSENDABLE_KEY_MESSAGE: Final = (
     f"{OPENAI_API_KEY_VARIABLE} holds a space, a control character such as a newline, or a "
     "character that isn't ASCII, so it can't be sent. Set it to the key alone."
 )
-_TOOLS_MESSAGE: Final = (
-    "The OpenAI-compatible provider can't review with repository context yet. Review in diff mode."
+_UNPRICED_CAP_MESSAGE: Final = (
+    "A cost cap (--max-cost-usd, or the policy's [cost] ceiling) with --provider openai needs "
+    "--price-input-usd-per-mtok and --price-output-usd-per-mtok, since its cost comes from "
+    "them, so nothing was sent. Pass both prices."
+)
+_UNOFFERED_TOOLS_MESSAGE: Final = (
+    "The model asked to call tools, but this review offered none, so it gave no review. Try again."
+)
+_UNREPORTED_COST_MESSAGE: Final = (
+    "The OpenAI-compatible endpoint didn't report the tokens a turn used, so its cost can't be "
+    "kept within --max-cost-usd and the review stopped. Use an endpoint that reports usage, or "
+    "review without a cost cap."
+)
+_COST_CAP_MESSAGE: Final = (
+    "The model reached the review's cost cap before it finished the review. Raise "
+    "--max-cost-usd, up to the policy's ceiling if it has one, or review a smaller diff."
+)
+_TURN_CAP_MESSAGE: Final = (
+    "The model ran out of turns before it finished the review: its turn cap is --max-tool-calls "
+    "plus 2. Raise --max-tool-calls, or review a smaller diff."
 )
 _DEADLINE_MESSAGE: Final = (
     "The OpenAI-compatible endpoint didn't finish in time. Try again, or raise --deadline-s."
@@ -111,6 +134,29 @@ def check_api_key(base_url: str, api_key: str | None) -> None:
         raise ConfigError(_UNSENDABLE_KEY_MESSAGE)
 
 
+def token_prices(settings: Settings) -> Prices | None:
+    """The prices the review's cost comes from, or None if neither is set and nothing is capped.
+
+    Raises:
+        ConfigError: Naming the missing price flag, if only one price is set, or if a cost cap
+            is set without both, since nothing could enforce it.
+    """
+    input_price = settings.price_input_usd_per_mtok
+    output_price = settings.price_output_usd_per_mtok
+    if input_price is not None and output_price is not None:
+        return Prices(input_price, output_price)
+    if input_price is not None or output_price is not None:
+        missing = "input" if input_price is None else "output"
+        raise ConfigError(
+            f"--price-{missing}-usd-per-mtok (or REVIEW_BOT_PRICE_{missing.upper()}_USD_PER_MTOK) "
+            "is missing, and --provider openai's cost comes from both prices, so nothing was "
+            "sent. Pass both prices."
+        )
+    if settings.max_cost_usd is not None:
+        raise ConfigError(_UNPRICED_CAP_MESSAGE)
+    return None
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Failure:
     """A failed attempt: its error, what the endpoint asked us to wait, and what went wrong."""
@@ -121,7 +167,11 @@ class _Failure:
 
 
 class OpenAICompatibleProvider:
-    """Reviews in diff mode through an OpenAI-compatible Chat Completions endpoint."""
+    """Reviews through an OpenAI-compatible Chat Completions endpoint.
+
+    Diff mode offers no tools. Context mode offers the request's executor's tools as functions,
+    and runs every call the model asks for through it.
+    """
 
     def __init__(  # noqa: PLR0913 - all but settings are keyword-only
         self,
@@ -136,8 +186,8 @@ class OpenAICompatibleProvider:
         """Prepare the provider; nothing is sent until ``review``.
 
         Args:
-            settings: Supplies the output token cap, the retries, the API timeout and the
-                overall deadline.
+            settings: Supplies the output token cap, the retries, the API timeout, the overall
+                deadline, the tool call cap, the cost cap and the token prices.
             base_url: The endpoint, such as ``https://api.openai.com/v1``.
             api_key: Sent as a bearer token; None or empty sends none, which only a loopback
                 host allows.
@@ -149,10 +199,12 @@ class OpenAICompatibleProvider:
         Raises:
             ValueError: If ``base_url`` isn't allowed (``check_base_url``).
             ConfigError: If there is no key and the host isn't loopback, or the key holds a
-                character that can't be sent in a header (``check_api_key``).
+                character that can't be sent in a header (``check_api_key``); or if only one
+                price is set, or a cost cap without both (``token_prices``).
         """
         check_base_url(base_url)
         check_api_key(base_url, api_key)
+        self._prices = token_prices(settings)
         self._settings = settings
         self._base_url = base_url
         self._url = f"{base_url.rstrip('/')}/chat/completions"
@@ -162,39 +214,103 @@ class OpenAICompatibleProvider:
         self._clock = clock
 
     async def review(self, request: ReviewRequest) -> ReviewResponse:
-        """Send the request, retrying ``transient`` and ``rate_limit`` failures, by the deadline.
+        """Converse until the model answers, by the deadline, which bounds the whole review.
+
+        Each POST retries ``transient`` and ``rate_limit`` failures. ``cost_usd`` is the cost of
+        all the turns at the token prices, or None without them.
 
         Raises:
             ProviderError: For every failure of a known kind; an error response's text is kept
                 only as its diagnostics.
         """
-        if request.tools is not None:
-            raise ProviderError(ErrorCategory.PERMANENT, _TOOLS_MESSAGE)
+        tools = request.tools
         chat = ChatRequest(
             model=request.model,
             system_prompt=request.system_prompt,
             user_prompt=request.user_prompt,
             max_output_tokens=self._settings.max_output_tokens,
             base_url=self._base_url,
+            tools=() if tools is None else tools.definitions,
         )
         deadline = asyncio.get_running_loop().time() + self._settings.deadline_s
         try:
             async with asyncio.timeout_at(deadline):
-                return await self._call_with_retries(chat.body(), deadline=deadline)
+                return await self._converse(chat, tools, deadline=deadline)
         except TimeoutError as exc:
             raise ProviderError(ErrorCategory.TRANSIENT, _DEADLINE_MESSAGE) from exc
 
-    async def _call_with_retries(
-        self, body: Mapping[str, JsonValue], *, deadline: float
+    async def _converse(
+        self, chat: ChatRequest, tools: ToolExecutor | None, *, deadline: float
     ) -> ReviewResponse:
-        """The first completion, after any retries; ``deadline`` is on the event loop's clock."""
-        loop = asyncio.get_running_loop()
+        """Post the conversation, running each tool call the model asks for, until it answers.
+
+        The caps are checked after each turn that asks for tools, so its calls never run once
+        one is reached, and the turn that answers is returned whatever it cost (ADR 0015). A
+        turn whose usage is unusable counts as no tokens, or with a cost cap, as costing the
+        whole cap.
+        """
+        replies: list[JsonValue] = []
         warnings: list[str] = []
+        usage = TokenUsage(0, 0)
+        turns = 0
+        while True:
+            reply = await self._call_with_retries(
+                chat.body(replies), deadline=deadline, warnings=warnings
+            )
+            turns += 1
+            is_reported = reply.usage is not None
+            usage = _added(usage, reply.usage or TokenUsage(0, 0))
+            cost_usd = self._cost_usd(usage, is_reported=is_reported)
+            if isinstance(reply, Completion):
+                return ReviewResponse(
+                    reply.findings, usage, warnings=tuple(warnings), cost_usd=cost_usd
+                )
+            if tools is None:
+                raise ProviderError(ErrorCategory.INVALID_OUTPUT, _UNOFFERED_TOOLS_MESSAGE)
+            self._check_caps(turns, cost_usd, is_reported=is_reported)
+            results = [await tools.call(call.name, call.arguments) for call in reply.calls]
+            replies.extend(tool_replies(reply, results))
+
+    def _cost_usd(self, usage: TokenUsage, *, is_reported: bool) -> Decimal | None:
+        """What ``usage`` costs at the token prices, or None without them.
+
+        If the last turn's usage wasn't reported, that turn also costs the cost cap, if any.
+        """
+        if self._prices is None:
+            return None
+        cost_usd = token_cost_usd(usage.input_tokens, usage.output_tokens, self._prices)
+        max_cost_usd = self._settings.max_cost_usd
+        if is_reported or max_cost_usd is None:
+            return cost_usd
+        return cost_usd + max_cost_usd
+
+    def _check_caps(self, turns: int, cost_usd: Decimal | None, *, is_reported: bool) -> None:
+        """Raise a ``permanent`` ProviderError naming the cap if the review may go no further.
+
+        ``cost_usd`` is None only without prices, so with no cost cap (``token_prices``). A turn
+        whose usage wasn't reported reaches the cost cap, whatever came before it.
+        """
+        max_cost_usd = self._settings.max_cost_usd
+        if max_cost_usd is not None and not is_reported:
+            raise ProviderError(ErrorCategory.PERMANENT, _UNREPORTED_COST_MESSAGE, cap="cost")
+        if max_cost_usd is not None and cost_usd is not None and cost_usd > max_cost_usd:
+            raise ProviderError(ErrorCategory.PERMANENT, _COST_CAP_MESSAGE, cap="cost")
+        if turns >= self._settings.max_tool_calls + 2:
+            raise ProviderError(ErrorCategory.PERMANENT, _TURN_CAP_MESSAGE, cap="turns")
+
+    async def _call_with_retries(
+        self, body: Mapping[str, JsonValue], *, deadline: float, warnings: list[str]
+    ) -> Completion | ToolTurn:
+        """The first completion, after any retries, each added to ``warnings``.
+
+        ``deadline`` is on the event loop's clock.
+        """
+        loop = asyncio.get_running_loop()
         retries = 0
         while True:
             outcome = await self._attempt(body, timeout_s=deadline - loop.time())
-            if isinstance(outcome, Completion):
-                return ReviewResponse(outcome.findings, outcome.usage, warnings=tuple(warnings))
+            if not isinstance(outcome, _Failure):
+                return outcome
             wait_s = self._wait_before_retry(outcome, retries, time_left_s=deadline - loop.time())
             if wait_s is None:
                 raise outcome.error
@@ -222,7 +338,7 @@ class OpenAICompatibleProvider:
 
     async def _attempt(
         self, body: Mapping[str, JsonValue], *, timeout_s: float
-    ) -> Completion | _Failure:
+    ) -> Completion | ToolTurn | _Failure:
         """One request: its completion, or a failure that may be retried.
 
         Raises:
@@ -265,6 +381,12 @@ class OpenAICompatibleProvider:
         if self._api_key is not None:
             text = text.replace(self._api_key, _REDACTED)
         return tuple(text.splitlines())
+
+
+def _added(usage: TokenUsage, more: TokenUsage) -> TokenUsage:
+    return TokenUsage(
+        usage.input_tokens + more.input_tokens, usage.output_tokens + more.output_tokens
+    )
 
 
 def _failure_without_response(exc: OSError | HTTPException) -> _Failure:

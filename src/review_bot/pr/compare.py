@@ -20,9 +20,10 @@ from review_bot.pr.feedback import (
     ShadowFeedback,
     Unit,
 )
-from review_bot.pr.metrics import Prices, Verdicts, ratio, token_cost_usd
+from review_bot.pr.metrics import Verdicts, ratio
 from review_bot.pr.run_metrics import Percentiles, duration_percentiles
 from review_bot.pr.units import ShadowFile, distinct_runs, reviewed_shadow, would_be_comments
+from review_bot.price_flags import Prices, token_cost_usd
 
 __all__ = [
     "COVERAGE_NEEDED",

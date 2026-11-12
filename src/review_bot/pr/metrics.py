@@ -22,7 +22,6 @@ __all__ = [
     "BASELINE_SCHEMA",
     "Baseline",
     "Precision",
-    "Prices",
     "Spread",
     "Verdicts",
     "median",
@@ -32,7 +31,6 @@ __all__ = [
     "render_baseline_text",
     "summarise_baseline",
     "to_cents",
-    "token_cost_usd",
     "wilson_interval",
 ]
 
@@ -44,8 +42,6 @@ _HOURS_PLACES: Final = 2
 # A median of counts is a whole or a half.
 _COMMITS_PLACES: Final = 1
 _RATIO_PLACES: Final = 3
-# Prices are per million tokens.
-_TOKENS_PER_PRICE: Final = Decimal(1_000_000)
 _CENT: Final = Decimal("0.01")
 # The normal quantile for a two-sided 95% interval, about 1.96.
 _Z_95: Final = statistics.NormalDist().inv_cdf(0.975)
@@ -217,20 +213,6 @@ def wilson_interval(successes: int, trials: int) -> tuple[float, float] | None:
     half_width = _Z_95 * math.sqrt(spread) / scale
     # Clamped, as float rounding can take an end a hair past 0 or 1.
     return max(0.0, centre - half_width), min(1.0, centre + half_width)
-
-
-@dataclass(frozen=True, slots=True)
-class Prices:
-    """The user's token prices, in USD per million tokens; never stored in code (design)."""
-
-    input_usd_per_mtok: Decimal
-    output_usd_per_mtok: Decimal
-
-
-def token_cost_usd(input_tokens: int, output_tokens: int, prices: Prices) -> Decimal:
-    """What the tokens cost at ``prices``, before rounding to cents."""
-    spent = input_tokens * prices.input_usd_per_mtok + output_tokens * prices.output_usd_per_mtok
-    return spent / _TOKENS_PER_PRICE
 
 
 def to_cents(amount: Decimal) -> Decimal:

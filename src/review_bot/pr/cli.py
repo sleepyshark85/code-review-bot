@@ -67,12 +67,7 @@ from review_bot.pr.feedback import (
 )
 from review_bot.pr.github import GitHubClient, IssueReader
 from review_bot.pr.label import LABELLING_STOPPED, LabellingResult, run_labelling
-from review_bot.pr.metrics import (
-    Prices,
-    render_baseline_json,
-    render_baseline_text,
-    summarise_baseline,
-)
+from review_bot.pr.metrics import render_baseline_json, render_baseline_text, summarise_baseline
 from review_bot.pr.metrics_report import render_metrics_json, render_metrics_text
 from review_bot.pr.outcome import Outcome, Reason
 from review_bot.pr.reports import read_labels, read_report, read_reports, skipped_line
@@ -94,7 +89,7 @@ from review_bot.pr.shadow import (
     render_shadow_markdown,
 )
 from review_bot.pr.units import ShadowFile
-from review_bot.price_flags import add_price_arguments, prices_from_flags
+from review_bot.price_flags import Prices, add_price_arguments, prices_from_flags
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact

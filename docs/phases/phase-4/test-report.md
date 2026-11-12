@@ -336,3 +336,76 @@ From this file alone: `pr/config.py` 86%, `pr/fake_github.py` 76%, `governance/p
 - **`degraded`** (AC11) arrives with S8 and isn't tested here.
 - **The REST client's last-editor reads** (`list_bot_issue_comments` and `read_inline_comments`) are tested only through the fake. The developer notes they are to be confirmed live in S10.
 - **The exact wording** of the summary's gate section is pinned only by the spec's own phrases: "Would block the merge: 1 finding (decimal-money)", "Blocks the merge", "a file path holding a possible secret", "carried from an earlier review, no comment", `/review-bot override`. The rest isn't.
+
+## P4-S6: Review with repository context on the second provider, within a cost cap
+
+Spec: [p4-s6-openai-tool-loop.md](slices/p4-s6-openai-tool-loop.md). Tests:
+- [`tests/integration/test_p4_s6_openai_tool_loop.py`](../../../tests/integration/test_p4_s6_openai_tool_loop.py): 131 cases for AC1 to AC8 (AC6a included), AC10, Limits and Interfaces.
+- [`tests/conformance/test_p4_s6_openai_tool_loop_conformance.py`](../../../tests/conformance/test_p4_s6_openai_tool_loop_conformance.py), and the `openai` factory's `tool_loop` script in [`tests/conformance/conftest.py`](../../../tests/conformance/conftest.py): AC9.
+- The shared fake, [`tests/fake_openai.py`](../../../tests/fake_openai.py), now builds function-calling turns (`tool_call`, `tool_calls_body`, `tool_calls_completion`) and slow steps (`delayed`), and reads a request's conversation (`Sent.messages`).
+
+The tests were written from the spec's criteria, Limits and Interfaces, design.md ("Second provider and routing") and ADRs 0014, 0015 and 0020, while the developer built the slice and before their code was read. The only seam used is the one S2 already had: `OpenAICompatibleProvider(settings, base_url=, api_key=, transport=)`.
+
+**Status: every criterion passes.** The run was on the developer's uncommitted working tree (base `6ad47b0`): this slice's 131 cases, `tests/conformance` (104, none skipped) and P4-S2's whole suite (256) all pass. AC6a was added to the spec during testing, on this report's gap about a turn with no usage, and its cases were run once the developer's code for it landed.
+
+### Gate
+
+As for S2, a partial run in small groups: this slice's file, `tests/conformance` and `test_p4_s2_openai_compatible_provider.py`. `ruff format --check` and `ruff check` are clean on every file changed. `mypy` covers `src` only. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **Provider-level criteria** drive `OpenAICompatibleProvider` directly. Its settings come from the real `cli.parse_args`, its transport is the scripted fake, and its executor is the real `RepoTools` over a one-commit repository (`fake_mcp.commit_repo`), wrapped by `Watched`, which only delegates and records each call's arguments and result. `RepoTools`' `max_calls` is set to the same number as `--max-tool-calls`, as the CLI does.
+- **Command-level criteria** run `review-bot` (and `pr shadow|run`) in process with `--context-repo`, through P4-S2's `OpenAIBot` and `PrCommands`. The command builds its own provider, and `use_fake_transport` routes it to the fake.
+- **"Over 64 KB" (AC3)** is read as over 64 KiB of the arguments' UTF-8 text: 60,000 bytes are parsed, and 70,000 bytes, or 34,000 two-byte characters (68,000 bytes), are not.
+- **A `tool_calls` that is an empty list** is a message with no tool calls (AC2), so it ends the loop.
+- **"Retries apply per POST" (AC10)** is read as: each POST has its own `--max-retries`, and a retried POST is still one model turn for AC4.
+- **The deadline** fails `transient`, as P4-S2 AC4's does.
+- **"Naming the missing price flag" (AC7)**, with neither price given, is read as naming at least one.
+- **A malformed `tool_calls` shape** (not a list, an entry that isn't an object or has no `function`, a non-string name, missing arguments, arguments given as an object, no `id`) may fail with any `ProviderError` or be refused through the executor, but must never raise anything else (Limits: model output is untrusted).
+- **"Goes over" (AC6)** is strictly greater, as the coordinator confirmed: a running total equal to the cap goes on.
+- **"`cost_usd` records the cap as spent" (AC6a)** is tested only where the answer is the review's only turn, so it is the cap ($3.00) on any reading. After earlier priced turns, the spec could mean the cap alone or the cap plus those turns.
+- **Cost is exact**: one diff turn of 123 and 45 tokens costs exactly $0.0007575, with no rounding, as AC5's "exactly as a `Decimal`" requires.
+
+### Criteria
+
+Test names drop the `test_p4_s6_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_every_post_carries_one_function_per_definition_in_order` (3 POSTs, the exact list of `{"type": "function", "function": {name, description, parameters}}`). `ac1_one_turn_review_still_offers_the_tools`. `ac1_policy_narrowed_executor_offers_only_its_tools` (`read`, `glob`) | pass (3) |
+| AC2 | `ac2_each_call_goes_to_the_executor_in_order_with_its_arguments` (read, grep and glob in one message). `ac2_results_follow_the_assistant_message_with_their_call_ids`. `ac2_each_post_carries_the_whole_conversation_so_far` (4 POSTs, each a prefix of the next). `ac2_loop_ends_at_the_first_message_without_tool_calls` (no third POST). `ac2_content_beside_tool_calls_is_not_read_as_findings`. `ac2_empty_tool_calls_list_ends_the_loop`. `ac2_final_content_that_isnt_findings_fails_invalid_output`. `ac2_failure_mid_loop_keeps_its_category` ×4 (`auth`, `permanent`, `refusal`, `length`). `ac2_command_reviews_with_context_over_openai` (one `context.tool_call` audit record) | pass (12) |
+| AC3 | `ac3_bad_arguments_reach_the_executor_as_an_empty_mapping` ×12: not JSON, truncated, empty, an array, a string, `null`, a number, `true`, over 64 KB, over 64 KB of UTF-8, 30,000-deep arrays and 10,000-deep objects (the last two under 64 KB, but past Python's recursion limit). Each is refused `invalid_arguments` and in the ledger, and the review returns its findings. `ac3_arguments_under_64_kb_are_parsed`. `ac3_refused_call_is_counted_towards_the_tool_cap` (the next call is `call_limit`). `ac3_valid_json_beyond_pythons_number_limits_never_crashes` (a 5,000-digit integer). `ac3_unknown_tool_goes_to_the_executor_and_is_refused` (`bash`, `unknown_tool`). `ac3_policy_denied_tool_is_refused_and_the_review_goes_on` (`grep` under a read-only executor, `policy_denied`) | pass (17) |
+| Limits | `limits_odd_json_arguments_leave_the_review_going` ×3 (`NaN`, a lone surrogate, a duplicate key; the next request is still JSON). `limits_calls_past_max_tool_calls_in_one_message_are_refused` (40 calls with a cap of 3: 40 answers with their ids, at most 3 not refused). `limits_thousands_of_calls_in_one_message_finish_quickly` (3,000 calls). `limits_many_oversized_arguments_in_one_response_finish_quickly` (50 × 70 KB in a 3.5 MB response). `limits_malformed_tool_calls_fail_only_as_a_provider_error` ×7. Each is bounded at 30 s | pass (13) |
+| AC4 | `ac4_model_that_keeps_calling_fails_after_max_tool_calls_plus_2_turns` ×2 (`--max-tool-calls` 1 and 3: `permanent`, `cap` `turns`, naming the flag, exactly 3 and 5 POSTs). `ac4_answer_on_the_last_allowed_turn_is_returned`. `ac4_command_fails_permanent_naming_max_tool_calls` (exit 12) | pass (4) |
+| AC5 | `ac5_two_turns_cost_exactly_3_90` (a `Decimal`). `ac5_one_diff_turn_is_priced_exactly`. `ac5_without_prices_cost_is_unknown`. `ac5_report_shows_the_context_reviews_cost` (`usage.cost_usd` in the JSON report) | pass (4) |
+| AC6 | `ac6_cap_passed_after_the_second_tool_turn_fails_with_no_third_post` (`permanent`, `cap` `cost`, naming `--max-cost-usd`, 2 POSTs). `ac6_cap_passed_by_the_final_answer_returns_its_findings` ($3.90). `ac6_cap_passed_on_the_first_turn_stops_there`. `ac6_review_under_the_cap_runs_to_its_answer`. `ac6_command_fails_permanent_naming_max_cost_usd` (exit 12). `ac6_policy_ceiling_is_enforced_as_the_cap`. `ac6_cost_exactly_at_the_cap_isnt_over_it` ($3.90 with a $3.90 cap: a third POST, and the findings). `ac6_first_turn_exactly_at_the_cap_goes_on` | pass (8) |
+| AC6a | Over 12 bad `usage` values: missing, `null`, a string, a list, `{}`, a negative prompt or completion count, a count of `1.5`, `"100"`, `true` or `null`, and a missing completion count. `ac6a_tool_turn_without_usable_usage_fails_the_cap` ×12 (`permanent`, `cap` `cost`, 1 POST). `ac6a_final_answer_without_usage_is_returned_with_the_cap_spent` ×12 (the findings, `cost_usd` $3.00, 1 POST). `ac6a_without_a_cap_the_turn_counts_as_zero_tokens` ×12 (the review goes on, and `cost_usd` is the next turn's $0.0007575 alone). `ac6a_later_turn_without_usage_stops_there` (2 POSTs). `ac6a_without_cap_or_prices_the_review_goes_on` (`cost_usd` null). `ac6a_command_fails_permanent_on_a_turn_without_usage` (exit 12) | pass (39) |
+| AC7 | `ac7_cap_without_both_prices_exits_2_naming_the_missing_one` ×3 (neither, input only, output only). `ac7_cap_from_the_variable_without_prices_exits_2`. `ac7_policy_ceiling_without_prices_exits_2`. `ac7_context_review_with_a_cap_and_no_prices_exits_2`. `ac7_pr_cap_without_prices_exits_2` ×2 and `ac7_pr_cap_with_both_prices_runs` ×2 (`shadow`, `run`). `ac7_cap_with_both_prices_runs_and_reports_the_cost`. `ac7_prices_from_the_variables_satisfy_the_cap` (`REVIEW_BOT_PRICE_*`). `ac7_without_cap_or_prices_cost_usd_is_null`. No refusal sends a request | pass (13) |
+| Interfaces | `interfaces_price_that_isnt_a_decimal_exits_2` ×8 (`-1`, `1e3`, `nan` and `two`, for each flag). `interfaces_mock_with_a_cap_needs_no_prices` | pass (9) |
+| AC8 | `ac8_diff_mode_sends_no_tools_and_refuses_tool_calls`. `ac8_command_in_diff_mode_fails_invalid_output_on_tool_calls` (exit 13) | pass (2) |
+| AC9 | The `[openai]` cases of `test_p3_s3_ac7_tool_loop_returns_the_scripted_findings`, `test_p3_s3_ac7_tool_loop_leaves_one_read_in_the_ledger` and `test_p4_s3_ac6_tool_loop_carries_no_denied_tool`, no longer skipped. `ac9_no_provider_skips_any_scenario` ×13 (every scenario and provider; a skip fails it). `ac9_openai_tool_loop_reads_through_the_executor` | pass (17) |
+| AC10 | `ac10_deadline_bounds_a_loop_of_slow_turns` (0.5 s per turn and `--deadline-s 1.5`: done in under 8 s, against 16 s unbounded). `ac10_deadline_counts_the_tools_time_too` (a 0.5 s executor). `ac10_deadline_bounds_a_later_turn_that_never_answers`. `ac10_each_posts_timeout_is_the_time_left`. `ac10_each_post_gets_its_own_retries` (a 503 before each of two turns, with `--max-retries 1`). `ac10_a_retried_post_is_one_turn`. `ac10_no_retry_waits_past_the_deadline_mid_loop` | pass (7) |
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+Each keeps its intent.
+
+- **`test_p4_s2_limits_200_with_bad_usage_still_fails_cleanly_not_internally`** is unchanged and passes: with no cap, AC6a counts its bad usage as zero tokens, so it now exits 0 where it exited 13, and the test accepts both.
+
+- **`test_p4_s2_openai_compatible_provider.py`, AC9**, which S6 AC7 replaces. A cost cap with `openai` is still never left unenforced, but it now refuses (exit 2, before any request) only without both prices, naming a price flag instead of S2's fixed message. The cases for the flag, the variable, the policy's ceiling, `pr shadow|run` and a missing key keep their intent. Two new cases show that a cap with both prices now runs (the flag, and the policy's ceiling). A policy with no ceiling still runs. `COST_REFUSAL` is gone.
+- **`tests/conformance/conftest.py`**: the `openai` factory no longer skips `tool_loop`. It scripts one function call to `read`, then the finding.
+- **`tests/conformance/test_p4_s2_openai_conformance.py`**: `ac5_tool_loop_is_skipped_for_openai_naming_s6` is removed, since S2 AC5's exception has ended.
+
+### Coverage
+
+From this slice's file, P4-S2's file and `tests/conformance` together: `providers/openai_compat.py` 99% (line 134, a key that can't be sent, is left to the developer's unit tests) and `providers/openai_wire.py` 98% (lines 155, 161-162 and 282).
+
+### Gaps
+
+- **One price without a cap** isn't tested: AC7 covers only a cap without both prices.
+- **`pr backfill` with `--provider openai`** isn't tested, as in S2: live commands measure one model.
+- **Live context evals for this provider** are out of scope (Q13).

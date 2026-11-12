@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from datetime import UTC, datetime
 
@@ -5,19 +6,25 @@ import pytest
 from diff_samples import FINDING_FIELDS
 from openai_samples import completion_body
 
+from review_bot.context.tool_args import TOOL_DEFINITIONS
 from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import Finding
 from review_bot.providers.base import TokenUsage
 from review_bot.providers.openai_wire import (
     DEFAULT_BASE_URL,
     MAX_RESPONSE_BYTES,
+    MAX_TOOL_ARGUMENTS_BYTES,
     ChatRequest,
+    Completion,
+    ToolCall,
+    ToolTurn,
     check_base_url,
     is_loopback_url,
     is_plain_text,
     read_completion,
     read_error,
     retry_after_s,
+    tool_replies,
 )
 
 FINDINGS_JSON = json.dumps({"findings": [FINDING_FIELDS]})
@@ -133,20 +140,34 @@ def test_read_completion_returns_the_findings_and_usage() -> None:
     "usage",
     [
         "many",
-        {"prompt_tokens": -1, "completion_tokens": True},
-        {"prompt_tokens": 1.5},
+        {"prompt_tokens": -1, "completion_tokens": 2},
+        {"prompt_tokens": 1, "completion_tokens": True},
+        {"prompt_tokens": 1.5, "completion_tokens": 2},
+        {"prompt_tokens": 1},
+        {"completion_tokens": 2},
         [],
+        None,
     ],
 )
-def test_read_completion_counts_bad_usage_as_zero(usage: object) -> None:
-    assert read_completion(completion_body(usage=usage)).usage == TokenUsage(0, 0)
+def test_read_completion_of_unusable_usage_has_none(usage: object) -> None:
+    document = json.loads(completion_body())
+    document["usage"] = usage
+
+    assert read_completion(json.dumps(document).encode()).usage is None
 
 
-def test_read_completion_without_usage_counts_zero() -> None:
+def test_read_completion_without_usage_has_none() -> None:
     document = json.loads(completion_body())
     del document["usage"]
 
-    assert read_completion(json.dumps(document).encode()).usage == TokenUsage(0, 0)
+    assert read_completion(json.dumps(document).encode()).usage is None
+
+
+def test_read_completion_of_a_tool_turn_without_usage_has_none() -> None:
+    document = json.loads(tool_call_body(call_with_arguments("{}")))
+    del document["usage"]
+
+    assert read_completion(json.dumps(document).encode()).usage is None
 
 
 def test_read_completion_with_an_empty_refusal_reads_the_content() -> None:
@@ -320,3 +341,182 @@ def test_retry_after_s_reads_seconds_or_an_http_date(value: str, wait_s: float) 
 @pytest.mark.parametrize("value", ["", "-1", "1.5", "soon", "١٢", "Thu, 99 Nov 2026 10:00:00 GMT"])
 def test_retry_after_s_of_an_unparsable_value_is_none(value: str) -> None:
     assert retry_after_s(value, now=NOW) is None
+
+
+# --- Tool calls (P4-S6) ---------------------------------------------------------------------------
+
+
+def tool_call_body(*calls: object, content: str | None = None) -> bytes:
+    message = {"role": "assistant", "content": content, "tool_calls": list(calls)}
+    document = {
+        "choices": [{"message": message, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+    }
+    return json.dumps(document).encode()
+
+
+def call_with_arguments(arguments: object) -> dict[str, object]:
+    return {"id": "c1", "type": "function", "function": {"name": "read", "arguments": arguments}}
+
+
+def test_chat_body_offers_each_tool_as_a_function_in_order() -> None:
+    tools = TOOL_DEFINITIONS[:2]
+    body = dataclasses.replace(chat(), tools=tools).body()
+
+    assert body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema,
+            },
+        }
+        for tool in tools
+    ]
+
+
+def test_chat_body_puts_the_replies_after_the_prompts() -> None:
+    reply = {"role": "tool", "tool_call_id": "c1", "content": "text"}
+
+    messages = chat().body([reply])["messages"]
+
+    assert messages == [
+        {"role": "system", "content": "System.\nText"},
+        {"role": "user", "content": "+diff ü"},
+        reply,
+    ]
+
+
+def test_read_completion_with_tool_calls_is_a_tool_turn_in_order() -> None:
+    first = call_with_arguments('{"path": "a.py", "start_line": 3}')
+    second = {"id": "c2", "function": {"name": "nope", "arguments": "{}"}}
+
+    turn = read_completion(tool_call_body(first, second, content="Let me look."))
+
+    assert turn == ToolTurn(
+        "Let me look.",
+        (ToolCall("c1", "read", {"path": "a.py", "start_line": 3}), ToolCall("c2", "nope", {})),
+        TokenUsage(3, 2),
+    )
+
+
+def test_read_completion_with_no_tool_calls_reads_the_findings() -> None:
+    document = json.loads(completion_body(FINDINGS_JSON))
+    document["choices"][0]["message"]["tool_calls"] = []
+
+    completion = read_completion(json.dumps(document).encode())
+
+    assert isinstance(completion, Completion)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "{not json",
+        "[1]",
+        '"text"',
+        "null",
+        "",
+        {"path": "a.py"},
+        None,
+        '{"path": "a.py", "path": "b.py"}',
+        '{"start_line": NaN}',
+        '{"start_line": Infinity}',
+        "[" * 10_000 + "]" * 10_000,
+        json.dumps({"path": "a" * MAX_TOOL_ARGUMENTS_BYTES}),
+    ],
+    ids=[
+        "not_json",
+        "array",
+        "string",
+        "null",
+        "empty",
+        "object_not_string",
+        "missing",
+        "repeated_key",
+        "nan",
+        "infinity",
+        "deeply_nested",
+        "over_64_kb",
+    ],
+)
+def test_read_completion_parses_arguments_strictly_else_gives_none(arguments: object) -> None:
+    turn = read_completion(tool_call_body(call_with_arguments(arguments)))
+
+    assert isinstance(turn, ToolTurn)
+    assert turn.calls[0].arguments == {}
+
+
+def test_read_completion_parses_arguments_of_exactly_64_kb() -> None:
+    padding = "a" * (MAX_TOOL_ARGUMENTS_BYTES - len('{"path": ""}'))
+    arguments = json.dumps({"path": padding})
+
+    turn = read_completion(tool_call_body(call_with_arguments(arguments)))
+
+    assert isinstance(turn, ToolTurn)
+    assert turn.calls[0].arguments == {"path": padding}
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        "read",
+        ["read"],
+        [{"function": {"name": "read", "arguments": "{}"}}],
+        [{"id": 1, "function": {"name": "read", "arguments": "{}"}}],
+        [{"id": "c1"}],
+        [{"id": "c1", "function": "read"}],
+        [{"id": "c1", "function": {"arguments": "{}"}}],
+    ],
+    ids=[
+        "not_a_list",
+        "call_not_an_object",
+        "no_id",
+        "id_not_a_string",
+        "no_function",
+        "function_not_an_object",
+        "no_name",
+    ],
+)
+def test_read_completion_with_malformed_tool_calls_raises_invalid_output(
+    tool_calls: object,
+) -> None:
+    document = json.loads(completion_body(FINDINGS_JSON))
+    document["choices"][0]["message"]["tool_calls"] = tool_calls
+
+    assert category_of(json.dumps(document).encode()) is ErrorCategory.INVALID_OUTPUT
+
+
+def test_tool_replies_are_the_assistant_message_then_each_result() -> None:
+    turn = ToolTurn(
+        None,
+        (ToolCall("c1", "read", {"path": "a.py"}), ToolCall("c2", "grep", {})),
+        TokenUsage(0, 0),
+    )
+
+    replies = tool_replies(turn, ["one", "two"])
+
+    assert replies == [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path": "a.py"}'},
+                },
+                {"id": "c2", "type": "function", "function": {"name": "grep", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "one"},
+        {"role": "tool", "tool_call_id": "c2", "content": "two"},
+    ]
+
+
+def test_tool_replies_need_one_result_per_call() -> None:
+    turn = ToolTurn(None, (ToolCall("c1", "read", {}),), TokenUsage(0, 0))
+
+    with pytest.raises(ValueError, match="zip"):
+        tool_replies(turn, [])

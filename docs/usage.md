@@ -51,7 +51,7 @@ Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [Claude enforcement
 
 ## Second provider
 
-`--provider openai --model MODEL` reviews through any OpenAI-compatible endpoint, diff mode only. `--model` (or `REVIEW_BOT_MODEL`) is required; `--provider` also reads `REVIEW_BOT_PROVIDER`. `--openai-base-url` (`REVIEW_BOT_OPENAI_BASE_URL`) sets the endpoint, default `https://api.openai.com/v1`. The key, `OPENAI_API_KEY`, is removed from the environment at start-up and never written anywhere. Cost caps aren't supported yet (exit `2`). Spec: [p4-s2](phases/phase-4/slices/p4-s2-openai-compatible-provider.md).
+`--provider openai --model MODEL` reviews through any OpenAI-compatible endpoint, in diff mode or with `--context-repo` (the same read-only tools, through function calling). `--model` (or `REVIEW_BOT_MODEL`) is required; `--provider` also reads `REVIEW_BOT_PROVIDER`. `--openai-base-url` (`REVIEW_BOT_OPENAI_BASE_URL`) sets the endpoint, default `https://api.openai.com/v1`. The key, `OPENAI_API_KEY`, is removed from the environment at start-up and never written anywhere. `--max-cost-usd` works with it given `--price-input-usd-per-mtok` and `--price-output-usd-per-mtok` (exit `2` without both); a turn with no usable usage counts as the whole cap. Specs: [p4-s2](phases/phase-4/slices/p4-s2-openai-compatible-provider.md), [p4-s6](phases/phase-4/slices/p4-s6-openai-tool-loop.md).
 
 ## Audit log
 

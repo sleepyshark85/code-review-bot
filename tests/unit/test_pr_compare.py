@@ -8,7 +8,7 @@ from shadow_samples import entry
 
 from review_bot.pr.compare import ComparedPr, Comparison, ExcludedPr, compare_runs
 from review_bot.pr.feedback import FeedbackLabel, FeedbackRecord, RejectReason
-from review_bot.pr.metrics import Prices
+from review_bot.price_flags import Prices
 
 ACCEPT, REJECT = FeedbackLabel.ACCEPT, FeedbackLabel.REJECT
 

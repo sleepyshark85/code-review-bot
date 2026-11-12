@@ -24,7 +24,7 @@ from review_bot.evals.score import (
     score_case,
 )
 from review_bot.findings import Finding
-from review_bot.pr.metrics import Prices
+from review_bot.price_flags import Prices
 
 FILE: Final = "app/calc.py"
 FLOAT_BUG: Final = {

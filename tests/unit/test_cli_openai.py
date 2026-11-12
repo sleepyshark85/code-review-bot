@@ -1,4 +1,5 @@
-"""The entry points with `--provider openai` (P4-S2): flags, the key, and what is refused."""
+"""The entry points with `--provider openai` (P4-S2, P4-S6): flags, the key, the prices, and
+what is refused."""
 
 import json
 import os
@@ -18,6 +19,7 @@ from review_bot.providers.openai_compat import OpenAICompatibleProvider
 from review_bot.settings import Settings, load_settings
 
 OPENAI_M1 = ("--provider", "openai", "--model", "m1")
+PRICE_FLAGS = ("--price-input-usd-per-mtok", "2.50", "--price-output-usd-per-mtok", "10")
 COST_POLICY = b'version = "org-1"\n[cost]\nmax_cost_usd = "0.60"\n'
 
 
@@ -136,7 +138,7 @@ def test_load_settings_accepts_a_loopback_http_base_url(url: str) -> None:
     assert load_settings({"openai_base_url": url}).openai_base_url == url
 
 
-def test_main_with_a_cost_cap_and_openai_exits_2_before_any_request(
+def test_main_with_a_cost_cap_and_openai_without_prices_exits_2_before_any_request(
     diff_path: Path,
     fake: FakeTransport,
     monkeypatch: pytest.MonkeyPatch,
@@ -147,8 +149,58 @@ def test_main_with_a_cost_cap_and_openai_exits_2_before_any_request(
     exit_code = cli.main([str(diff_path), *OPENAI_M1, "--max-cost-usd", "0.50"])
 
     assert exit_code == 2
-    assert "--max-cost-usd isn't supported with --provider openai yet" in capsys.readouterr().err
+    assert "--price-input-usd-per-mtok and --price-output-usd-per-mtok" in capsys.readouterr().err
     assert fake.sent == []
+
+
+def test_main_with_openai_and_one_price_exits_2_naming_the_other(
+    diff_path: Path,
+    fake: FakeTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+
+    exit_code = cli.main([str(diff_path), *OPENAI_M1, "--price-input-usd-per-mtok", "2.50"])
+
+    assert exit_code == 2
+    assert "--price-output-usd-per-mtok (or REVIEW_BOT_PRICE_" in capsys.readouterr().err
+    assert fake.sent == []
+
+
+def test_main_with_a_cost_cap_and_both_prices_reviews_with_openai(
+    diff_path: Path, fake: FakeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+
+    exit_code = cli.main([str(diff_path), *OPENAI_M1, *PRICE_FLAGS, "--max-cost-usd", "0.50"])
+
+    assert exit_code == 1  # the one finding
+    assert len(fake.sent) == 1
+
+
+def test_load_settings_reads_the_prices_from_flags_or_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_BOT_PRICE_OUTPUT_USD_PER_MTOK", "10")
+
+    settings = load_settings({"price_input_usd_per_mtok": "2.50"})
+
+    assert settings.price_input_usd_per_mtok == Decimal("2.50")
+    assert settings.price_output_usd_per_mtok == Decimal(10)
+
+
+@pytest.mark.parametrize("price", ["-1", "1e3", "nan", "Infinity", "", "1.", " 1"])
+def test_load_settings_refuses_a_price_that_isnt_a_plain_number(price: str) -> None:
+    with pytest.raises(ConfigError, match="--price-input-usd-per-mtok"):
+        load_settings({"price_input_usd_per_mtok": price})
+
+
+def test_parse_args_takes_both_price_flags() -> None:
+    _, settings = cli.parse_args(["change.diff", *PRICE_FLAGS])
+
+    assert settings.price_input_usd_per_mtok == Decimal("2.50")
+    assert settings.price_output_usd_per_mtok == Decimal(10)
 
 
 def test_main_under_a_policy_cost_ceiling_with_openai_exits_2_before_any_request(
@@ -165,7 +217,7 @@ def test_main_under_a_policy_cost_ceiling_with_openai_exits_2_before_any_request
     exit_code = cli.main([str(diff_path), *OPENAI_M1, "--policy", str(policy)])
 
     assert exit_code == 2
-    assert "--max-cost-usd isn't supported with --provider openai yet" in capsys.readouterr().err
+    assert "the policy's [cost] ceiling" in capsys.readouterr().err
     assert fake.sent == []
 
 
@@ -212,7 +264,7 @@ def test_evals_main_removes_the_key_from_the_environment(monkeypatch: pytest.Mon
     assert "OPENAI_API_KEY" not in os.environ
 
 
-def test_pr_shadow_with_openai_and_a_cost_cap_exits_2(
+def test_pr_shadow_with_openai_and_a_cost_cap_without_prices_exits_2(
     diff_path: Path,
     tmp_path: Path,
     fake: FakeTransport,

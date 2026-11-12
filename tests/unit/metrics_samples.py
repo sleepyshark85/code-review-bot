@@ -14,9 +14,9 @@ from review_bot.pr.feedback import (
     ShadowFeedback,
     SignalFeedback,
 )
-from review_bot.pr.metrics import Prices
 from review_bot.pr.run_metrics import RunMetrics, summarise_runs
 from review_bot.pr.units import ShadowFile
+from review_bot.price_flags import Prices
 
 RECORDED = datetime(2026, 11, 8, 12, tzinfo=UTC)
 PRICES = Prices(Decimal(15), Decimal(75))
