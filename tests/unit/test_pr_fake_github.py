@@ -10,12 +10,14 @@ from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeCall, FakeGitHubClient, FakeReview
 from review_bot.pr.github import (
+    BOT_LOGIN,
     MAX_MERGED_PULLS,
     BotComment,
     MergedPullRequest,
     NewComment,
     Resolver,
     Summary,
+    SummaryState,
 )
 from review_bot.pr.plan import Action, PlannedComment
 
@@ -61,6 +63,7 @@ def test_list_bot_comments_reads_back_the_bots_comments_with_their_thread_and_re
             line=3,
             severity=Severity.LOW,
             resolved_by=Resolver.PERSON,
+            confidence=0.5,
         ),
     )
     assert github.calls == [FakeCall("list_bot_comments", (PR,))]
@@ -342,3 +345,61 @@ def test_read_issue_refuses_another_repository_as_the_rest_client_does() -> None
 
     with pytest.raises(ValueError, match=r"for owner/repo, not other/repo"):
         github.read_issue("other/repo", 12)
+
+
+def test_a_person_editing_a_comment_becomes_its_last_editor_and_the_bot_after_an_update() -> None:
+    github = FakeGitHubClient()
+    own = github.add_comment(path="a.py", line=3, body=BODY)
+    theirs = github.add_comment(path="a.py", line=3, body="Hi.", author="alice", author_type="User")
+
+    github.edit_comment(own, BODY, by="mallory")
+
+    assert github.list_bot_comment_editors(PR) == {own: "mallory"}
+    github.update_comment(own, BODY)
+    assert github.list_bot_comment_editors(PR) == {own: BOT_LOGIN}
+    assert theirs not in github.list_bot_comment_editors(PR)
+
+
+def test_bot_comment_editors_list_a_comment_whose_marker_was_edited_away() -> None:
+    github = FakeGitHubClient()
+    own = github.add_comment(path="a.py", line=3, body=BODY)
+
+    github.edit_comment(own, "Nothing to see.", by="mallory")
+
+    assert github.list_bot_comments(PR) == ()
+    assert github.list_bot_comment_editors(PR) == {own: "mallory"}
+
+
+def test_a_deleted_comment_is_gone_and_its_id_is_never_given_out_again() -> None:
+    github = FakeGitHubClient()
+    first = github.add_comment(path="a.py", line=3, body=BODY)
+
+    github.delete_comment(first)
+    second = github.add_comment(path="a.py", line=3, body=BODY)
+
+    assert github.list_bot_comment_editors(PR) == {second: None}
+    assert second != first
+
+
+def test_the_summary_state_has_its_last_editor() -> None:
+    github = FakeGitHubClient()
+    assert github.read_summary_state(PR) is None
+
+    github.write_summary(PR, "Body.", reviewed_sha=None)
+    assert github.read_summary_state(PR) == SummaryState(github.summary or "", None)
+    github.write_summary(PR, "Again.", reviewed_sha=None)
+    assert github.read_summary_state(PR) == SummaryState(github.summary or "", BOT_LOGIN)
+    github.edit_summary("Edited.\n\n<!-- review-bot:v1 summary reviewed=none -->", by="mallory")
+    assert github.read_summary_state(PR) == SummaryState(
+        "Edited.\n\n<!-- review-bot:v1 summary reviewed=none -->", "mallory"
+    )
+    github.delete_summary()
+    assert github.read_summary_state(PR) is None
+    assert [call.name for call in github.calls].count("read_summary_state") == 5
+
+
+def test_read_summary_says_whether_the_marker_holds_gate_state() -> None:
+    github = FakeGitHubClient()
+    github.summary = "Body.\n\n<!-- review-bot:v1 summary reviewed=none tampered -->"
+
+    assert github.read_summary(PR) == Summary(None, holds_gate_state=True)

@@ -110,6 +110,10 @@ PHASE_2_REPORT_KEYS = {
     "skipped_files", "usage",
 }  # fmt: skip
 BUILTIN_POLICY_VERSION = "builtin-v1"  # P4-S1's Interfaces
+# P4-S5 AC2: with no `gate` in the config, `shadow/v1`'s `gate` is never null but this.
+GATE_NOT_ENABLED = {
+    "enabled": False, "decision": "not_enabled", "reason": None, "classes": [], "blocking": [],
+}  # fmt: skip
 # AC11's literals.
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "live.yml"
 BACKFILL = "backfill"
@@ -508,7 +512,7 @@ def test_p3_s8_ac3_variable_repo_behaves_as_the_flag(pr, pull, monkeypatch):
 
 
 def assert_phase_2_run(run: PrRun, provider: ContextProvider) -> None:
-    """No tools, `p1-v1`, and only new keys beyond Phase 2's, each null or empty."""
+    """No tools, `p1-v1`, and only new keys beyond Phase 2's, each null, empty or off."""
     assert run.exit_code == 0, run.stderr
     (request,) = provider.requests
     assert request.tools is None
@@ -516,7 +520,8 @@ def assert_phase_2_run(run: PrRun, provider: ContextProvider) -> None:
     document = run.shadow
     # P4-S1 AC1: `policy` is never empty; without --policy it is the built-in policy.
     assert document["policy"]["version"] == BUILTIN_POLICY_VERSION
-    for key in set(document) - PHASE_2_SHADOW_KEYS - {"policy"}:
+    assert document["gate"] == GATE_NOT_ENABLED
+    for key in set(document) - PHASE_2_SHADOW_KEYS - {"policy", "gate"}:
         assert document[key] in (None, [], {}), (key, document[key])
     for key in set(document["caps"]) - PHASE_2_CAPS:
         assert document["caps"][key] is None, (key, document["caps"])

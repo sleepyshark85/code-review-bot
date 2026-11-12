@@ -1,6 +1,6 @@
 # P4-S5: See which findings would block a merge, per approved class
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P4-S1
 - **Touches:** `governance.gate` (new), `governance.policy`, `pr.config`, `pr.carried` (new), `pr.runner`, `pr.shadow`, `pr.comments`, `pr.github`, `pr.rest_github`, `pr.fake_github`, `review`, `verify`
 
@@ -42,3 +42,4 @@ The marker lists at most 25 blockers, `ai:` ones first, then most severe first; 
 - Rule classes count only rule findings, so they stay deterministic and uncarried; a tagged model finding gates under no class (AC4). AC3 rejects a gated domain rule that can't fire at the class's severity.
 - Added: `gate.reason` and `no_config`, so refused runs report `unjudged`; every outcome in AC11, with `already_reviewed` decided afresh; which secret hits block (AC6); class-tagged marker entries so only `ai:` blockers carry, and withheld ones carry until override (AC8); an edited inline comment is `tampered` (AC14); the rebuild (AC9) also covers a lost or unreadable summary, forces a full review, and checks shown severity and confidence; the audit keys (AC12); ` more=` and the disclosed loss beyond 25 (Limits).
 - Review round 1: a fingerprint-naming PR review overrides every blocker without a bot thread (AC7); a carried `ai:` entry whose comment is gone keeps blocking (AC8); with gating possibly on, `no_config` runs never edit the summary (AC11); every trusted entry carries when whole-diff checks can't run (AC8, AC11), and a rebuild can't complete then (AC9); path-secret files fold their line hits (AC6); fingerprints pair with comments (AC5); wording in AC2, AC3, AC11; the withheld-only deletion gap (Limits). Round 2: `no_config` runs with gating possibly on neither create nor edit the summary (AC11); an invalid `REVIEW_BOT_GATE` is exit 2 (Interfaces).
+- 2026-11-12, developer, build. `decide_gate` takes `judged: bool` (reviewed, or `already_reviewed`) for `outcome`, since `governance` can't import `pr` (its package loads the CLI, a cycle), and takes carried `Blocker`s (with their places) and `tampered`/`rebuilt`. `write_summary` gains `gate`; `GitHubClient` gains `read_summary_state` and `list_bot_comment_editors` (last editor from GraphQL `lastEditedAt` and `editor`, to confirm live in S10); `Summary.holds_gate_state`; `BotComment.confidence`. An empty diff counts as checked, with nothing found. A rule blocker in a path holding a possible secret has no file or line.

@@ -33,9 +33,11 @@ from pydantic.alias_generators import to_camel
 
 from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
+from review_bot.governance.gate import GateResult
 from review_bot.no_redirect import NoRedirect
 from review_bot.pr.comments import (
     Marker,
+    holds_gate_state,
     is_summary,
     read_marker,
     read_reviewed_sha,
@@ -43,6 +45,7 @@ from review_bot.pr.comments import (
 )
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import (
+    BOT_LOGIN,
     MAX_MERGED_PULLS,
     BotComment,
     CommentSignals,
@@ -50,6 +53,7 @@ from review_bot.pr.github import (
     NewComment,
     Resolver,
     Summary,
+    SummaryState,
     is_any_bot,
     is_bot_user,
     too_many_merged_pulls,
@@ -80,6 +84,8 @@ _LOCAL_HOSTS: Final = frozenset({"127.0.0.1", "localhost"})
 _TOKEN: Final = re.compile(r"[\x21-\x7e]+")
 # GraphQL names the Actions bot without REST's "[bot]" (Phase 2 design, Comment state).
 _GRAPHQL_BOT_LOGIN: Final = "github-actions"
+# GitHub's name for a deleted account, which is never the bot.
+_DELETED_ACCOUNT: Final = "ghost"
 # GraphQL error messages are shown at most this long, on one line.
 _MAX_SHOWN_CHARS: Final = 200
 _RETRY_ADVICE: Final = "Nothing was retried; run the job again."
@@ -118,6 +124,15 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
         }
       }
     }
+  }
+}
+"""
+# Who last edited each comment, by its node ID: an IssueComment or a PullRequestReviewComment.
+_EDITORS_QUERY: Final = """
+query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on IssueComment { id lastEditedAt editor { login } }
+    ... on PullRequestReviewComment { id lastEditedAt editor { login } }
   }
 }
 """
@@ -188,12 +203,15 @@ class _ReviewComment(_Schema):
     path: str
     line: int | None
     user: _User | None
+    # REST's own name; read only to ask GraphQL who last edited the comment.
+    node_id: str | None = Field(default=None, alias="node_id")
 
 
 class _IssueComment(_Schema):
     id: int
     body: str
     user: _User | None
+    node_id: str | None = Field(default=None, alias="node_id")
 
 
 class _Reaction(_Schema):
@@ -263,6 +281,18 @@ class _ThreadsData(_Schema):
     repository: _Repository
 
 
+class _Edited(_Schema):
+    id: str
+    # Null until someone edits the comment.
+    last_edited_at: str | None
+    # Null for a deleted account.
+    editor: _Actor | None
+
+
+class _EditedNodes(_Schema):
+    nodes: list[_Edited | None]
+
+
 class _ThreadId(_Schema):
     id: str
 
@@ -321,6 +351,7 @@ _WITH_ID: Final = TypeAdapter(_WithId)
 _GRAPHQL_RESPONSE: Final = TypeAdapter(_GraphQLResponse)
 _THREADS_DATA: Final = TypeAdapter(_ThreadsData)
 _RESOLVE_DATA: Final = TypeAdapter(_ResolveData)
+_EDITED_NODES: Final = TypeAdapter(_EditedNodes)
 _SEARCH_COUNT: Final = TypeAdapter(_SearchCount)
 _SEARCH_PAGE: Final = TypeAdapter(_SearchPage)
 _PULL_COMMITS: Final = TypeAdapter(list[_PullCommit])
@@ -378,7 +409,33 @@ class RestGitHubClient:
         The summary is the bot's oldest issue comment whose last line is a summary marker.
         """
         summary = self._summary_comment("read_summary", pr)
-        return None if summary is None else Summary(read_reviewed_sha(summary.body))
+        if summary is None:
+            return None
+        return Summary(read_reviewed_sha(summary.body), holds_gate_state(summary.body))
+
+    def read_summary_state(self, pr: PullRequestRef) -> SummaryState | None:
+        """Return the bot's summary comment on ``pr`` and who last edited it, or None.
+
+        The summary is found as ``read_summary`` finds it; its last editor is one GraphQL query.
+        """
+        operation = "read_summary_state"
+        summary = self._summary_comment(operation, pr)
+        if summary is None:
+            return None
+        node_id = _node_id(operation, summary)
+        return SummaryState(summary.body, self._last_editors(operation, [node_id])[node_id])
+
+    def list_bot_comment_editors(self, pr: PullRequestRef) -> Mapping[int, str | None]:
+        """Return each inline comment by the bot on ``pr``, by ID, mapped to its last editor.
+
+        A comment is the bot's by its REST author, whatever its body. The last editors are
+        GraphQL queries of up to 100 comments each.
+        """
+        operation = "list_bot_comment_editors"
+        comments = self._list(operation, f"{self._pull_url(pr)}/comments", _REVIEW_COMMENTS)
+        own = [comment for comment in comments if _is_bot(comment.user)]
+        editors = self._last_editors(operation, [_node_id(operation, comment) for comment in own])
+        return {comment.id: editors[_node_id(operation, comment)] for comment in own}
 
     def post_review(self, pr: PullRequestRef, comments: Sequence[NewComment]) -> None:
         """Post ``comments`` on ``pr``'s head commit as one ``COMMENT`` review, on the new side."""
@@ -401,15 +458,22 @@ class RestGitHubClient:
         """Resolve a review thread, by its GraphQL node ID."""
         self._graphql("resolve_thread", _RESOLVE_MUTATION, {"threadId": thread_id}, _RESOLVE_DATA)
 
-    def write_summary(self, pr: PullRequestRef, body: str, *, reviewed_sha: str | None) -> None:
+    def write_summary(
+        self,
+        pr: PullRequestRef,
+        body: str,
+        *,
+        reviewed_sha: str | None,
+        gate: GateResult | None = None,
+    ) -> None:
         """Edit the bot's summary comment on ``pr`` in place, or create it if there is none.
 
-        The posted body ends with the summary marker recording ``reviewed_sha``, which is how
-        the next run finds it (``read_summary``).
+        The posted body ends with the summary marker recording ``reviewed_sha`` and ``gate``,
+        which is how the next run finds it (``read_summary``).
         """
         operation = "write_summary"
         summary = self._summary_comment(operation, pr)
-        payload = {"body": with_summary_marker(body, reviewed_sha=reviewed_sha)}
+        payload = {"body": with_summary_marker(body, reviewed_sha=reviewed_sha, gate=gate)}
         if summary is None:
             url = f"{self._issue_url(pr)}/comments"
             self._send(operation, "POST", url, payload, _WITH_ID)
@@ -565,6 +629,25 @@ class RestGitHubClient:
     def _issue_url(self, pr: PullRequestRef) -> str:
         return f"{self._repo_url}/issues/{self._number(pr)}"
 
+    def _last_editors(self, operation: str, node_ids: Sequence[str]) -> dict[str, str | None]:
+        """Who last edited each comment, by node ID (``_last_editor``).
+
+        Raises:
+            GitHubError: If a query fails, or returns no comment for a node ID asked about.
+        """
+        editors: dict[str, str | None] = {}
+        for start in range(0, len(node_ids), _PER_PAGE):
+            batch = list(node_ids[start : start + _PER_PAGE])
+            page = self._graphql(operation, _EDITORS_QUERY, {"ids": batch}, _EDITED_NODES)
+            editors.update((node.id, _last_editor(node)) for node in page.nodes if node is not None)
+        missing = next((node_id for node_id in node_ids if node_id not in editors), None)
+        if missing is not None:
+            raise GitHubError(
+                f"GitHub {operation} failed: GraphQL returned no comment for node {missing}. "
+                f"{_RETRY_ADVICE}"
+            )
+        return editors
+
     def _threads_by_comment(self, operation: str, pr: PullRequestRef) -> dict[int, _Thread]:
         """``pr``'s review threads, by the ID of the comment each starts with."""
         owner, name = self._repo.split("/")
@@ -702,6 +785,23 @@ def _thread_of(operation: str, threads: Mapping[int, _Thread], comment_id: int) 
     return thread
 
 
+def _node_id(operation: str, comment: _ReviewComment | _IssueComment) -> str:
+    if comment.node_id is None:
+        raise GitHubError(
+            f"GitHub {operation} failed: comment {comment.id} has no node_id. {_RETRY_ADVICE}"
+        )
+    return comment.node_id
+
+
+def _last_editor(node: _Edited) -> str | None:
+    """Who last edited a comment, or None if nobody did; GraphQL names the bot without "[bot]"."""
+    if node.last_edited_at is None:
+        return None
+    if node.editor is None:
+        return _DELETED_ACCOUNT
+    return BOT_LOGIN if node.editor.login == _GRAPHQL_BOT_LOGIN else node.editor.login
+
+
 def _bot_comment(comment: _ReviewComment, marker: Marker, thread: _Thread) -> BotComment:
     return BotComment(
         comment_id=comment.id,
@@ -713,6 +813,7 @@ def _bot_comment(comment: _ReviewComment, marker: Marker, thread: _Thread) -> Bo
         line=None if thread.is_outdated else comment.line,
         severity=marker.severity,
         resolved_by=_resolver(thread),
+        confidence=marker.confidence,
     )
 
 

@@ -13,9 +13,17 @@ import pytest
 from review_bot.context.issues import IssueText
 from review_bot.errors import ConfigError, GitHubError
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
+from review_bot.governance.gate import Blocker, GateDecision, GateResult
 from review_bot.pr.comments import comment_body
 from review_bot.pr.event import PullRequestRef
-from review_bot.pr.github import BotComment, MergedPullRequest, NewComment, Resolver, Summary
+from review_bot.pr.github import (
+    BotComment,
+    MergedPullRequest,
+    NewComment,
+    Resolver,
+    Summary,
+    SummaryState,
+)
 from review_bot.pr.plan import Action, PlannedComment
 from review_bot.pr.rest_github import GitHubAccess, RestGitHubClient, github_access
 
@@ -262,6 +270,7 @@ def test_list_bot_comments_reads_every_page_and_keeps_only_the_bots_marked_comme
         line=3,
         severity=Severity.HIGH,
         resolved_by=Resolver.PERSON,
+        confidence=0.5,
     )
     assert [comment.comment_id for comment in comments] == [10, 20, 30]
     assert comments[0] == expected
@@ -919,3 +928,128 @@ def test_read_issue_refuses_another_repository(stub: Stub) -> None:
         client(stub).read_issue("other/repo", 12)
 
     assert stub.received == []
+
+
+def edited(node_id: str, editor: str | None, *, at: str | None = "2026-11-12T10:00:00Z") -> dict:
+    return {
+        "id": node_id,
+        "lastEditedAt": at,
+        "editor": None if editor is None else {"login": editor},
+    }
+
+
+def test_read_summary_state_reads_the_summary_and_who_last_edited_it(stub: Stub) -> None:
+    body = f"Summary.\n\n{marker_for(SHA)}"
+    summary = {"id": 6, "node_id": "IC_6", "user": BOT, "body": body}
+
+    def respond(request: Received) -> Reply:
+        if request.path == "/graphql":
+            assert request.body["variables"] == {"ids": ["IC_6"]}
+            return reply({"data": {"nodes": [edited("IC_6", "mallory")]}})
+        return reply([summary])
+
+    stub.respond = respond
+
+    assert client(stub).read_summary_state(PR) == SummaryState(body, "mallory")
+
+
+@pytest.mark.parametrize(
+    ("node", "last_editor"),
+    [
+        (edited("IC_6", None, at=None), None),
+        (edited("IC_6", "github-actions"), "github-actions[bot]"),
+        (edited("IC_6", None), "ghost"),
+    ],
+    ids=["never-edited", "the-bot", "deleted-account"],
+)
+def test_read_summary_state_names_the_bot_as_rest_does_and_a_deleted_account_as_someone(
+    stub: Stub, node: dict, last_editor: str | None
+) -> None:
+    summary = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
+    stub.respond = lambda request: reply(
+        {"data": {"nodes": [node]}} if request.path == "/graphql" else [summary]
+    )
+
+    state = client(stub).read_summary_state(PR)
+
+    assert state is not None
+    assert state.last_editor == last_editor
+
+
+def test_read_summary_state_of_no_summary_makes_no_graphql_call(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([])
+
+    assert client(stub).read_summary_state(PR) is None
+    assert len(stub.received) == 1
+
+
+def test_list_bot_comment_editors_reads_every_bot_comment_in_batches_of_100(stub: Stub) -> None:
+    comments = [
+        {**review_comment(index, BOT, body="edited away"), "node_id": f"RC_{index}"}
+        for index in range(1, 101)
+    ]
+    comments.append({**review_comment(101, PERSON), "node_id": "RC_101"})
+    comments.append({**review_comment(102, BOT), "node_id": "RC_102"})
+    asked: list[list[str]] = []
+
+    def respond(request: Received) -> Reply:
+        if request.path == "/graphql":
+            ids = request.body["variables"]["ids"]
+            asked.append(ids)
+            return reply(
+                {"data": {"nodes": [edited(node_id, "github-actions") for node_id in ids]}}
+            )
+        page = request.query["page"][0]
+        return reply(comments[:100] if page == "1" else comments[100:])
+
+    stub.respond = respond
+
+    editors = client(stub).list_bot_comment_editors(PR)
+
+    assert [len(ids) for ids in asked] == [100, 1]
+    assert sorted(editors) == [*range(1, 101), 102]
+    assert set(editors.values()) == {"github-actions[bot]"}
+
+
+def test_list_bot_comment_editors_fails_when_graphql_skips_a_comment(stub: Stub) -> None:
+    comment = {**review_comment(1, BOT), "node_id": "RC_1"}
+    stub.respond = lambda request: reply(
+        {"data": {"nodes": [None]}} if request.path == "/graphql" else [comment]
+    )
+
+    with pytest.raises(GitHubError, match="list_bot_comment_editors failed: GraphQL returned"):
+        client(stub).list_bot_comment_editors(PR)
+
+
+def test_list_bot_comment_editors_fails_on_a_comment_with_no_node_id(stub: Stub) -> None:
+    stub.respond = lambda _request: reply([review_comment(1, BOT)])
+
+    with pytest.raises(GitHubError, match="comment 1 has no node_id"):
+        client(stub).list_bot_comment_editors(PR)
+
+
+def test_write_summary_records_an_enabled_gate_in_its_marker(stub: Stub) -> None:
+    gate = GateResult(
+        True,
+        GateDecision.BLOCK,
+        None,
+        ("decimal-money",),
+        (Blocker("b" * 16, "decimal-money", "a.py", 3, Severity.HIGH),),
+    )
+    stub.respond = lambda request: (
+        reply([]) if request.method == "GET" else reply({"id": 9}, status=201)
+    )
+
+    client(stub).write_summary(PR, "Summary.", reviewed_sha=None, gate=gate)
+
+    assert stub.received[-1].body == {
+        "body": "Summary.\n\n<!-- review-bot:v1 summary reviewed=none "
+        f"gate={'b' * 16}:decimal-money -->"
+    }
+
+
+def test_read_summary_says_whether_its_marker_holds_gate_state(stub: Stub) -> None:
+    body = f"S.\n\n<!-- review-bot:v1 summary reviewed={SHA} more=2 -->"
+    stub.respond = lambda _request: reply([{"id": 6, "user": BOT, "body": body}])
+
+    assert client(stub).read_summary(PR) == Summary(SHA, holds_gate_state=True)

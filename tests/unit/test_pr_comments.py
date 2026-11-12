@@ -308,7 +308,9 @@ def test_read_marker_reads_back_what_comment_body_wrote(
 ) -> None:
     body = body_of(reviewed(source=source, rule=rule, rationale="Line one.\n\n<!-- x -->"))
 
-    assert read_marker(body) == Marker("0123456789abcdef", rule_part, ANCHOR, Severity.HIGH)
+    assert read_marker(body) == Marker(
+        "0123456789abcdef", rule_part, ANCHOR, Severity.HIGH, confidence=0.88
+    )
 
 
 @pytest.mark.parametrize(

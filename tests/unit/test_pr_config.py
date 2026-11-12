@@ -1,11 +1,17 @@
+import dataclasses
+from datetime import date
+
 import pytest
 
 from review_bot.errors import ConfigFileError, RepoConfigError
 from review_bot.findings import RuleId, Severity
+from review_bot.governance.gate import GateClass
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.config import (
     DEFAULT_REPO_CONFIG,
     MAX_CONFIG_BYTES,
     RepoConfig,
+    gate_classes,
     parse_config_file,
     parse_repo_config,
     with_repo_threshold,
@@ -235,3 +241,68 @@ def test_parse_config_file_names_the_problem_but_not_where_the_file_is() -> None
 
 def test_parse_config_file_records_its_source() -> None:
     assert parse_config_file(b"", source="case repo").source == "case repo"
+
+
+MONEY_RULE = '[[domain_rules]]\nrule = "decimal-money"\npaths = ["billing/**"]\n'
+MONEY_CLASS = GateClass("decimal-money", Severity.HIGH, 0.9, "@owner", date(2026, 12, 1))
+SECURITY_CLASS = GateClass("ai:security", Severity.CRITICAL, 0.9, "@owner", date(2026, 12, 1))
+GATED_POLICY = dataclasses.replace(
+    BUILTIN_POLICY, version="gated", gate_classes=(MONEY_CLASS, SECURITY_CLASS)
+)
+
+
+def test_parse_repo_config_reads_the_gate_classes_in_order() -> None:
+    config = parse('gate = ["ai:security", "decimal-money"]\n')
+
+    assert config.gate == ("ai:security", "decimal-money")
+    assert DEFAULT_REPO_CONFIG.gate == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ('gate = ["swallowed-exception"]', "its rule reports only medium"),
+        ('gate = ["ai:style"]', "it isn't a finding class"),
+        ("gate = [1]", "'gate[0]'"),
+        ('gate = ["ai:logic", "ai:logic"]', "lists 'ai:logic' more than once"),
+    ],
+)
+def test_parse_repo_config_refuses_a_gate_entry_that_isnt_a_class(text: str, named: str) -> None:
+    with pytest.raises(RepoConfigError) as raised:
+        parse(text)
+
+    assert named in str(raised.value)
+
+
+def test_gate_classes_are_the_policys_approved_classes_in_the_configs_order() -> None:
+    config = parse(f'gate = ["ai:security", "decimal-money"]\n{MONEY_RULE}')
+
+    classes = gate_classes(config, GATED_POLICY, base_sha=BASE)
+
+    assert classes == (SECURITY_CLASS, MONEY_CLASS)
+    assert gate_classes(parse(""), BUILTIN_POLICY, base_sha=BASE) == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "policy", "reason"),
+    [
+        ('gate = ["ai:security"]', BUILTIN_POLICY, "the policy doesn't approve it"),
+        ('gate = ["possible-secret"]', GATED_POLICY, "the policy doesn't approve it"),
+        ('gate = ["decimal-money"]', GATED_POLICY, "no [[domain_rules]] entry enables that rule"),
+        (
+            f'gate = ["decimal-money"]\n{MONEY_RULE}severity = "medium"\n',
+            GATED_POLICY,
+            "every [[domain_rules]] entry for that rule is below the class's high",
+        ),
+    ],
+)
+def test_gate_classes_refuse_a_class_that_could_never_block(
+    text: str, policy: Policy, reason: str
+) -> None:
+    with pytest.raises(RepoConfigError) as raised:
+        gate_classes(parse(text), policy, base_sha=BASE)
+
+    message = str(raised.value)
+    assert f"at the base commit {BASE} is invalid: gate names the class " in message
+    assert reason in message
+    assert f"the policy `{policy.version}`" in message

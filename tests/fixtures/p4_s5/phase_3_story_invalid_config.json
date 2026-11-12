@@ -1,0 +1,120 @@
+[
+ {
+  "step": "1 money line and an AI finding",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "2 README only",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "3 re-run of the same head",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "4 the fix",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "5 a secret",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "6 the secret removed",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "7 a draft",
+  "exit_code": 0,
+  "calls": [],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "8 a provider failure",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ },
+ {
+  "step": "9 over max_diff_bytes",
+  "exit_code": 2,
+  "calls": [
+   [
+    "read_summary"
+   ],
+   [
+    "write_summary",
+    "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\."
+   ]
+  ],
+  "summary": "**Review bot:** `failed` (`invalid_config`). Nothing was sent to the model. \\.review\\-bot\\.toml at the base commit `<base>` is invalid\\: invalid value for \\'threshold\\'\\: Input should be \\'low\\'\\, \\'medium\\'\\, \\'high\\' or \\'critical\\'\\. Fix it on the base branch\\, then run again\\.\n\n<!-- review-bot:v1 summary reviewed=none -->"
+ }
+]
