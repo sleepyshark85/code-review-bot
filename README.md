@@ -33,7 +33,7 @@ From a clone (`uv sync`, then prefix each with `uv run`), which includes unrelea
 
 A diff holding a possible secret is never sent (exit `16`). The diff and tool results are treated as untrusted data. Every run is traced by default in `.review-bot/audit.jsonl`, which never holds diff lines or secret values. Every same-repo PR on this repository gets a shadow review that posts nothing, unless the `REVIEW_BOT_MODE` variable says otherwise.
 
-**Full reference:** [docs/usage.md](docs/usage.md) covers every option, exit code, setting and workflow. It describes `main`, which may be ahead of the latest release.
+**Full reference:** [docs/usage.md](docs/usage.md) covers every command, its key options and exit codes, and links the specs for detail. It describes `main`, which may be ahead of the latest release.
 
 ## Plan
 
