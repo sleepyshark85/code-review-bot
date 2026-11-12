@@ -126,7 +126,7 @@ def test_main_records_the_policy_in_the_report_and_the_audit_log(
     report = json.loads(capsys.readouterr().out)
     sha256 = hashlib.sha256(ORG_POLICY).hexdigest()
     assert report["policy"] == {"version": "org-1", "sha256": sha256, "source": str(path)}
-    assert list(report)[-1] == "policy"
+    assert list(report)[-2:] == ["policy", "redaction"]
     start = data_of(audit_log_in_tmp_path, "run.start")
     assert (start["policy_version"], start["policy_sha256"]) == ("org-1", sha256)
 

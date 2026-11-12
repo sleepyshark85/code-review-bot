@@ -1,7 +1,7 @@
 # P4-S3: Let Claude's hook and `can_use_tool` enforce the tool policy
 
 - **Status:** Done
-- **Depends on:** P4-S1. **Merges only after** P3-S15's `evals-context` and `backfill` dispatches have run, so Phase 3's live evidence is measured on the wiring it was designed with ([design §1](../design.md#1-goal-and-gate))
+- **Depends on:** P4-S1. Phase 3's `evals-context` dispatch ran on the earlier wiring (2026-11-10); the owner decided on 2026-11-12 not to run the `backfill`, and Phase 3 closed, so the earlier condition to merge only after both dispatches no longer applies
 - **Touches:** `providers.claude_tools`, `providers.claude_agent`, `providers.base`, `review`, `tests/conformance`
 
 ## Value

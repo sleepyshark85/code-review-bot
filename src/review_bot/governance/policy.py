@@ -1,4 +1,4 @@
-"""The policy file, ``policy/v1``: which tools a review may use, and a ceiling on each call's cost.
+"""The policy file, ``policy/v1``: the tools a review may use, its cost ceiling and what it masks.
 
 Pure: the command line reads the file and passes its bytes in (ADR 0018). Each slice adds the
 section it enforces, so any key this module doesn't know is invalid. Without a file, a run uses
@@ -17,6 +17,7 @@ from pydantic_core import ErrorDetails
 
 from review_bot.context.ledger import ToolName
 from review_bot.errors import ConfigError
+from review_bot.governance.redaction import RedactionKind
 
 if TYPE_CHECKING:
     # Only for its type: ``settings`` imports ``audit``, which imports ``report``, which imports
@@ -48,7 +49,7 @@ _MIN_COST_USD: Final = Decimal("0.01")
 _MAX_COST_USD: Final = Decimal(1000)
 # Bounds a key or value named in a message, since either can be as long as the file.
 _MAX_SHOWN_CHARS: Final = 100
-_KNOWN_KEYS: Final = "version, [tools] allowed and [cost] max_cost_usd"
+_KNOWN_KEYS: Final = "version, [tools] allowed, [cost] max_cost_usd and [redaction] kinds"
 
 
 class PolicyError(ConfigError):
@@ -62,7 +63,8 @@ class Policy:
     ``version`` is the file's own label; ``sha256`` is the SHA-256 of the file's bytes, or of
     ``BUILTIN_POLICY_TEXT`` for the built-in policy; ``source`` is ``builtin``, or the file's
     path as given. ``tools`` are the tools a context review may use. ``max_cost_usd`` is the
-    ceiling on every model call's cost cap, or None for no ceiling.
+    ceiling on every model call's cost cap, or None for no ceiling. ``redaction`` are the kinds
+    of personal data masked in everything a request sends; none masks nothing.
     """
 
     version: str
@@ -70,6 +72,7 @@ class Policy:
     source: str
     tools: frozenset[ToolName]
     max_cost_usd: Decimal | None
+    redaction: frozenset[RedactionKind] = frozenset()
 
 
 BUILTIN_POLICY: Final = Policy(
@@ -106,11 +109,18 @@ def _tool_name(value: object) -> ToolName:
     return ToolName(value)
 
 
-def _no_repeats(tools: list[ToolName]) -> list[ToolName]:
-    repeated = next((tool for index, tool in enumerate(tools) if tool in tools[:index]), None)
+def _redaction_kind(value: object) -> RedactionKind:
+    if not isinstance(value, str) or value not in RedactionKind:
+        shown = _shown(value) if isinstance(value, str) else type(value).__name__
+        raise ValueError(f"'{shown}' isn't a redaction kind; the kinds are email, phone and ipv4")
+    return RedactionKind(value)
+
+
+def _no_repeats[T](items: list[T]) -> list[T]:
+    repeated = next((item for index, item in enumerate(items) if item in items[:index]), None)
     if repeated is not None:
         raise ValueError(f"it lists '{repeated}' more than once")
-    return tools
+    return items
 
 
 def _usd(value: object) -> Decimal:
@@ -136,6 +146,15 @@ class _Cost(BaseModel):
     max_cost_usd: Annotated[Decimal, PlainValidator(_usd)] | None = None
 
 
+class _Redaction(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kinds: Annotated[
+        list[Annotated[RedactionKind, PlainValidator(_redaction_kind)]],
+        AfterValidator(_no_repeats),
+    ] = Field(default_factory=list)
+
+
 class _PolicyFile(BaseModel):
     """The file's schema: any other key, or a value of another type, is invalid.
 
@@ -147,6 +166,7 @@ class _PolicyFile(BaseModel):
     version: Annotated[str, PlainValidator(_version)]
     tools: _Tools = _Tools()
     cost: _Cost = _Cost()
+    redaction: _Redaction = _Redaction()
 
 
 def parse_policy(data: bytes, *, source: str) -> Policy:
@@ -156,11 +176,12 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
 
     Raises:
         PolicyError: If the file is over ``MAX_POLICY_BYTES``, isn't UTF-8 or TOML, has a key
-            other than ``version``, ``[tools] allowed`` and ``[cost] max_cost_usd``, has no
-            ``version`` or one that isn't 1 to 64 of ``[A-Za-z0-9._-]``, lists a tool other
-            than ``read``, ``grep`` and ``glob`` or one tool twice, or has a ``max_cost_usd``
-            that isn't a decimal string from 0.01 to 1000. The message names ``source`` and the
-            key or the problem.
+            other than ``version``, ``[tools] allowed``, ``[cost] max_cost_usd`` and
+            ``[redaction] kinds``, has no ``version`` or one that isn't 1 to 64 of
+            ``[A-Za-z0-9._-]``, lists a tool other than ``read``, ``grep`` and ``glob`` or one
+            tool twice, has a ``max_cost_usd`` that isn't a decimal string from 0.01 to 1000,
+            or lists a redaction kind other than ``email``, ``phone`` and ``ipv4`` or one kind
+            twice. The message names ``source`` and the key or the problem.
     """
     if len(data) > MAX_POLICY_BYTES:
         raise _invalid(source, f"it is over the limit of {MAX_POLICY_BYTES} bytes")
@@ -183,6 +204,7 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
         source=source,
         tools=frozenset(parsed.tools.allowed),
         max_cost_usd=parsed.cost.max_cost_usd,
+        redaction=frozenset(parsed.redaction.kinds),
     )
 
 
