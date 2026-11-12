@@ -754,7 +754,7 @@ Spec: [p2-s12-close-phase-2.md](slices/p2-s12-close-phase-2.md). Released as 0.3
 
 **Status: gate met on the cut sample, with two owner-approved exceptions.** As with Phase 1's `double-tax` miss, both are the user's decisions of 2026-11-12, recorded here, not threshold changes.
 1. **The ≥ 3-week window of [Q1](design.md#5-open-questions) is waived.** The user chose to close #67 early. The sample's live window runs from 2026-11-08 17:03 to 2026-11-11 14:56 UTC, under one week.
-2. **The sample is cut at 2026-11-11 14:56 UTC** (PR #101's last run). Live shadow continued until comments were turned on (2026-11-12 04:34 UTC): 17 more shadow reports, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00), holding 5 unjudged units. The owner decided to ignore them, so they fall outside the sample. Over the full window to 04:34 UTC there would be 47 units and coverage would be 42/47 = **89.4%, below Q1's 90%**.
+2. **The sample is cut at 2026-11-11 14:56 UTC** (PR #101's last run). Live shadow continued until comments were turned on (2026-11-12 04:34 UTC): 15 more shadow reports, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00), holding 5 unjudged units. The owner decided to ignore them, so they fall outside the sample. Over the full window to 04:34 UTC there would be 47 units and coverage would be 42/47 = **89.4%, below Q1's 90%**.
 
 Every other Q1 clause is met on the cut sample, and every number below is the cut sample's (`shadow-reports/` holds the cut set; `metrics` gives 42/42).
 
@@ -775,7 +775,7 @@ Every other Q1 clause is met on the cut sample, and every number below is the cu
 Sources: 94 `shadow/v1` reports, all `mode` `shadow`, kept locally and never committed: 64 live shadow artifacts (`origin` `event`) up to the cut, and 30 backfill reports in `shadow-reports/backfill-p2/` (`origin` `backfill`, run 2026-11-11 18:56 to 19:10 UTC). Each has its own `run_id`, and none was unreadable.
 
 - **Live window (the sample):** shadow runs start 2026-11-08 05:14 UTC (PR #53, `skipped/no_credential`). The first reviewed event is PR #66 at 2026-11-08 17:03 UTC, after `ANTHROPIC_API_KEY` was added. The sample ends at the owner's cut, 2026-11-11 14:56 UTC: **about 2.9 days, 0.4 weeks.**
-- **After the cut (outside the sample):** 17 live shadow reports from the cut to 2026-11-12 04:00 UTC, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00) with 5 unjudged units. Comments were turned on at 04:34 UTC. With them, the window would be about 3.5 days with 47 units, and coverage would be 89.4%.
+- **After the cut (outside the sample):** 15 live shadow reports from the cut to 2026-11-12 04:00 UTC, 5 of them `reviewed` (PR #96 at 02:41 and 02:51, PR #106 at 03:39, 03:58 and 04:00) with 5 unjudged units. Comments were turned on at 04:34 UTC. With them, the window would be about 3.5 days with 47 units, and coverage would be 89.4%.
 - **Live runs (64):** 12 `reviewed`, 19 `skipped/no_credential`, 13 `skipped/too_large`, 7 `skipped/nothing_to_review` and 13 `blocked_secret`, over PRs #53 to #101.
 - **Reviewed PRs: 28.** Live: 7 (#66, #68, #73, #75, #76, #78, #96), in 12 reviewed runs. Backfilled: 21 (#17, #18, #20, #25, #28, #30, #31, #32, #34, #35, #36, #38, #39, #40, #41, #42, #43, #44, #49, #50, #51). The backfill's other 9 PRs ended `skipped/nothing_to_review` (7) or `blocked_secret` (2).
 - **Would-be comments (units): 42,** from 24 PRs: 36 backfill units from 20 PRs, and 6 live units from 4 PRs (#73, #75, #76, #78).

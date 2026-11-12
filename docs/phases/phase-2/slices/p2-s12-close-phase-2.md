@@ -1,7 +1,7 @@
 # P2-S12: Close Phase 2: measure the gate, name the owner, release 0.3.0
 
 - **Status:** Done. Released early by the owner (0.3.0); the evidence ACs were recorded on 2026-11-12, when the owner closed [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) with Q1's 3-week window waived and the sample cut at 2026-11-11 14:56 UTC ([test report](../test-report.md#p2-s12-close-phase-2)).
-- **Depends on:** P2-S1 to P2-S11, P2-S13, and Q1's weeks of shadow mode
+- **Depends on:** P2-S1 to P2-S11, P2-S13, and Q1's weeks of shadow mode (waived 2026-11-12)
 - **Touches:** `tests/evals/labelled/`, `docs/phases/phase-2/test-report.md`, `pyproject.toml`; README, runbook and release notes by the main session
 
 ## Value
