@@ -4,8 +4,8 @@ Pure: the audit log and the JSON report both write paths with these helpers, and
 redacts them first.
 """
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final
@@ -14,6 +14,7 @@ from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import FileDiff, ParsedDiff
 from review_bot.findings import ReviewedFinding
 from review_bot.governance.policy import Policy
+from review_bot.governance.redaction import RedactionCounts
 from review_bot.path_quoting import c_quoted, has_lone_surrogate
 from review_bot.providers.base import TokenUsage
 from review_bot.threshold import Decision
@@ -25,6 +26,7 @@ __all__ = [
     "TriagedFinding",
     "not_rejected",
     "path_fields",
+    "redaction_json",
     "section_path",
 ]
 
@@ -42,7 +44,9 @@ class PipelineResult:
     ``prompt_version`` is the version of the prompt the review used. ``context_commit`` is the
     commit the tools read in context mode, and None in diff mode; ``ledger`` holds each tool
     call, in order. ``cost_usd`` is the call's cost as the provider reported it, or None.
-    ``policy`` is the policy the review ran under.
+    ``policy`` is the policy the review ran under. ``redaction`` counts the personal data masked
+    in what was sent, by source (``diff``, ``tools``, ``issues``), leaving out any source with
+    none.
     """
 
     verification: VerifyResult
@@ -57,6 +61,7 @@ class PipelineResult:
     context_commit: str | None = None
     ledger: tuple[ToolCall, ...] = ()
     cost_usd: Decimal | None = None
+    redaction: Mapping[str, RedactionCounts] = field(default_factory=dict)
 
 
 class TriageDecision(StrEnum):
@@ -83,6 +88,14 @@ class TriagedFinding:
 def not_rejected(triaged: Iterable[TriagedFinding]) -> tuple[ReviewedFinding, ...]:
     """The findings a person didn't reject, undecided ones included, in order."""
     return tuple(item.reviewed for item in triaged if item.decision is not TriageDecision.REJECT)
+
+
+def redaction_json(redaction: Mapping[str, RedactionCounts]) -> dict[str, dict[str, int]]:
+    """Counts of masked values by source and kind, as ``report/v1`` and the audit log write them."""
+    return {
+        source: {str(kind): count for kind, count in counts.items()}
+        for source, counts in redaction.items()
+    }
 
 
 def section_path(file: FileDiff) -> str:

@@ -36,6 +36,8 @@ from review_bot.evals import replay as replay_module
 from review_bot.evals.formats import EvalInputError, EvalMode, Recording
 from review_bot.evals.replay import replay_cases, require_live
 from review_bot.evals.score import CaseResult, CaseScore, RunOutcome
+from review_bot.governance.policy import BUILTIN_POLICY
+from review_bot.governance.redaction import RedactionKind
 from review_bot.providers.mock import MockProvider
 from review_bot.review import run_pipeline
 from review_bot.settings import Settings
@@ -772,3 +774,35 @@ def test_replay_cases_in_context_mode_sends_the_cases_issues_and_diff_mode_doesn
     assert "linked issue #12\n" in context_prompt
     assert "The CSV must include the discount." in context_prompt
     assert "linked issue" not in diff_prompt
+
+
+# --- P4-S4: redaction ---------------------------------------------------------------------------
+
+REDACTING = dataclasses.replace(BUILTIN_POLICY, redaction=frozenset(RedactionKind))
+PERSONAL_DIFF = CALC_DIFF.replace("+        pass\n", "+        pass  # ask jane@rightship.com\n")
+
+
+@pytest.mark.parametrize("mode", ["diff", "context"])
+def test_freshness_fields_mask_as_the_policy_asks_so_only_a_case_with_a_match_changes(
+    tmp_path: Path, mode: EvalMode
+) -> None:
+    plain = write_case(tmp_path / "plain", repo="repo")
+    personal = write_case(tmp_path / "personal", diff=PERSONAL_DIFF, repo="repo")
+    for case_file in (plain, personal):
+        write_repo(case_file, {UTIL: UTIL_TEXT})
+
+    assert freshness_fields(plain, mode, REDACTING) == freshness_fields(plain, mode)
+    masked, unmasked = freshness_fields(personal, mode, REDACTING), freshness_fields(personal, mode)
+    assert masked["prompt_sha256"] != unmasked["prompt_sha256"]
+    assert masked | {"prompt_sha256": ""} == unmasked | {"prompt_sha256": ""}
+
+
+def test_freshness_fields_in_context_mode_mask_the_linked_issues(tmp_path: Path) -> None:
+    case_file = write_case(tmp_path, repo="repo", issues="issues.json")
+    write_repo(case_file, {UTIL: UTIL_TEXT})
+    issue = {"number": 3, "title": "Mail ops", "body": "Ask jane@rightship.com."}
+    write_json(case_file.parent / "issues.json", [issue])
+
+    masked = freshness_fields(case_file, "context", REDACTING)
+
+    assert masked["prompt_sha256"] != freshness_fields(case_file, "context")["prompt_sha256"]

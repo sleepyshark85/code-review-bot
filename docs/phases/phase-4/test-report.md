@@ -137,3 +137,70 @@ From this slice's tests alone (the files above, `tests/conformance` and `test_p0
 - **A DNS failure and a reset connection** are scripted only through the fake transport (`socket.gaierror`, `ConnectionResetError`). A real DNS lookup would leave loopback, which the suite's network guard forbids.
 - **`pr backfill` and `evals live` with `--provider openai`** aren't tested. Live commands measure one model, `evals live` builds only Claude, and the spec names `pr` and `evals` only for AC8.
 - **A real 3xx with no `Location`** isn't run against the local server. The fake covers each redirect status.
+
+## P4-S4: Redact personal data before any vendor call
+
+Spec: [p4-s4-redaction.md](slices/p4-s4-redaction.md). Tests: [`tests/integration/test_p4_s4_redaction.py`](../../../tests/integration/test_p4_s4_redaction.py), 173 cases. Golden file: [`tests/fixtures/p1_s10/sample_report.golden.json`](../../../tests/fixtures/p1_s10/sample_report.golden.json), which gains `"redaction": {}`. The tests were written from the spec's criteria, Limits and Interfaces, design.md (Redaction, Policy as code, Interfaces) and ADR 0022, while the developer built the slice and before any of its code was read.
+
+**Status: every criterion passes, as revised after review (AC3, AC5, AC6). All 173 cases pass on the developer's working tree** (base `510546f`, their fixes uncommitted). Before `review` was wired, 84 of the first 90 pattern and AC1 cases failed, so the cases do detect missing masking.
+
+**Revised criteria:** the 12 cases added for them were run first against `510546f`. The 5 AC3 cases (groups past 15 digits) and the 2 AC5 cases (a value straddling the cut) failed there, as expected. The 4 AC6 path cases and the AC5 control already passed. After the developer's fix, all 12 pass.
+
+### Gate
+
+Only this file and the suites it touches ran, in small groups, as the coordinator asked (the machine is short of memory): this file, `test_p4_s1_policy_file.py`, `test_p1_s10_json_output.py`, `test_p1_s11_markdown_output.py`, `test_p1_s12_triage.py`, `test_p1_s13_triage_edit.py`, `test_p2_s1_shadow_report_local.py`, `test_p3_s9_linked_issue_criteria.py` (run again after the revision), `test_p3_s12_suggested_fixes.py` and `test_p3_s17_shadow_sample_supply.py`. All pass (6 skipped: no `/dev/full` or POSIX terminal on Windows). `ruff format --check` and `ruff check` are clean on `tests/integration`. `scan_secrets` reports nothing in the new file, which a test also checks. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **review-bot** runs in process with `MockProvider`. The request it receives (`requests`, `tool_results`) is what is sent. Context mode uses `--context-repo` over a real git repository. **`pr shadow`** and **`pr run --context repo`** go through `review_bot.pr.cli.main`, and linked issues come from P3-S9's local GitHub stub. **`evals replay`** goes through `review_bot.evals.main`.
+- **A pattern case** is one added line in a small diff. The prompt must hold `+` followed by the expected line. **Loose cases** (an address in a `mailto:` URL or a query string, and `jane+billing@…`) check only that the address is gone and that a placeholder of its kind is there. Exactly which neighbouring characters a local part takes isn't pinned.
+- **Counts:** a source or kind with 0 may be left out or be 0, except in the spec's own example, which is compared as written: `{"diff": {"email": 1}}`. The `static`/`redaction` audit record holds the counts either as its data or under one key.
+- **"The ledger describes the text as returned"** (AC5): spans equal the unmasked run's. Each call's `result_bytes` is the unmasked run's minus the bytes each address saves, and `context.result_bytes` is their sum.
+- **"Left as it is"** (Limits): a placeholder already in the text counts nothing.
+- **AC9:** a recording is made fresh for a copy of the clean case with `freshness_fields(case.json)`, which is P1-S14's reading. One copy reviews `clean.diff` (no match). The other reviews a two-line diff holding an address (a match). One test also reads `freshness_fields(..., policy=parse_policy(...))`, the developer's existing public signature.
+- **Revised AC3:** the expected text keeps every digit group after the longest leading run of 8 to 15 digits, together with its separator: `+61 2 9999 0000 2024-11-05` is sent as `[REDACTED:phone]-11-05`.
+- **Revised AC5:** a value straddles the cut when it starts 16 characters before the 256-character title cap or the 8,000-character body cap. Cutting before masking would send `jane.doe@rights…`. A control without a policy shows that the fixture does straddle the cut.
+- **Revised AC6:** the path is `people/jane.doe@rightship.com/handlers.py`. The model must see `people/[REDACTED:email]/handlers.py`. The JSON and Markdown reports must name the real path, and an IP on a line of that file must stay out of every local output. A rule finding (P1-S7) names the path, so the check doesn't depend on the model.
+- **A secret** for AC10 is assembled at run time by `aws_key` (the P3-S17 rule).
+
+### Criteria
+
+Test names drop the `test_p4_s4_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| Policy (AC preamble) | `ac_policy_unknown_kind_exits_2_before_the_diff_naming_the_file` ×6 (`name`, `Email`, `ipv6`, one unknown of two, `""`, `1`; exit 2 for an absent diff, naming the file and the kind or `kinds`, with no request). `ac_policy_malformed_redaction_section_exits_2` ×2 (not a list, unknown key). `ac_policy_known_kinds_are_accepted` ×3 (`[]` included) | pass (11) |
+| AC1 | `ac1_spec_example_prompt_holds_the_placeholder_not_the_address`. `ac1_only_the_address_changes_in_the_prompt` (line for line against the unmasked prompt). `ac1_finding_on_the_masked_line_keeps_its_fingerprint` (and the whole report but `policy` and `redaction`). `ac1_findings_after_the_masked_line_keep_their_lines`. `ac1_context_and_removed_lines_are_masked_too` ×2. `ac1_address_in_a_hunk_headers_section_text_is_masked`. `ac1_address_on_a_crlf_line_is_masked_and_the_cr_kept` | pass (8) |
+| AC2, AC3, AC4 | `ac2_ac3_ac4_value_is_masked_in_place_by_kind` ×48. E-mail: AC1's line; a whole line; at line start and end; in `<>` and `()`; before `.`, `,` and `;`; in quotes; capitals; a subdomain; two on a line; in `mailto:` and query URLs; `+tag`; the look-alikes `notexample.com`, `example.com.au`, `examples.com`, `test.com` and `invalid.org`. Phone: AC3's three forms; at line start; mid-sentence; before `,`; in `()`; `tel:`; 8 and 15 digits; two on a line. Revised AC3 (groups past 15 digits; the longest leading run of 8 to 15 is masked): `phone-ac3-past-15-space-group` (`+12025550143 12345`), `phone-ac3-past-15-with-a-date` (`+61 2 9999 0000 2024-11-05`), `phone-ac3-past-15-hyphen-group` (`+61299990000-20241105`), `phone-past-15-exactly-15-first`, `phone-past-15-mid-sentence`. IPv4: AC4's two; a whole line; in a URL with a port; before `;`; in `()`; `255.255.255.255`; the neighbours of each documentation range (`192.0.3.5`, `198.51.101.7`, `203.0.114.9`); two on a line. `ac2_ac3_ac4_value_is_sent_as_written` ×33. Exempt: AC2's four; `example.net`, `host.example`, `docs.example.com`. Not e-mail: `@property`, `@app.route`, `@rightship.com`, `jane@`, `jane @ rightship.com`, `a @ b`, `@@@`. Not phone: AC3's three; 20 and 7 digits; `a + 12`; double spaces; `i++`. Not IPv4: AC4's six; both ends of 192.0.2.0/24; octets 256 and 300; `1.2.3`; `1.25`. Also `ac3_phone_at_the_start_of_the_added_line_follows_the_diffs_plus` (`++1202…`), `ac2_ac3_ac4_only_the_policys_kinds_are_masked` ×3, `ac2_ac3_ac4_all_three_kinds_on_one_line` | pass (86) |
+| AC5 | `ac5_read_returns_the_file_masked` (a documentation address is kept). `ac5_grep_returns_matching_lines_masked` (including a grep for the address itself). `ac5_ledger_spans_and_bytes_describe_the_masked_result`. `ac5_read_lines_keep_their_numbers`. `ac5_report_counts_the_tool_source`. `ac5_linked_issue_title_and_body_are_masked_before_sending` (e-mail and phone, under `pr run --context repo`). Revised: `ac5_issue_is_masked_before_it_is_cut_so_no_part_of_a_value_is_sent` ×2 (title, body: no `jane`, `jane.doe` or `rightship` in the prompt, and one `issues` e-mail counted). Controls: `ac5_control_issue_cut_without_a_policy_sends_part_of_the_address`, `ac5_without_a_policy_the_tool_result_is_unchanged`, `ac5_without_a_policy_the_issue_is_sent_as_written` | pass (11) |
+| AC6 | `ac6_spec_example_counts_by_source_and_kind`. `ac6_report_redaction_is_appended_after_policy`. `ac6_counts_every_kind`. `ac6_one_static_redaction_audit_record_with_the_same_counts`. `ac6_counts_add_up_across_diff_tools_and_issues` (one PR: `diff`, `tools` and `issues`, each with 2, in the report and the record). `ac6_no_masked_value_in_stdout_stderr_or_the_audit_log` ×3 (json, text, markdown, with findings anchored on the masked lines). `ac6_pr_shadow_writes_no_masked_value` (stdout, stderr, `shadow.json`, `shadow.md`, `audit.jsonl`). `ac6_context_review_writes_no_value_from_a_tool_result`. `ac6_counts_only_never_the_values_in_the_audit_record`. Revised (a path is exempt in local outputs only): `ac6_path_holding_an_address_is_masked_in_what_the_model_sees`, `ac6_local_outputs_keep_the_real_path_but_no_other_value` ×2 (json, markdown), `ac6_report_findings_name_the_real_path` | pass (15) |
+| AC7 | `ac7_builtin_report_redaction_is_empty`. `ac7_builtin_sample_prompts_are_phase_3s_goldens` (P3-S1's prompt goldens). `ac7_builtin_sends_personal_data_as_written`. `ac7_policy_without_kinds_sends_the_same_bytes_as_builtin` ×2 (no section, `kinds = []`). `ac7_builtin_context_review_sends_the_same_bytes_as_no_kinds`. `ac7_policy_with_kinds_and_no_match_sends_the_same_bytes` | pass (7) |
+| AC8 | `ac8_context_suggestion_with_a_placeholder_is_dropped_redacted` ×4 (email, ipv4, phone, a bare `[REDACTED:`). `ac8_verify_record_carries_redacted`. `ac8_diff_mode_keeps_not_requested`. `ac8_control_suggestion_without_a_placeholder_is_kept`. `interfaces_suggestion_drop_reason_redacted`, `interfaces_redaction_kind_values` | pass (9) |
+| AC9 | `ac9_case_with_no_match_stays_fresh_under_the_policy`. `ac9_committed_sample_case_stays_fresh_under_the_policy` (same output as without the policy). `ac9_case_with_a_match_is_stale_naming_prompt_sha256` (exit 1; not `case_sha256` or `diff_sha256`). `ac9_a_kind_the_case_doesnt_hold_keeps_it_fresh`. `ac9_freshness_under_the_policy_is_the_masked_prompts_hash` | pass (5) |
+| AC10 | `ac10_secret_in_the_diff_exits_16_whatever_the_policy` ×3 (built-in, email, all kinds; no request; the key in no output). `ac10_secret_next_to_an_address_is_not_masked_away` | pass (4) |
+| Limits | `limits_hostile_line_is_masked_in_bounded_time` ×10, through `mask_personal_data` with all kinds, on 400,000 characters each: `@`, `+`, `.`, `a.`, `a@`, `1.`, `+1 `, `+1-1-…`, a long local part with no domain, and a long domain with no TLD. `limits_hostile_diff_line_is_reviewed_in_bounded_time` ×3 (`@`, `+`, `.` as a diff line through `review-bot`). `limits_text_already_masked_is_left_as_it_is` ×3. Each is bounded at 60 s. The slowest took 0.64 s, which is the whole CLI run | pass (16) |
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+Each keeps its intent. S4 makes `[redaction]` valid and appends a report key.
+
+- `test_p4_s1_policy_file.py`: the `a-later-slices-section` case, which required `[redaction]` to be refused, is removed. `ac1_report_policy_is_appended_after_phase_3s_keys` now checks that `mode`, `context` and `policy` are consecutive, rather than that they are the last three keys.
+- `test_p1_s10_json_output.py`: `REPORT_KEYS` gains `redaction`, and the append-order check now ends with `redaction`.
+- `sample_report.golden.json` gains `"redaction": {}`.
+
+### Coverage
+
+From this file alone: `governance/redaction.py` 100%. The modules it touches are covered in part from here, as expected: `report.py` 91%, `review.py` 87%, `context/issues.py` 83%, `render.py` 79%, `governance/policy.py` 72%, `suggestion.py` 70%, `context/tools.py` 69%, `evals/replay.py` 65%. The unit tests and the earlier suites cover the rest. The 90% gate is the main session's full run.
+
+### Gaps
+
+- **AC8 under the built-in policy** (a model that writes `[REDACTED:` with nothing masked) isn't pinned. The spec doesn't say whether the drop depends on the policy.
+- **A model finding that names the masked path** (`people/[REDACTED:email]/…`, as a real model would) isn't tested. The spec doesn't say whether it maps back to the real path. The path tests use a rule finding and a finding on the real path.
+- **Groups past 15 digits with no leading run of 8 to 15** (such as `+1 234567890123456`) aren't tested. The revised AC3 masks only such a run, and here there is none.
+- **Where a tool's byte cap applies** (before or after masking) isn't tested. AC5 pins only that the ledger describes the returned text.
+- **Unicode digits and look-alike characters** (such as Arabic-Indic digits after `+`, or a full-width `@`) aren't tested. The catalogue doesn't say whether they count.
+- **`evals live` under a redaction policy** isn't tested. AC9 names `replay` only.

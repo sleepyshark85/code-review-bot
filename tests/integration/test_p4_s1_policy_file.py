@@ -370,10 +370,11 @@ def test_p4_s1_ac1_report_without_a_policy_records_the_builtin_policy(bot):
 
 
 def test_p4_s1_ac1_report_policy_is_appended_after_phase_3s_keys(bot):
-    """Design: report keys are appended only."""
+    """Design: report keys are appended only; later slices' keys come after `policy`."""
     keys = tuple(review(bot).report)
 
-    assert keys[-3:] == ("mode", "context", "policy"), keys
+    at = keys.index("mode")
+    assert keys[at : at + 3] == ("mode", "context", "policy"), keys
 
 
 def test_p4_s1_ac1_builtin_sha256_is_fixed_across_runs_and_reports(bot, shadow):
@@ -603,7 +604,6 @@ INVALID_CONTENT = {
     "unknown-top-level-key": Invalid(VERSION + "foo = 1\n", ("foo",)),
     "unknown-key-in-tools": Invalid(VERSION + '[tools]\nallowed = ["read"]\nfoo = 1\n', ("foo",)),
     "unknown-key-in-cost": Invalid(VERSION + '[cost]\nmax_cost_usd = "0.60"\nfoo = 1\n', ("foo",)),
-    "a-later-slices-section": Invalid(VERSION + '[redaction]\nkinds = ["email"]\n', ("redaction",)),
     "a-later-slices-models": Invalid(VERSION + '[[models]]\nprovider = "claude"\n', ("models",)),
     "version-with-a-space": Invalid('version = "org 1"\n', ("version",)),
     "version-with-a-slash": Invalid('version = "org/1"\n', ("version",)),

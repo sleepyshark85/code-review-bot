@@ -45,9 +45,9 @@ Specs: [tools](phases/phase-3/slices/p3-s1-local-review-with-repo-tools.md), [co
 ## Policy and cost
 
 - `--max-cost-usd USD` (`REVIEW_BOT_MAX_COST_USD`) caps one review's cost; reaching it exits `12`.
-- `--policy PATH` (`REVIEW_BOT_POLICY`) applies a versioned TOML policy (allowed tools, cost ceiling) to `review-bot`, `pr shadow|run|backfill` and `evals live|replay`. Default `builtin-v1`. Reports record its version and hash.
+- `--policy PATH` (`REVIEW_BOT_POLICY`) applies a versioned TOML policy (allowed tools, cost ceiling) to `review-bot`, `pr shadow|run|backfill` and `evals live|replay`. Default `builtin-v1`. Reports record its version and hash. A `[redaction] kinds` list (`email`, `phone`, `ipv4`) masks those values as `[REDACTED:<kind>]` in the diff, tool results and linked issues before any vendor call; documentation addresses are exempt, and reports count what was masked, never the values.
 
-Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [cost cap](phases/phase-3/slices/p3-s3-claude-drives-tools.md).
+Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [redaction](phases/phase-4/slices/p4-s4-redaction.md), [cost cap](phases/phase-3/slices/p3-s3-claude-drives-tools.md).
 
 ## Second provider
 

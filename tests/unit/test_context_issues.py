@@ -16,6 +16,7 @@ from review_bot.context.issues import (
     linked_issue_numbers,
     read_linked_issues,
 )
+from review_bot.governance.redaction import RedactionKind
 
 REPO = "owner/repo"
 # An AWS-format access key ID, built so no scanner flags this file.
@@ -169,3 +170,48 @@ def test_read_linked_issues_reads_up_to_the_cap_and_lists_the_rest_as_over_limit
 def test_linked_issue_refuses_text_for_an_issue_that_isnt_sent() -> None:
     with pytest.raises(ValueError, match="#4 is over_limit"):
         LinkedIssue(4, IssueStatus.OVER_LIMIT, "text")
+
+
+def test_linked_issue_masks_the_kinds_asked_for_in_its_title_and_body() -> None:
+    text = IssueText("Mail jane@rightship.com", "Or call +12025550143 from 10.0.0.1.")
+
+    issue = linked_issue(1, text, frozenset({RedactionKind.EMAIL, RedactionKind.PHONE}))
+
+    assert issue.text == "Mail [REDACTED:email]\n\nOr call [REDACTED:phone] from 10.0.0.1."
+    assert issue.redacted == {RedactionKind.EMAIL: 1, RedactionKind.PHONE: 1}
+
+
+def test_linked_issue_masks_before_the_cut_so_a_value_on_it_is_never_split() -> None:
+    address = "jane.doe@rightship.com"
+    body = "b" * (MAX_ISSUE_BODY_CHARS - 13) + " " + address + " and more"
+
+    issue = linked_issue(1, IssueText("Title", body), frozenset({RedactionKind.EMAIL}))
+
+    assert issue.status is IssueStatus.CUT
+    assert "jane" not in issue.text
+    assert "[REDACTED:em" in issue.text
+    # The placeholder itself is cut, so no whole masked value is counted as sent.
+    assert issue.redacted == {}
+
+
+def test_linked_issue_counts_only_the_masked_values_its_cut_keeps() -> None:
+    body = "a@rightship.com " + "b" * MAX_ISSUE_BODY_CHARS + " c@rightship.com"
+
+    issue = linked_issue(1, IssueText("Title", body), frozenset({RedactionKind.EMAIL}))
+
+    assert issue.text.count("[REDACTED:email]") == 1
+    assert issue.redacted == {RedactionKind.EMAIL: 1}
+
+
+def test_linked_issue_counts_no_more_than_it_masked_when_the_text_held_a_placeholder() -> None:
+    body = "[REDACTED:email] was here; ask a@rightship.com"
+
+    issue = linked_issue(1, IssueText("Title", body), frozenset({RedactionKind.EMAIL}))
+
+    assert issue.redacted == {RedactionKind.EMAIL: 1}
+
+
+def test_linked_issue_with_no_kinds_sends_its_text_as_it_is() -> None:
+    issue = linked_issue(1, IssueText("Mail jane@rightship.com", ""))
+
+    assert issue == LinkedIssue(1, IssueStatus.INCLUDED, "Mail jane@rightship.com\n\n")
