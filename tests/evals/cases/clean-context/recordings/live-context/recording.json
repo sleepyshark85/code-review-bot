@@ -1,0 +1,62 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "clean-context",
+  "kind": "live",
+  "mode": "context",
+  "case_sha256": "46cfe8bdf1406e33282ef5f8f4907be8bd49ca6c7d2be110bcbd34d3c9130ffc",
+  "diff_sha256": "6b75e551361dbfce02ebf73dab6d2e400e16795bf4c24d317cd9422716fdd750",
+  "prompt_version": "p3-v5",
+  "prompt_sha256": "23ea4efbe9927fd9182d9aaf5cf682e51346ecaadff6d2690a68afba8cee941d",
+  "repo_tree": "81ca893492a45a60c6deeae0e3e3b9e5fa695f4d",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:03:33.156435Z",
+  "runs": [
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 4489,
+        "output_tokens": 365,
+        "cost_usd": "0.030019199999999996"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/refunds.py",
+          "line": 16,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "A file with deeply nested arrays or objects (e.g. thousands of '[') makes json.load raise RecursionError. That is not an OSError or a ValueError, so it gets past both handlers instead of becoming a RefundRatesError. Callers that only catch RefundRatesError would then crash on a bad config file. Catch RecursionError as well and wrap it in RefundRatesError.",
+          "confidence": 0.4,
+          "evidence": [
+            {
+              "file": "billing/refunds.py",
+              "start_line": 14,
+              "end_line": 20
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 4489,
+        "output_tokens": 683,
+        "cost_usd": "0.0148416"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 4489,
+        "output_tokens": 346,
+        "cost_usd": "0.0081016"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}

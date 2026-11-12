@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_p3_s15_close_phase_3 import ACCEPTED_DIFF_MISSES
 
 from review_bot.diff_parser import parse_diff
 from review_bot.evals import freshness_fields, main
@@ -1193,13 +1194,14 @@ def test_p3_s5_ac4_context_recording_without_repo_tree_exits_2(
 # --- AC5: without --mode, diff mode exactly as before ---------------------------------------------
 
 
-def test_p3_s5_ac5_committed_cases_without_mode_exit_1_only_for_double_tax(
+def test_p3_s5_ac5_committed_cases_without_mode_exit_1_only_for_the_accepted_misses(
     replay: Callable[..., Replay],
 ) -> None:
+    """Phase 1's `double-tax`, and since P3-S15's diff-mode recordings the misses it accepted."""
     result = replay("--cases", CASES)
 
     assert result.exit_code == 1, result.output
-    assert result.failures() == {("sample", "double-tax")}, result.output
+    assert result.failures() == ACCEPTED_DIFF_MISSES, result.output
 
 
 def test_p3_s5_ac5_explicit_diff_mode_is_the_same_as_no_mode(
@@ -2150,11 +2152,17 @@ def test_p3_s5_context_replay_leaves_no_repository_behind(
 def test_p3_s5_committed_cases_in_context_mode_with_no_live_context_recording_exit_0(
     replay: Callable[..., Replay], tmp_path: Path
 ) -> None:
-    """Rules alone on every committed case in context mode: no live-context recording exists."""
+    """Rules alone on every committed case in context mode, its live-context recordings left out.
+
+    Diff-mode and synthetic recordings stay in the copy, and neither is read in context mode.
+    """
     root = tmp_path / "committed"
-    shutil.copytree(CASES, root)
+    shutil.copytree(CASES, root, ignore=shutil.ignore_patterns("live-context"))
+    assert list(root.glob("*/recordings/live/recording.json")), "diff-mode recordings stay"
+    assert list(root.glob("*/recordings/synthetic/*.json")), "synthetic recordings stay"
 
     result = replay("--cases", root, "--mode", "context")
 
     assert result.exit_code == 0, result.output
     assert {case for case, _ in result.failures()} == set(), result.output
+    assert not re.search(r"^  \S+: ai, caught", result.output, re.MULTILINE), result.output

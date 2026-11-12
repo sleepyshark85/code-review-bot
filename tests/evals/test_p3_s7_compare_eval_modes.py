@@ -1414,15 +1414,24 @@ def test_p3_s7_ac7_stale_diff_recording_is_unpaired_naming_why(
 def test_p3_s7_ac7_synthetic_recordings_dont_pair_a_case(
     compare: Callable[..., Compare], tmp_path: Path
 ) -> None:
-    """Only `recordings/live*/recording.json` are read; the committed controls aren't."""
+    """Only `recordings/live*/recording.json` are read; the committed controls aren't.
+
+    The copy has a live diff-mode recording and the committed context-mode controls, so reading
+    a control as the context recording would pair the case.
+    """
     root = copy_cases(tmp_path, SAMPLE, TOOL_RESULT)
     paired_tool_result(root)
-    shutil.copytree(CASES / SAMPLE / "recordings", root / SAMPLE / "recordings")
+    write_live(root, SAMPLE, "diff", [run_of(*all_sample_bugs())] * 3)
+    synthetic = CASES / SAMPLE / "recordings" / "synthetic"
+    assert list(synthetic.glob("*.json")), "the committed controls this test copies"
+    shutil.copytree(synthetic, root / SAMPLE / "recordings" / "synthetic")
 
     result = compare("--cases", root, "--format", "json")
 
     assert result.exit_code == 1, result.output
-    assert case_entry(result.doc(), SAMPLE)["paired"] is False
+    entry = case_entry(result.doc(), SAMPLE)
+    assert entry["paired"] is False
+    assert "context" in entry["reason"], entry["reason"]
 
 
 def test_p3_s7_ac7_unpaired_case_is_left_out_of_every_aggregate(
@@ -1516,19 +1525,22 @@ def test_p3_s7_ac7_every_case_with_repo_paired_exits_0_even_if_a_mode_fails(
     assert result.exit_code == 0, result.output
 
 
-def test_p3_s7_ac7_committed_cases_have_no_live_context_recordings_so_exit_1(
+def test_p3_s7_ac7_committed_cases_with_repo_are_all_paired_so_exit_0(
     compare: Callable[..., Compare],
 ) -> None:
-    """Until S15 records them, every committed case with `repo` is unpaired."""
+    """Since P3-S15 committed both modes' live recordings, every case with `repo` is paired.
+
+    Phase 1's cases, with neither `repo` nor a context recording, are left out.
+    """
     result = compare("--cases", CASES, "--format", "json")
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
     with_repo = sorted(
         p.parent.name for p in CASES.glob("*/case.json") if "repo" in case_json(p.parent.name)
     )
     listed = {entry["id"]: entry for entry in result.doc()["cases"]}
     assert sorted(listed) == with_repo
-    assert all(entry["paired"] is False for entry in listed.values())
+    assert all(entry["paired"] is True for entry in listed.values()), listed
 
 
 def assert_usage_error(result: Compare) -> None:
