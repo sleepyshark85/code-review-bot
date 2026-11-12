@@ -10,7 +10,7 @@ from diff_samples import section
 from git_samples import commit, init_repo
 
 from review_bot.audit import AuditLog
-from review_bot.context.issues import IssueStatus, LinkedIssue
+from review_bot.context.issues import IssueText, LinkedIssue, linked_issue
 from review_bot.context.ledger import ToolName
 from review_bot.context.tools import RepoRef
 from review_bot.diff_parser import parse_diff
@@ -67,11 +67,16 @@ def review(
     return asyncio.run(pipeline)
 
 
-def context_with(tmp_path: Path, issues: tuple[LinkedIssue, ...] = ()) -> ReviewContext:
+def context_with(tmp_path: Path, issue: IssueText | None = None) -> ReviewContext:
+    """A commit holding an address, and linked issue #7 read as ``issue`` with the given kinds."""
     repo = init_repo(tmp_path / "repo")
     sha = commit(repo, {"owners.txt": "bob@rightship.com\n"})
+
+    def read_issues(kinds: frozenset[RedactionKind]) -> tuple[LinkedIssue, ...]:
+        return () if issue is None else (linked_issue(7, issue, kinds),)
+
     return ReviewContext(
-        repo=RepoRef(git=GitRepo(repo, timeout_s=60), commit=sha), read_issues=lambda: issues
+        repo=RepoRef(git=GitRepo(repo, timeout_s=60), commit=sha), read_issues=read_issues
     )
 
 
@@ -131,12 +136,10 @@ def test_under_the_builtin_policy_the_prompt_is_unchanged_and_nothing_is_recorde
 def test_tool_results_and_linked_issues_are_masked_and_counted_by_source(
     tmp_path: Path,
 ) -> None:
-    issues = (
-        LinkedIssue(7, IssueStatus.INCLUDED, "Ask ann@rightship.com\n\nor carl@rightship.com"),
-    )
+    issue = IssueText("Ask ann@rightship.com", "or carl@rightship.com")
     provider = MockProvider(findings=[], tool_calls=[("read", {"path": "owners.txt"})])
 
-    result = review(tmp_path, provider, context=context_with(tmp_path, issues))
+    result = review(tmp_path, provider, context=context_with(tmp_path, issue))
 
     [request] = provider.requests
     assert "Ask [REDACTED:email]\n\nor [REDACTED:email]" in request.user_prompt

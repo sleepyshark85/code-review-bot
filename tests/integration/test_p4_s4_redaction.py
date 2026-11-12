@@ -384,6 +384,22 @@ MASKED = {
     "phone-two-on-a-line": masked(
         "phone", "a, b = '+12025550143', '+61 2 9999 0000'", f"a, b = '{PHONE}', '{PHONE}'", 2
     ),
+    # AC3 (revised): groups running past 15 digits mask their longest leading run of 8 to 15.
+    "phone-ac3-past-15-space-group": masked(
+        "phone", 'x = "+12025550143 12345"', f'x = "{PHONE} 12345"'
+    ),
+    "phone-ac3-past-15-with-a-date": masked(
+        "phone", 'x = "+61 2 9999 0000 2024-11-05"', f'x = "{PHONE}-11-05"'
+    ),
+    "phone-ac3-past-15-hyphen-group": masked(
+        "phone", 'x = "+61299990000-20241105"', f'x = "{PHONE}-20241105"'
+    ),
+    "phone-past-15-exactly-15-first": masked(
+        "phone", 'x = "+123456789012345 6"', f'x = "{PHONE} 6"'
+    ),
+    "phone-past-15-mid-sentence": masked(
+        "phone", "# call +1-202-555-0143 98765 now", f"# call {PHONE} 98765 now"
+    ),
     # AC4: IPv4 addresses outside the documentation ranges, and their boundaries.
     "ipv4-ac4-private": masked("ipv4", 'host = "10.0.0.12"', f'host = "{IPV4}"'),
     "ipv4-ac4-public": masked("ipv4", 'dns = "8.8.8.8"', f'dns = "{IPV4}"'),
@@ -834,10 +850,15 @@ def pr(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> PrRunner:
 
 
 def run_with_issue(
-    pr: PrRunner, tmp_path: Path, stub: GitHubStub, *flags: str
+    pr: PrRunner,
+    tmp_path: Path,
+    stub: GitHubStub,
+    *flags: str,
+    title: str = ISSUE_TITLE,
+    body: str = ISSUE_BODY,
 ) -> tuple[Any, MockProvider]:
     pull, _ = make_context_pull(tmp_path / "clone", {CHECKOUT: CHECKOUT_AT_C})
-    stub.add_linked_issue(12, title=ISSUE_TITLE, body=ISSUE_BODY)
+    stub.add_linked_issue(12, title=title, body=body)
     payload = event(pull.base, pull.head)
     payload["pull_request"]["body"] = "Closes #12"
     for holder in (payload["repository"], payload["pull_request"]["base"]["repo"]):
@@ -864,6 +885,42 @@ def test_p4_s4_ac5_linked_issue_title_and_body_are_masked_before_sending(
         assert value not in str(request.user_prompt), value
         assert value not in str(request.system_prompt), value
     assert positive(run.report["redaction"]) == {"issues": {"email": 2, "phone": 1}}
+
+
+# P3-S9's caps: a title over 256 characters and a body over 8,000 are cut.
+MAX_TITLE = 256
+MAX_BODY = 8_000
+STRADDLING = {
+    # The address starts 16 characters before the cut, so cutting first would send `jane.doe@ri…`.
+    "title": {"title": "T" * (MAX_TITLE - 16) + JANE + " is wrong", "body": "Body."},
+    "body": {"title": "Title", "body": "B" * (MAX_BODY - 16) + JANE + " is the owner."},
+}
+
+
+@pytest.mark.parametrize("parts", STRADDLING.values(), ids=STRADDLING.keys())
+def test_p4_s4_ac5_issue_is_masked_before_it_is_cut_so_no_part_of_a_value_is_sent(
+    pr, tmp_path, stub, policy_for, parts
+):
+    run, provider = run_with_issue(
+        pr, tmp_path, stub, "--policy", str(policy_for("email")), **parts
+    )
+
+    assert run.exit_code == 0, run.stderr
+    [request] = provider.requests
+    prompt = str(request.user_prompt)
+    for fragment in ("jane.doe", "jane", "rightship"):
+        assert fragment not in prompt, fragment
+    assert positive(run.report["redaction"]) == {"issues": {"email": 1}}
+
+
+def test_p4_s4_ac5_control_issue_cut_without_a_policy_sends_part_of_the_address(pr, tmp_path, stub):
+    """Shows the straddling fixture really straddles the cut: unmasked, a fragment goes out."""
+    _, provider = run_with_issue(pr, tmp_path, stub, **STRADDLING["title"])
+
+    [request] = provider.requests
+    text = issue_text(str(request.user_prompt), 12)
+    assert "jane.doe" in text
+    assert JANE not in text
 
 
 def test_p4_s4_ac5_without_a_policy_the_issue_is_sent_as_written(pr, tmp_path, stub):
@@ -1019,6 +1076,64 @@ def test_p4_s4_ac6_counts_only_never_the_values_in_the_audit_record(review, writ
     [data] = done.records("static", "redaction")
     assert_no_masked_value(json.dumps(data))
     assert "rightship" not in json.dumps(data)
+
+
+# AC6 (revised): a path is masked in what the model sees, but local outputs keep the real path.
+
+ADDRESS_PATH = f"people/{JANE}/handlers.py"
+# P1-S7's swallowed-exception rule fires on new-side line 3, so the report names the real path
+# without depending on the model; line 1 holds a value that stays masked everywhere.
+ADDRESS_PATH_LINES = ['GATEWAY = "10.0.0.12"', "try:", "    x()", "except Exception:", "    pass"]
+
+
+def address_path_review(
+    review: Bot, write_diff: Callable[..., Path], policy: Path, output: str
+) -> Done:
+    return review.run(
+        write_diff(lines_diff(ADDRESS_PATH_LINES, path=ADDRESS_PATH)),
+        "--policy",
+        str(policy),
+        findings=[
+            Finding(
+                file=ADDRESS_PATH,
+                line=1,
+                severity="medium",
+                category="security",
+                rationale="A gateway address is committed to the source.",
+                confidence=0.8,
+            )
+        ],
+        output=output,
+    )
+
+
+def test_p4_s4_ac6_path_holding_an_address_is_masked_in_what_the_model_sees(
+    review, write_diff, policy_for
+):
+    done = address_path_review(review, write_diff, policy_for("email", "ipv4"), "json")
+
+    assert JANE not in done.sent
+    assert "10.0.0.12" not in done.sent
+    assert f"people/{EMAIL}/handlers.py" in str(done.request.user_prompt)
+
+
+@pytest.mark.parametrize("output", ["json", "markdown"])
+def test_p4_s4_ac6_local_outputs_keep_the_real_path_but_no_other_value(
+    review, write_diff, policy_for, output
+):
+    done = address_path_review(review, write_diff, policy_for("email", "ipv4"), output)
+
+    assert done.exit_code == FINDINGS_EXIT, done.stderr
+    assert ADDRESS_PATH in done.stdout, done.stdout[:2000]
+    for text in (done.stdout, done.stderr, done.log_text):
+        assert "10.0.0.12" not in text
+
+
+def test_p4_s4_ac6_report_findings_name_the_real_path(review, write_diff, policy_for):
+    done = address_path_review(review, write_diff, policy_for("email", "ipv4"), "json")
+
+    files = {finding["file"] for finding in done.report["findings"]}
+    assert files == {ADDRESS_PATH}, done.report["findings"]
 
 
 # --- AC7: the built-in policy masks nothing -------------------------------------------------------

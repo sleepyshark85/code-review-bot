@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import Final
 
 from review_bot.diff_parser import DiffLine, LineKind
+from review_bot.governance.redaction import PLACEHOLDER_PREFIX
 from review_bot.secret_scan import scan_secrets
 
 __all__ = ["SuggestionDropReason", "fenced_block", "suggestion_drop_reason"]
@@ -28,8 +29,6 @@ _INVISIBLE_LAYOUT: Final = frozenset(
 _TRAILING_WHITESPACE: Final = " \t\n"
 _BACKTICK_RUN: Final = re.compile("`+")
 _MIN_FENCE: Final = 3
-# What every placeholder for masked personal data starts with (``governance.redaction``).
-_PLACEHOLDER_START: Final = "[REDACTED:"
 
 
 class SuggestionDropReason(StrEnum):
@@ -57,7 +56,7 @@ def suggestion_drop_reason(  # noqa: PLR0911 - one return per reason, in the ord
     one is dropped for it even if it equals the line, as in a CRLF file. An empty suggestion
     deletes the line, so it is never ``unchanged``.
     """
-    if _PLACEHOLDER_START in suggestion:
+    if PLACEHOLDER_PREFIX in suggestion:
         return SuggestionDropReason.REDACTED
     if anchored.kind is not LineKind.ADDED:
         return SuggestionDropReason.NOT_ADDED_LINE

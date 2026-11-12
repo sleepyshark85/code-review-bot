@@ -15,13 +15,18 @@ from enum import StrEnum
 from typing import Final
 
 __all__ = [
+    "PLACEHOLDER_PREFIX",
     "Masked",
     "RedactionCounts",
     "RedactionKind",
     "add_counts",
     "mask_diff",
     "mask_personal_data",
+    "placeholder",
 ]
+
+# What every placeholder starts with: a placeholder is ``[REDACTED:<kind>]``.
+PLACEHOLDER_PREFIX: Final = "[REDACTED:"
 
 
 class RedactionKind(StrEnum):
@@ -53,7 +58,8 @@ _EMAIL: Final = re.compile(
     # one. The labels may give back their last dot, so `a@b.com.` ends before it.
     r"(?P<domain>(?:[A-Za-z0-9-]++\.)+[A-Za-z]{2,}+)(?![A-Za-z0-9-])"
 )
-# E.164: `+`, then digits in groups split by one space or hyphen; their count is checked apart.
+# E.164: `+`, then digits in groups split by one space or hyphen; how many of the groups are
+# a number is decided apart (``_phone_length``).
 # A group is given back if what follows it would continue it, so `+12025550143 10.0.0.1` ends
 # before ` 10`.
 _PHONE: Final = re.compile(r"(?<![A-Za-z0-9_+])\+[0-9]++(?:[ -][0-9]++)*(?![A-Za-z0-9_]|\.[0-9])")
@@ -61,6 +67,7 @@ _PHONE: Final = re.compile(r"(?<![A-Za-z0-9_+])\+[0-9]++(?:[ -][0-9]++)*(?![A-Za
 _IPV4: Final = re.compile(
     r"(?<![A-Za-z0-9_.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![A-Za-z0-9_]|\.[0-9])"
 )
+_DIGIT_GROUP: Final = re.compile(r"[0-9]+")
 
 # RFC 2606 and RFC 6761: names that are only ever examples.
 _DOCUMENTATION_DOMAINS: Final = ("example.com", "example.org", "example.net")
@@ -73,30 +80,50 @@ _MAX_OCTET: Final = 255
 _DIFF_MARKERS: Final = "+- "
 
 
-def _is_personal_email(match: re.Match[str]) -> bool:
+# Each kind's ``_*_length`` says how much of a match, from its start, is personal data: all of
+# it, a leading part, or none (0).
+
+
+def _email_length(match: re.Match[str]) -> int:
     domain = match["domain"].lower()
     is_documentation = domain.rpartition(".")[2] in _DOCUMENTATION_TOP_LEVEL or any(
         domain == name or domain.endswith(f".{name}") for name in _DOCUMENTATION_DOMAINS
     )
-    return not is_documentation
+    return 0 if is_documentation else len(match[0])
 
 
-def _is_personal_phone(match: re.Match[str]) -> bool:
-    digits = sum(char in "0123456789" for char in match[0])
-    return _MIN_PHONE_DIGITS <= digits <= _MAX_PHONE_DIGITS
+def _phone_length(match: re.Match[str]) -> int:
+    """The length of the longest leading run of groups that holds 8 to 15 digits, or 0.
+
+    Groups past 15 digits are left as they are, so a number followed by a date or a code is
+    still masked; a first group of 16 or more digits isn't a number.
+    """
+    length, digits = 0, 0
+    for group in _DIGIT_GROUP.finditer(match[0]):
+        digits += len(group[0])
+        if digits > _MAX_PHONE_DIGITS:
+            break
+        if digits >= _MIN_PHONE_DIGITS:
+            length = group.end()
+    return length
 
 
-def _is_personal_ipv4(match: re.Match[str]) -> bool:
+def _ipv4_length(match: re.Match[str]) -> int:
     octets = tuple(int(part) for part in match[0].split("."))
-    return max(octets) <= _MAX_OCTET and octets[:3] not in _DOCUMENTATION_NETWORKS
+    is_personal = max(octets) <= _MAX_OCTET and octets[:3] not in _DOCUMENTATION_NETWORKS
+    return len(match[0]) if is_personal else 0
 
 
-# Each kind's pattern, and the check a match must pass to be masked.
-_KINDS: Final[Mapping[RedactionKind, tuple[re.Pattern[str], Callable[[re.Match[str]], bool]]]] = {
-    RedactionKind.EMAIL: (_EMAIL, _is_personal_email),
-    RedactionKind.PHONE: (_PHONE, _is_personal_phone),
-    RedactionKind.IPV4: (_IPV4, _is_personal_ipv4),
+_KINDS: Final[Mapping[RedactionKind, tuple[re.Pattern[str], Callable[[re.Match[str]], int]]]] = {
+    RedactionKind.EMAIL: (_EMAIL, _email_length),
+    RedactionKind.PHONE: (_PHONE, _phone_length),
+    RedactionKind.IPV4: (_IPV4, _ipv4_length),
 }
+
+
+def placeholder(kind: RedactionKind) -> str:
+    """What a value of ``kind`` is masked as: ``[REDACTED:<kind>]``."""
+    return f"{PLACEHOLDER_PREFIX}{kind}]"
 
 
 def mask_personal_data(text: str, kinds: frozenset[RedactionKind]) -> Masked:
@@ -117,16 +144,16 @@ def mask_personal_data(text: str, kinds: frozenset[RedactionKind]) -> Masked:
 
 def _mask_kind(text: str, kind: RedactionKind) -> tuple[str, int]:
     """``text`` with each value of ``kind`` masked, and how many were."""
-    pattern, is_personal = _KINDS[kind]
-    placeholder = f"[REDACTED:{kind}]"
+    pattern, personal_length = _KINDS[kind]
     masked = 0
 
     def replace(match: re.Match[str]) -> str:
         nonlocal masked
-        if not is_personal(match):
+        length = personal_length(match)
+        if not length:
             return match[0]
         masked += 1
-        return placeholder
+        return placeholder(kind) + match[0][length:]
 
     return pattern.sub(replace, text), masked
 

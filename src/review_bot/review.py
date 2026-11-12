@@ -16,7 +16,7 @@ from typing import Final
 
 from review_bot.audit import AuditLog, JsonValue, Stage, file_fields, scrub_diagnostics
 from review_bot.console import write_diagnostic
-from review_bot.context.issues import LinkedIssue, mask_issues
+from review_bot.context.issues import LinkedIssue
 from review_bot.context.ledger import LineSpan, ToolCall
 from review_bot.context.tools import RepoRef, RepoTools, ToolCaps
 from review_bot.diff_input import load_diff
@@ -33,7 +33,7 @@ from review_bot.governance.policy import (
     check_context_allowed,
     check_settings,
 )
-from review_bot.governance.redaction import RedactionCounts, mask_diff
+from review_bot.governance.redaction import RedactionCounts, RedactionKind, add_counts, mask_diff
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
     PROMPT_VERSION,
@@ -81,14 +81,14 @@ class ReviewContext:
 
     ``is_diff_head`` says that commit is the one the diff ends at, as in PR mode, so the lines
     the tools return count as evidence in the files the diff changes too. ``read_issues``
-    returns the linked issues; the review calls it only once the model will be called, so a
-    review stopped before then reads none. Those whose text is sent follow the diff in the
-    prompt.
+    returns the linked issues, with the redaction kinds it is given masked as ``linked_issue``
+    masks them; the review calls it only once the model will be called, so a review stopped
+    before then reads none. Those whose text is sent follow the diff in the prompt.
     """
 
     repo: RepoRef
     is_diff_head: bool = False
-    read_issues: Callable[[], tuple[LinkedIssue, ...]] = lambda: ()
+    read_issues: Callable[[frozenset[RedactionKind]], tuple[LinkedIssue, ...]] = lambda _: ()
 
 
 async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are keyword-only
@@ -214,9 +214,8 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
     if context is None:
         request = build_request(masked_diff.text, model=settings.model)
     else:
-        issues, issue_counts = mask_issues(
-            await asyncio.to_thread(context.read_issues), policy.redaction
-        )
+        issues = await asyncio.to_thread(context.read_issues, policy.redaction)
+        issue_counts = add_counts(issue.redacted for issue in issues)
         tools = RepoTools(
             context.repo,
             caps=tool_caps(settings),

@@ -70,7 +70,8 @@ def test_an_e164_phone_number_is_masked(phone: str) -> None:
         "+123",
         "+1234567",
         "+" + "1" * 16,
-        "+1234 5678 9012 3456",
+        "+" + "1" * 16 + " 12",
+        "+1234567 123456789",
         "a+12025550143",
         "+12025550143x",
         "+1  202 555 0143",
@@ -80,7 +81,8 @@ def test_an_e164_phone_number_is_masked(phone: str) -> None:
         "too-short",
         "seven-digits",
         "sixteen-digits",
-        "sixteen-in-groups",
+        "sixteen-then-a-group",
+        "seven-then-sixteen",
         "after-a-letter",
         "before-a-letter",
         "double-space",
@@ -94,6 +96,22 @@ def test_a_phone_number_of_exactly_8_and_15_digits_is_masked() -> None:
     masked = mask_personal_data("+12345678 +123456789012345", PHONE)
 
     assert masked == Masked("[REDACTED:phone] [REDACTED:phone]", {RedactionKind.PHONE: 2})
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("+12025550143 12345", "[REDACTED:phone] 12345"),
+        ("+61299990000-20241105", "[REDACTED:phone]-20241105"),
+        ("Called +61 2 9999 0000 2024-11-05", "Called [REDACTED:phone]-11-05"),
+        ("+1234 5678 9012 3456", "[REDACTED:phone] 3456"),
+    ],
+    ids=["code-after", "date-after", "groups-then-date", "sixteen-in-groups"],
+)
+def test_groups_past_15_digits_mask_the_longest_leading_run_of_8_to_15(
+    text: str, masked: str
+) -> None:
+    assert mask_personal_data(text, PHONE) == Masked(masked, {RedactionKind.PHONE: 1})
 
 
 @pytest.mark.parametrize("address", ["10.0.0.12", "8.8.8.8", "255.255.255.255", "192.0.3.1"])
@@ -208,6 +226,7 @@ def test_add_counts_sums_by_kind_and_leaves_out_kinds_with_none() -> None:
         "a." * 199_999 + "@",
         "x@" + "a." * 199_999,
         "+1 " * 133_333,
+        "+1" + " 1" * 199_999 + "x",
         "1." * 200_000,
         "a+" * 200_000,
         "-" * 400_000,
@@ -220,6 +239,7 @@ def test_add_counts_sums_by_kind_and_leaves_out_kinds_with_none() -> None:
         "local-run",
         "domain-run",
         "phone-groups",
+        "one-long-number",
         "dotted",
         "a-plus",
         "dash",

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Final
 
 from review_bot.audit import AuditLog, utc_now
-from review_bot.context.issues import mask_issues
 from review_bot.context.tools import RepoTools
 from review_bot.diff_input import load_diff
 from review_bot.diff_parser import parse_diff
@@ -158,7 +157,7 @@ def _case_freshness(
         model=settings.model,
         tools=tools,
         domain_rules=domain_rules,
-        issues=mask_issues(loaded.issues, policy.redaction)[0],
+        issues=loaded.linked_issues(policy.redaction),
     )
     prompts = json.dumps([request.system_prompt, request.user_prompt, _tool_definitions(request)])
     return fields | {
@@ -317,7 +316,7 @@ async def score_recording(
         context = (
             None
             if repo is None
-            else ReviewContext(repo=repo.repo, read_issues=lambda: loaded.issues)
+            else ReviewContext(repo=repo.repo, read_issues=loaded.linked_issues)
         )
         review = _CaseReview(context=context, domain_rules=domain_rules, policy=policy)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")

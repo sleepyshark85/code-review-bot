@@ -1,13 +1,12 @@
 """The issues a pull request closes, and the part of each one a context review may send.
 
-Pure. Issue text is untrusted: it is capped, secret-scanned, masked as the policy asks, and only
+Pure. Issue text is untrusted: it is secret-scanned, masked as the policy asks, capped, and only
 ever sent framed as data (P3-S9, P4-S4).
 """
 
-import dataclasses
 import re
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
@@ -16,6 +15,7 @@ from review_bot.governance.redaction import (
     RedactionKind,
     add_counts,
     mask_personal_data,
+    placeholder,
 )
 from review_bot.secret_scan import scan_secrets
 
@@ -29,7 +29,6 @@ __all__ = [
     "LinkedIssue",
     "linked_issue",
     "linked_issue_numbers",
-    "mask_issues",
     "read_linked_issues",
 ]
 
@@ -82,13 +81,15 @@ class IssueText:
 class LinkedIssue:
     """One linked issue, by number, what became of it, and the text a review sends of it.
 
-    ``text`` is the title, a blank line and the body, each cut to its limit and marked if it
-    was; it is empty unless the status is ``included`` or ``cut``.
+    ``text`` is the title, a blank line and the body, each masked, then cut to its limit and
+    marked if it was; it is empty unless the status is ``included`` or ``cut``. ``redacted``
+    counts the masked values ``text`` holds.
     """
 
     number: int
     status: IssueStatus
     text: str = ""
+    redacted: RedactionCounts = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Refuse text for an issue that isn't sent, so no record can carry it by mistake."""
@@ -158,13 +159,16 @@ def read_linked_issues(
     )
 
 
-def linked_issue(number: int, issue: IssueText | None) -> LinkedIssue:
+def linked_issue(
+    number: int, issue: IssueText | None, kinds: frozenset[RedactionKind] = frozenset()
+) -> LinkedIssue:
     """What a review may send of issue ``number``, as read: None means it wasn't found.
 
     A pull request isn't an issue, and an issue whose title or body holds a possible secret
-    sends nothing. Otherwise its title is cut to ``MAX_ISSUE_TITLE_CHARS`` and its body to
+    sends nothing. Otherwise the ``kinds`` of personal data are masked in its title and body,
+    then its title is cut to ``MAX_ISSUE_TITLE_CHARS`` and its body to
     ``MAX_ISSUE_BODY_CHARS``, each with a mark saying so, and the status is ``cut`` if either
-    was.
+    was. Masking first means a cut never splits a value.
     """
     if issue is None:
         return LinkedIssue(number, IssueStatus.NOT_FOUND)
@@ -172,10 +176,31 @@ def linked_issue(number: int, issue: IssueText | None) -> LinkedIssue:
         return LinkedIssue(number, IssueStatus.IS_PULL_REQUEST)
     if scan_secrets(issue.title) or scan_secrets(issue.body):
         return LinkedIssue(number, IssueStatus.POSSIBLE_SECRET)
-    title, is_title_cut = _cut(issue.title, MAX_ISSUE_TITLE_CHARS, "title")
-    body, is_body_cut = _cut(issue.body, MAX_ISSUE_BODY_CHARS, "body")
+    title, is_title_cut, title_counts = _masked_and_cut(
+        issue.title, kinds, MAX_ISSUE_TITLE_CHARS, "title"
+    )
+    body, is_body_cut, body_counts = _masked_and_cut(
+        issue.body, kinds, MAX_ISSUE_BODY_CHARS, "body"
+    )
     status = IssueStatus.CUT if is_title_cut or is_body_cut else IssueStatus.INCLUDED
-    return LinkedIssue(number, status, f"{title}\n\n{body}")
+    redacted = add_counts([title_counts, body_counts])
+    return LinkedIssue(number, status, f"{title}\n\n{body}", redacted)
+
+
+def _masked_and_cut(
+    text: str, kinds: frozenset[RedactionKind], max_chars: int, name: str
+) -> tuple[str, bool, RedactionCounts]:
+    """``text`` masked, then cut as ``_cut`` cuts it, and how many masked values it still holds.
+
+    A placeholder the cut drops or splits isn't counted. One that was in ``text`` already looks
+    the same as a masked one, so each kind's count is at most the number masked.
+    """
+    masked = mask_personal_data(text, kinds)
+    kept, is_cut = _cut(masked.text, max_chars, name)
+    counts = {
+        kind: min(count, kept.count(placeholder(kind))) for kind, count in masked.counts.items()
+    }
+    return kept, is_cut, add_counts([counts])
 
 
 def _cut(text: str, max_chars: int, name: str) -> tuple[str, bool]:
@@ -183,21 +208,3 @@ def _cut(text: str, max_chars: int, name: str) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return f"{text[:max_chars]} [{name} cut: over {max_chars:,} characters]", True
-
-
-def mask_issues(
-    issues: Sequence[LinkedIssue], kinds: frozenset[RedactionKind]
-) -> tuple[tuple[LinkedIssue, ...], RedactionCounts]:
-    """``issues`` with each one's text masked as ``mask_personal_data`` masks it, and the counts.
-
-    The text is masked as it is sent, already cut, so a value that a cut splits is masked only
-    if what is left of it still matches.
-    """
-    masked = [mask_personal_data(issue.text, kinds) for issue in issues]
-    return (
-        tuple(
-            dataclasses.replace(issue, text=text.text)
-            for issue, text in zip(issues, masked, strict=True)
-        ),
-        add_counts(text.counts for text in masked),
-    )
