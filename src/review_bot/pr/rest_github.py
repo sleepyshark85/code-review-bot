@@ -86,7 +86,7 @@ _TOKEN: Final = re.compile(r"[\x21-\x7e]+")
 # GraphQL names the Actions bot without REST's "[bot]" (Phase 2 design, Comment state).
 _GRAPHQL_BOT_LOGIN: Final = "github-actions"
 # GitHub's name for a deleted account, which is never the bot; also the last editor of an edit
-# history that can't be read whole.
+# that can't be read.
 _DELETED_ACCOUNT: Final = "ghost"
 # GraphQL error messages are shown at most this long, on one line.
 _MAX_SHOWN_CHARS: Final = 200
@@ -129,11 +129,14 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   }
 }
 """
-# Each comment's edits, by its node ID: an IssueComment or a PullRequestReviewComment. The
-# connection's order isn't documented, so the latest edit is the one with the greatest editedAt
-# (``_last_editor``); a comment never edited has none.
+# The edits at both ends of each comment's edit history, by its node ID: an IssueComment or a
+# PullRequestReviewComment. The connection's order isn't documented, but the newest edit is at
+# one end whichever it is, so it is the one of the two with the greater editedAt
+# (``_last_editor``), however many edits there are. A comment never edited has none.
+_END_EDIT: Final = "nodes { editedAt editor { login } }"
 _EDITS: Final = (
-    "userContentEdits(first: 100) { pageInfo { hasNextPage } nodes { editedAt editor { login } } }"
+    f"firstEdit: userContentEdits(first: 1) {{ {_END_EDIT} }} "
+    f"lastEdit: userContentEdits(last: 1) {{ {_END_EDIT} }}"
 )
 _EDITORS_QUERY: Final = f"""
 query($ids: [ID!]!) {{
@@ -294,18 +297,15 @@ class _Edit(_Schema):
     editor: _Actor | None
 
 
-class _MorePages(_Schema):
-    has_next_page: bool
-
-
 class _Edits(_Schema):
-    page_info: _MorePages
     nodes: list[_Edit | None]
 
 
 class _Edited(_Schema):
     id: str
-    user_content_edits: _Edits
+    # The first and last edit in GraphQL's order, under the query's aliases.
+    first_edit: _Edits
+    last_edit: _Edits
 
 
 class _EditedNodes(_Schema):
@@ -831,17 +831,16 @@ def _node_id(operation: str, comment: _ReviewComment | _IssueComment) -> str:
 def _last_editor(node: _Edited) -> str | None:
     """Who made a comment's latest edit, or None if nobody edited it.
 
-    The latest is the edit with the greatest ``editedAt``, whatever order GraphQL lists them in.
-    It fails closed, never missing a tamper: an edit with no editor (a deleted account), an
-    unreadable edit, or more than 100 edits, so the latest may be unread, count as someone
-    else's. GraphQL names the bot without "[bot]".
+    The latest is the end edit with the greater ``editedAt``, whatever order GraphQL lists the
+    edits in. It fails closed, never missing a tamper: an unreadable end edit, or one with no
+    editor (a deleted account), counts as someone else's. GraphQL names the bot without "[bot]".
     """
-    edits = node.user_content_edits
-    if not edits.nodes:
+    ends = [*node.first_edit.nodes, *node.last_edit.nodes]
+    if not ends:
         return None
-    if edits.page_info.has_next_page or None in edits.nodes:
+    if None in ends:
         return _DELETED_ACCOUNT
-    latest = max((edit for edit in edits.nodes if edit is not None), key=lambda e: e.edited_at)
+    latest = max((edit for edit in ends if edit is not None), key=lambda edit: edit.edited_at)
     if latest.editor is None:
         return _DELETED_ACCOUNT
     return BOT_LOGIN if latest.editor.login == _GRAPHQL_BOT_LOGIN else latest.editor.login

@@ -3,7 +3,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -930,25 +930,39 @@ def test_read_issue_refuses_another_repository(stub: Stub) -> None:
     assert stub.received == []
 
 
-def edited(
-    node_id: str, *editors: str | None, newest_first: bool = False, more: bool = False
-) -> dict:
+def edited(node_id: str, *editors: str | None, newest_first: bool = False) -> dict:
     """A comment node whose edits were made by ``editors`` in turn, a minute apart.
 
-    GraphQL lists them oldest first, or ``newest_first``; ``more`` says another page follows.
+    GraphQL holds them oldest first, or ``newest_first``, and the query reads only the first
+    and the last of them, under its aliases.
     """
     edits = [
         {
-            "editedAt": f"2026-11-12T10:{minute:02d}:00Z",
+            "editedAt": (datetime(2026, 11, 12, tzinfo=UTC) + timedelta(minutes=index))
+            .isoformat()
+            .replace("+00:00", "Z"),
             "editor": None if editor is None else {"login": editor},
         }
-        for minute, editor in enumerate(editors)
+        for index, editor in enumerate(editors)
     ]
-    nodes = edits[::-1] if newest_first else edits
+    ordered = edits[::-1] if newest_first else edits
     return {
         "id": node_id,
-        "userContentEdits": {"pageInfo": {"hasNextPage": more}, "nodes": nodes},
+        "firstEdit": {"nodes": ordered[:1]},
+        "lastEdit": {"nodes": ordered[-1:]},
     }
+
+
+BOT_EDITS = ("github-actions",) * 150
+
+
+def read_issue_comment_editor(stub: Stub, node: dict) -> str | None:
+    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
+    stub.respond = lambda request: reply(
+        {"data": {"nodes": [node]}} if request.path == "/graphql" else [comment]
+    )
+    (read,) = client(stub).list_bot_issue_comments(PR)
+    return read.last_editor
 
 
 def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
@@ -964,7 +978,8 @@ def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
     def respond(request: Received) -> Reply:
         if request.path == "/graphql":
             assert request.body["variables"] == {"ids": ["IC_6", "IC_8"]}
-            assert "userContentEdits(first: 100)" in request.body["query"]
+            assert "firstEdit: userContentEdits(first: 1)" in request.body["query"]
+            assert "lastEdit: userContentEdits(last: 1)" in request.body["query"]
             nodes = [edited("IC_6"), edited("IC_8", "github-actions", "mallory")]
             return reply({"data": {"nodes": nodes}})
         assert request.path == "/repos/owner/repo/issues/7/comments"
@@ -978,46 +993,44 @@ def test_list_bot_issue_comments_reads_every_bot_comment_and_its_latest_editor(
     )
 
 
+@pytest.mark.parametrize("newest_first", [False, True], ids=["oldest-first", "newest-first"])
 @pytest.mark.parametrize(
-    ("node", "last_editor"),
+    ("editors", "last_editor"),
     [
-        (edited("IC_6"), None),
-        (edited("IC_6", "mallory", "github-actions"), "github-actions[bot]"),
-        (edited("IC_6", "mallory", "github-actions", newest_first=True), "github-actions[bot]"),
-        (edited("IC_6", "github-actions", "mallory"), "mallory"),
-        (edited("IC_6", "github-actions", "mallory", newest_first=True), "mallory"),
-        (edited("IC_6", "github-actions", more=True), "ghost"),
-        (edited("IC_6", None), "ghost"),
-        (
-            {
-                "id": "IC_6",
-                "userContentEdits": {"pageInfo": {"hasNextPage": False}, "nodes": [None]},
-            },
-            "ghost",
-        ),
+        ((), None),
+        (("mallory", "github-actions"), "github-actions[bot]"),
+        (BOT_EDITS, "github-actions[bot]"),
+        (("github-actions", "mallory"), "mallory"),
+        ((*BOT_EDITS, "mallory"), "mallory"),
+        (("github-actions", None), "ghost"),
     ],
     ids=[
         "never-edited",
-        "the-bot-last-oldest-first",
-        "the-bot-last-newest-first",
-        "a-person-last-oldest-first",
-        "a-person-last-newest-first",
-        "more-edits-than-read",
-        "deleted-account",
-        "null-edit",
+        "the-bot-last",
+        "over-100-bot-edits",
+        "a-person-last",
+        "a-person-last-after-150-bot-edits",
+        "a-deleted-account-last",
     ],
 )
-def test_the_latest_editor_names_the_bot_as_rest_does_and_an_unknown_one_as_someone(
-    stub: Stub, node: dict, last_editor: str | None
+def test_the_latest_editor_is_the_newest_end_edit_whatever_the_order(
+    stub: Stub, editors: tuple[str | None, ...], last_editor: str | None, newest_first: bool
 ) -> None:
-    comment = {"id": 6, "node_id": "IC_6", "user": BOT, "body": f"S.\n\n{SUMMARY_MARKER}"}
-    stub.respond = lambda request: reply(
-        {"data": {"nodes": [node]}} if request.path == "/graphql" else [comment]
-    )
+    node = edited("IC_6", *editors, newest_first=newest_first)
 
-    (read,) = client(stub).list_bot_issue_comments(PR)
+    assert read_issue_comment_editor(stub, node) == last_editor
 
-    assert read.last_editor == last_editor
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"id": "IC_6", "firstEdit": {"nodes": [None]}, "lastEdit": {"nodes": [None]}},
+        {"id": "IC_6", "firstEdit": {"nodes": []}, "lastEdit": {"nodes": [None]}},
+    ],
+    ids=["both-ends-null", "one-end-null"],
+)
+def test_an_unreadable_end_edit_counts_as_someone_elses(stub: Stub, node: dict) -> None:
+    assert read_issue_comment_editor(stub, node) == "ghost"
 
 
 def test_list_bot_issue_comments_with_none_by_the_bot_makes_no_graphql_call(stub: Stub) -> None:
