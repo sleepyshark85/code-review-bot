@@ -1241,9 +1241,26 @@ No assertion was weakened. Each change follows from something P3-S14 amends, and
 
 The slice changes no code under `src/`, so there is no module coverage to report. The tests reproduce GitHub's expression evaluation with P2-S3's evaluator; GitHub's own evaluation is the only part not exercised.
 
-## P3-S15: Close Phase 3 (in progress)
+## P3-S15: Close Phase 3
 
-**Status:** partial. AC1, AC2, AC4, AC6 and AC8 are below; the user accepted the eval misses on 2026-11-10. AC3 and AC7 wait for Phase 2's labelled set (#67). AC5 and AC9 follow those.
+**Status:** closed with exceptions. AC1, AC2, AC4, AC6 and AC8 are done; the owner accepted the context-mode eval misses on 2026-11-10. **AC3 and AC7 were not run, by the owner's decision of 2026-11-12.** AC5 records the gate as not evidenced on the labelled set, so Phase 3 closes as an accepted exception. AC9 is done by the main session in this PR.
+
+| AC | State | Where |
+|---|---|---|
+| AC1 | Done (recorded) | [AC1](#ac1-caps-check-and-the-eval-dispatches) |
+| AC2 | Done (recorded) | [AC2](#ac2-evals-compare) |
+| AC3 | **Not run, by the owner's decision of 2026-11-12** | [AC3 and AC7](#ac3-and-ac7-not-run-by-the-owners-decision) |
+| AC4 | Done (recorded): $1.0167 of $20.00 | [AC4](#ac4-every-dispatch-of-liveyml) |
+| AC5 | Done (recorded): gate not evidenced as written; accepted exception | [AC5](#ac5-the-gate-under-q3-and-q4) |
+| AC6 | Pass | [AC6 and AC8](#ac6-and-ac8-tests) |
+| AC7 | **Not run, by the owner's decision of 2026-11-12** | [AC3 and AC7](#ac3-and-ac7-not-run-by-the-owners-decision) |
+| AC8 | Pass | [AC6 and AC8](#ac6-and-ac8-tests) |
+| AC9 | Main session, in this PR | [AC9](#ac9-version-and-release) |
+
+**Owner's decisions:**
+- **2026-11-10:** the owner accepted the context-mode misses `tax-discount-ordering` and `float-money` on `sample-context` ([AC2](#ac2-evals-compare)).
+- **2026-11-12:** Phase 2's gate was recorded and [#67](https://github.com/sleepyshark85/code-review-bot/issues/67) closed (PR #108; see [P2-S12](../phase-2/test-report.md) in Phase 2's test report): shadow precision 42/42, Wilson 95% 91.6% to 100%, with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC.
+- **2026-11-12:** the owner decided **not to run the backfill, and not to run any live review on Phase 3's PRs.**
 
 ### AC1: caps check and the eval dispatches
 
@@ -1330,6 +1347,23 @@ verdict:
 
 In context mode, `discount-dropped-on-export` (2 of 3) still meets its bar of 2, but `compare` lists it under `smaller_share` because diff mode caught it in 3 of 3. The tests below expect exactly these misses, so a new failure, or an accepted miss that starts passing, turns them red.
 
+### AC3 and AC7: not run, by the owner's decision
+
+**AC3 and AC7 were not run, by the owner's decision of 2026-11-12.** This is an exception to the spec, not a result:
+
+- No `tests/evals/labelled/phase-3-pulls.json` was committed, so no labelled PRs were chosen under Q10.
+- No `backfill` step of `live.yml` was dispatched (see [AC4](#ac4-every-dispatch-of-liveyml)), so no context review of any labelled PR exists.
+- No new units were judged with `pr label`, and `would-be.jsonl` gained no `phase-3` units.
+- No `pr compare` was run, so there is no output, verdict or `no_same_head` list to record.
+- AC7's recompute test has nothing to recompute, so it wasn't written. No number in this section stands in for one.
+
+**What this leaves unmeasured:**
+- Precision of context reviews on real pull requests, per unit, against Phase 2's shadow reports at the same head SHA. Phase 2's baseline there is 42/42 (100.0%), so under Q3 the context run could only have met this clause by also reaching 100% at ≥ 90% coverage.
+- Pooled relative recall on the labelled PRs, the gate's only recall measure on real code.
+- Coverage of either run's units on the labelled PRs.
+- Mean cost per reviewed PR and per accepted finding beside Phase 2's (Q4 reports these but doesn't gate on them).
+- How context mode behaves on this repository's own diffs beyond the single S16 smoke review.
+
 ### AC6 and AC8: tests
 
 All are in `tests/evals/test_p3_s15_close_phase_3.py`. They replay the committed recordings in process with `main`, call no model, and run with `claude` off PATH and no key. The 9 cases are those in AC1. "Copy" means a temporary copy of those cases with their recordings, and with any sibling diff a case points at.
@@ -1371,7 +1405,56 @@ All are in `tests/evals/test_p3_s15_close_phase_3.py`. They replay the committed
 | 2026-11-10 | [https://github.com/sleepyshark85/code-review-bot/actions/runs/42746466519](https://github.com/sleepyshark85/code-review-bot/actions/runs/42746466519) (1) | `evals-diff` | exit 1 (scored misses) | 0.3736 | 0.3736 / 2.70 | 0.5211 |
 | 2026-11-10 | [https://github.com/sleepyshark85/code-review-bot/actions/runs/42746487486](https://github.com/sleepyshark85/code-review-bot/actions/runs/42746487486) (1) | `evals-context` | exit 1 (scored misses) | 0.4956 | 0.4956 / 8.10 | 1.0167 |
 
-No reserve used. No review hit its `max_cost_usd`: no run recorded a cost or turn cap.
+| Step | Dispatches | Spend (USD) | Cap (USD) |
+|---|---|---|---|
+| `smoke` | 1 | 0.1475 | 0.60 |
+| `evals-diff` | 1 | 0.3736 | 2.70 |
+| `evals-context` | 1 | 0.4956 | 8.10 |
+| `backfill` | 0: not dispatched, by the owner's decision of 2026-11-12 | 0.0000 | 7.20 |
+| Reserve | not used | 0.0000 | 1.40 |
+| **Total** | **3** | **1.0167** | **20.00** |
+
+- **Every dispatch is listed.** `gh run list --workflow live.yml`, checked on 2026-11-12, lists exactly these three runs (42668517609, 42746466519, 42746487486), each at attempt 1. There were no re-runs and no other dispatches, failed or otherwise. The two `failure` conclusions are the eval steps' exit 1 for scored misses, not failed runs.
+- **Every step is under its cap**, and the total is $1.0167 of $20.00.
+- **No reserve used**, so there is no approver to name.
+- **No review exceeded its `max_cost_usd`.** From the records above: the smoke's larger review cost $0.1035, under its $0.30 per-call cap ([AC1](#ac1-caps-check-and-the-eval-dispatches)); both eval steps report 27 calls, 0 failed and "cap hits: none" ([AC2](#ac2-evals-compare)); no diff-mode run cost more than about $0.03 against $0.10. So no review needed the one-turn overshoot the design allows.
+
+### AC5: the gate under Q3 and Q4
+
+The roadmap's Phase 3 gate: "precision and recall improve over Phase 2 on the labelled set; cost within budget". The design reads it as both the labelled PRs and the eval cases ([How the gate is evidenced](design.md#how-the-gate-is-evidenced)), with "improve" defined by [Q3](design.md#6-open-questions) and "within budget" by [Q4](design.md#6-open-questions).
+
+| Clause | Labelled PRs | Eval cases (AC2) | Met? |
+|---|---|---|---|
+| **Precision improves** | Not measured: AC3 not run, by the owner's decision of 2026-11-12 | Context 28/57 (49.1%) against diff 23/68 (33.8%): higher | **Eval cases only.** Not evidenced on the labelled set |
+| **Recall improves** | Not measured: AC3 not run, by the owner's decision of 2026-11-12 | Mixed, see below | **No** on the eval cases under Q3; not evidenced on the labelled set |
+| **Injection still resisted** | n/a | Context 15/15, diff 15/15 injection runs passed; Phase 1's cases replay in diff mode as before (AC8) | Yes |
+| **Cost within budget** | n/a | $1.0167 of $20.00; every step under its cap; no review over `max_cost_usd`; no cap-hit runs | **Met** |
+
+**Recall on the eval cases.** Q3 asks that no AI bug be caught in a smaller share of runs in context mode than in diff mode. Against that test:
+- Context mode catches more: `sample-context`/`double-tax` 3/3 against 1/3, and `ticket-criteria`/`discount-column-missing` 3/3 against 0/3.
+- Context mode catches less: `sample-context`/`tax-discount-ordering` 0/3 against 2/3, and `sample-context`/`float-money` 0/3 against 2/3, the accepted misses of 2026-11-10. Also `sample-context`/`discount-dropped-on-export` 2/3 against 3/3, which still meets its bar of 2 but is a smaller share, so `compare` lists it under `smaller_share`.
+- In total both modes catch 10/12 AI bugs (83.3%); credited runs are 29/36 (80.6%) in context against 28/36 (77.8%) in diff.
+
+So Q3's eval-case recall clause is **not met** as written: three bugs are caught in a smaller share of runs. The gain on the bugs that need context (callers and a ticket) comes with a loss on two bugs visible in the diff alone.
+
+**Cost (Q4).** Every dispatch is summed in [AC4](#ac4-every-dispatch-of-liveyml). Mean cost per eval run: $0.0184 in context, $0.0138 in diff. Mean cost per reviewed PR and per accepted finding beside Phase 2's are not reported, because there was no backfill; Q4 doesn't gate on them.
+
+**Verdict.** The gate as written, "precision and recall improve over Phase 2 on the labelled set", is **not evidenced**, by the owner's decision of 2026-11-12 not to run the backfill or any live review on Phase 3's PRs. The eval evidence supports higher precision in context mode, with mixed recall that fails Q3's no-smaller-share test on three `sample-context` bugs, two of them owner-accepted misses. Injection resistance holds, and cost is within budget. **Phase 3 closes as an accepted exception**, as Phase 1 closed with its accepted `double-tax` eval miss and Phase 2 with its waived 3-week window.
+
+**Disclosures.**
+- **Sample sizes:** 9 eval cases × 3 runs per mode (27 runs each, 12 AI bugs, 15 injection runs). One flip in a bug moves its share by a third. No labelled PRs were measured in Phase 3.
+- **Cases written to need context:** the 9 cases were built for this comparison, so they favour context mode on the bugs that need it.
+- **Prompts tuned on these cases:** the context prompt `p3-v5` was developed against the same cases it is scored on, so the eval precision is likely optimistic.
+- **Few PRs link issues:** tickets are measured mainly by `ticket-criteria` and `injection-issue`, not by real PRs.
+- **Agent-written PRs merged by one person:** Phase 2's labelled set, the baseline the backfill would have used, holds this repository's PRs, written by agents and merged by one person. Phase 3's own PRs are the same kind.
+
+### AC9: version and release
+
+| Item | State |
+|---|---|
+| `pyproject.toml` version | Goes to `0.4.0` in this PR (main session) |
+| `docs/phases/phase-3/release-notes.md` | Lists the changes; written in this PR (main session) |
+| Tag `v0.4.0` and GitHub release (wheel and source archive) | Follow the merge, per [CLAUDE.md](../../../CLAUDE.md) |
 
 ## P3-S17: Let this repository's own pull requests reach a shadow review
 

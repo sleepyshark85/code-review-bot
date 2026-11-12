@@ -1,6 +1,6 @@
 [project]
 name = "review-bot"
-version = "0.3.0"
+version = "0.4.0"
 description = "Automated PR reviewer: deterministic checks plus an LLM, with human triage."
 readme = "README.md"
 requires-python = ">=3.12"

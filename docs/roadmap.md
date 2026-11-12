@@ -165,7 +165,7 @@ Capability will arrive well before operational maturity. A track record, re-eval
 |---|---|
 | Planning instead of shipping | Phases 0–1 are built in full; later phases stay as this plan until gated in |
 | Developer noise → bot gets muted | Shadow mode, noise budget, fingerprint dedup, suppression learning |
-| Prompt injection via PR content | Diff isolated as data; no tools before P3; injection eval from P1; no model-initiated actions |
+| Prompt injection via PR content | Diff and tool results isolated as data; from P3 only read-only repository tools, confined to one commit; injection evals from P1, including through files and issues in P3; no model-initiated actions |
 | Code or secrets leaving the organisation | Secret-bearing diffs not sent from P1; redaction and vendor terms in P4 |
 | Agent tools enabled by accident | Lockdown asserted in tests; tools only via an explicit list from P3 |
 | Agent SDK runtime weight (CLI subprocess) | Measure start-up cost in P2; `LLMProvider` leaves room for another provider |
