@@ -12,6 +12,7 @@ from review_bot.governance.policy import (
     MAX_POLICY_BYTES,
     Policy,
     PolicyError,
+    allows_tool,
     check_context_allowed,
     check_settings,
     parse_policy,
@@ -229,3 +230,22 @@ def test_check_context_allowed_names_the_policy_and_says_to_use_diff_mode() -> N
 
 def test_check_context_allowed_passes_with_one_tool() -> None:
     check_context_allowed(ceiling(None, tools=frozenset({ToolName.READ})))
+
+
+READ_AND_GLOB = frozenset({ToolName.READ, ToolName.GLOB})
+
+
+@pytest.mark.parametrize("name", ["read", "glob"])
+def test_allows_tool_allows_each_tool_the_policy_lists(name: str) -> None:
+    assert allows_tool(READ_AND_GLOB, name)
+
+
+@pytest.mark.parametrize(
+    "name", ["grep", "READ", "read ", "read\n", "mcp__repo__read", "Read", "", "bash"]
+)
+def test_allows_tool_denies_any_other_name_compared_exactly(name: str) -> None:
+    assert not allows_tool(READ_AND_GLOB, name)
+
+
+def test_allows_tool_under_a_policy_with_no_tools_denies_every_tool() -> None:
+    assert not any(allows_tool(frozenset(), tool) for tool in ToolName)

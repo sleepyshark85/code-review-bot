@@ -137,3 +137,62 @@ From this slice's tests alone (the files above, `tests/conformance` and `test_p0
 - **A DNS failure and a reset connection** are scripted only through the fake transport (`socket.gaierror`, `ConnectionResetError`). A real DNS lookup would leave loopback, which the suite's network guard forbids.
 - **`pr backfill` and `evals live` with `--provider openai`** aren't tested. Live commands measure one model, `evals live` builds only Claude, and the spec names `pr` and `evals` only for AC8.
 - **A real 3xx with no `Location`** isn't run against the local server. The fake covers each redirect status.
+
+## P4-S3: Let Claude's hook and `can_use_tool` enforce the tool policy
+
+Spec: [p4-s3-claude-enforces-tool-policy.md](slices/p4-s3-claude-enforces-tool-policy.md). Tests: [`tests/integration/test_p4_s3_claude_enforces_tool_policy.py`](../../../tests/integration/test_p4_s3_claude_enforces_tool_policy.py), 52 cases, and [`tests/conformance/test_p4_s3_tool_policy_conformance.py`](../../../tests/conformance/test_p4_s3_tool_policy_conformance.py), 3 cases (one skipped for `openai`). They were written from the spec's criteria, Limits and Interfaces, design.md (Policy as code, the S3 risk row), ADR 0018 and Phase 3's Tool safety, while the developer built the slice and before any of its code was read.
+
+**Status: AC1 to AC6 pass. AC7 is pending (a recorded live step).** Run on the developer's uncommitted working tree (base `5142aa8`).
+
+**First runs:** 9 cases failed on the first run with exit 14. They were the tests' own mistake: `async` tests called `main`, which runs its own event loop. They now take the options from a synchronous fixture, or call the hook with `asyncio.run`. No assertion changed.
+
+### Gate
+
+Run in small groups, as the machine is short of memory: this file, `tests/conformance` (every scenario for `mock`, `claude` and `openai`), `test_p3_s3_claude_drives_tools.py` and `test_p0_s2_lockdown.py`, all green. `ruff format --check .`, `ruff check .` and `mypy` are clean on the whole tree. A full `pytest --cov` (without the developer's `tests/unit/test_claude_tools.py`, which was mid-edit and didn't import) had no failure up to 38%, when it hit the 25-minute local limit. For the full gate and the 90% coverage, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **Every review runs through `cli.main`** with `--policy`, `--context-repo` over a one-commit repository, and a `ClaudeAgentProvider` over `FakeSdk`, so the policy reaches the provider however the pipeline passes it. A thin wrapper around the provider keeps its `ReviewResponse`, for `denied_tools`.
+- **The CLI's side** is played by `fake_mcp`: the init message, `tools/list` and `tools/call` through the SDK's own MCP bridge, the `PreToolUse` hook (with the CLI's hook input) and `can_use_tool` (with a `ToolPermissionContext`).
+- **"The same pure function as the executor" (AC2)** is checked by behaviour: for each of the 7 tool sets a context policy can name, the hook denies `mcp__repo__<tool>` exactly when `RepoTools(..., allowed=...)` refuses `<tool>` with `policy_denied`. Whether the code calls one function is for the reviewer.
+- **"The same reason" (AC3)**: for each name, the deny message from `can_use_tool` equals the hook's reason, and holds the policy's version.
+- **"The same user prompt text" (AC3)**: the streaming input's user messages, joined (string content or text blocks), equal the `user_prompt` that `MockProvider` gets for the same diff, repository and policy.
+- **"Exactly as in Phase 3" (AC5)**: every `ClaudeAgentOptions` field is Phase 3's value or the SDK default, under the built-in policy and under `read`+`glob`, with `can_use_tool` and `permission_prompt_tool_name` unset, no hooks, and the prompt the same string as `MockProvider`'s. The options are also equal across the two policies.
+- **"At most 100 characters, escaped" (AC4)**: a 10,000-character name is recorded as a prefix of at most 100 characters; a name with a line feed, ESC and U+202E is recorded printable, with `\n` escaped. A name over 100 characters that also holds control characters isn't checked for length, since escaping can lengthen it.
+- **Limits, "shown capped and escaped"**: the hook's reason and the callback's message for a hostile name are printable and under 2,000 characters, within 5 s.
+
+### Fake SDK changes (AC6)
+
+- **`tests/fake_sdk.py`**: `FakeSdk` accepts a prompt given as streaming input (an async iterable of messages). As the SDK does, it reads the prompt in a task beside the script, into `input_messages`, and cancels the reader when the stream ends. A string prompt is handled exactly as before.
+- **`tests/fake_mcp.py`**: `call_can_use_tool` and `permission_denial` (ask the callback, read its answer), `hook_step` and `can_use_tool_step` (script steps that run the hook or the callback mid-stream), and `PermissionLog`.
+
+`tests/conformance/conftest.py` is unchanged: Claude's `tool_loop` already runs over `FakeSdk`, and now goes through the hook, `can_use_tool` and streaming input.
+
+### Criteria
+
+Test names drop the `test_p4_s3_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_allowed_tools_are_exactly_read_and_glob`. `ac1_server_lists_only_read_and_glob` (`tools/list` through the MCP bridge). `ac1_init_listing_exactly_read_and_glob_in_any_order_proceeds`. `ac1_init_listing_anything_else_fails_permanent` ×6 (all three tools, with `Bash`, with another server's tool, without `glob`, built-ins only, empty: exit 12, `permanent`, each unexpected or missing name in stderr, no tool call run). Control: `ac1_builtin_policy_still_allows_the_three` | pass (10) |
+| AC2 | `ac2_hook_allows_read_and_glob`. `ac2_hook_denies_grep_bash_and_read_naming_the_version` ×3. `ac2_hook_denies_other_tools_and_lookalikes` (9 other tools and 19 near misses, such as `read`, `mcp__repo__Read`, a trailing space or NUL, `mcp__repo__*`, `*` and empty; each reason names the version). `ac2_hook_decides_as_the_executor_for_every_policy` ×7. `ac2_builtin_policy_hook_allows_the_three_and_names_builtin_v1` | pass (13) |
+| AC3 | `ac3_options_carry_a_can_use_tool_callback`. `ac3_permission_prompt_tool_name_is_unset`. `ac3_can_use_tool_allows_read_and_glob_by_full_name` (and doesn't rewrite the input). `ac3_can_use_tool_denies_every_other_name_with_the_hooks_reason` (the same 28 names, and 4 that aren't text). `ac3_prompt_is_streaming_input_with_the_same_user_prompt_text`. `ac3_builtin_policy_can_use_tool_allows_the_three` | pass (6) |
+| AC4 | `ac4_each_denial_is_in_the_response_and_the_audit_log` (hook `Bash`, callback `grep`, hook `grep` in order, with allowed calls between that add nothing; each record's `policy_version`). `ac4_review_goes_on_after_denials` (a later `read` runs, exit 1 with the finding). `ac4_no_denial_means_no_record_and_an_empty_tuple`. `ac4_one_record_per_denial_even_when_repeated` (80 denials, 80 records). `ac4_builtin_policy_records_builtin_v1`. `ac4_long_tool_name_is_recorded_capped_at_100` ×2 and `ac4_unprintable_tool_name_is_recorded_escaped` ×2 (one per layer; ESC and U+202E reach neither stdout nor stderr) | pass (9) |
+| Limits | `limits_hook_denies_a_name_that_isnt_text` (`None`, 7, a list, a mapping). `limits_hostile_names_give_bounded_printable_reasons` ×3 (1,000,000 characters, control characters, 400,000 control characters). `limits_denying_a_name_that_isnt_text_is_recorded_and_the_review_goes_on` ×4 | pass (8) |
+| AC5 | `ac5_diff_mode_options_are_phase_3s_exactly` ×2 (built-in and `read`+`glob`). `ac5_diff_mode_prompt_is_the_same_string` ×2. `ac5_diff_mode_options_dont_depend_on_the_policy`. `ac5_diff_mode_records_no_denial_and_an_empty_tuple`. Diff mode's lockdown tests pass unchanged: `test_p0_s2_lockdown.py` and P3-S3's `ac2_*` | pass (6, and the earlier suites) |
+| AC6 | Every test in `tests/conformance` runs for `claude`, `tool_loop` included (`test_p3_s3_ac7_tool_loop_*[claude]`). New: `ac6_tool_loop_carries_no_denied_tool` ×3 (`mock`, `claude`; `openai` skipped until P4-S6) | pass (88 passed, 3 skipped: `openai`'s `tool_loop`) |
+| AC7 | A recorded live step, not a test. **Pending:** it needs this slice merged and the Phase 4 budget approved ([Q10](design.md#6-open-questions)). Then `smoke` (≤ $0.60) records, for each run, the init tool list, outcome, tool calls, cost and any `agent`/`denied` records. Stop rule: if a run fails because of the wiring, this slice is reverted before any other context run | pending |
+
+### Failures
+
+None open.
+
+### Coverage
+
+From this file and `tests/conformance` alone: `providers/claude_tools.py` 97% (line 138 and one branch aren't reached), `providers/base.py` 100%, `providers/claude_agent.py` 79% and `review.py` 82%. The rest of those two files is diff mode's error mapping and other pipeline paths, which earlier suites and the unit tests cover.
+
+### Gaps
+
+- **What the real CLI does** isn't tested offline: whether it consults `can_use_tool` for tools that `allowed_tools` already approves, and whether it keeps streaming input open as the fake does. The design leaves this to the `smoke` (AC7).
+- **Denials in a review that then fails** (a cap or a provider error) aren't specified, so they aren't tested. Only successful reviews are checked for `denied_tools` and `agent`/`denied` records.
+- **`DeniedTool.layer`** is read as `hook` or `can_use_tool`, through its value if it is an enum.

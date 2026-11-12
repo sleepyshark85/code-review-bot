@@ -214,6 +214,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
             parsed.reviewable_text,
             model=settings.model,
             tools=tools,
+            policy=policy,
             domain_rules=domain_rules,
             issues=issues,
         )
@@ -280,7 +281,7 @@ def tool_caps(settings: Settings) -> ToolCaps:
 async def _call_provider(
     provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog
 ) -> ReviewResponse:
-    """Send ``request``, record the call and any tools offered, and write and record warnings.
+    """Send ``request``, record the call and the tools offered or denied, write and record warnings.
 
     Raises:
         ProviderError: If the provider fails; its scrubbed diagnostics are recorded first.
@@ -306,6 +307,12 @@ async def _call_provider(
     )
     if response.offered_tools is not None:
         audit.record(Stage.AGENT, "tools", {"tools": list(response.offered_tools)})
+    for denied in response.denied_tools:
+        audit.record(
+            Stage.AGENT,
+            "denied",
+            {"tool": denied.tool, "layer": denied.layer, "policy_version": request.policy.version},
+        )
     for warning in response.warnings:
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})

@@ -1,16 +1,26 @@
-"""The Claude provider in context mode: its MCP server, hook, tool list check and caps."""
+"""The Claude provider in context mode: its MCP server, permission layers, tool list and caps."""
 
+import dataclasses
 from collections.abc import Mapping
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, SystemMessage
-from fake_sdk import FakeSdk, findings_json, result_message, succeeds
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    SystemMessage,
+    ToolPermissionContext,
+)
+from fake_sdk import HIGH_FINDING, FakeSdk, findings_json, result_message, succeeds
 
+from review_bot.context.ledger import ToolName
 from review_bot.context.tool_args import TOOL_DEFINITIONS
 from review_bot.errors import ErrorCategory, ProviderError
-from review_bot.providers.base import ReviewRequest, ReviewResponse, ToolDefinition
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
+from review_bot.providers.base import DeniedTool, ReviewRequest, ReviewResponse, ToolDefinition
 from review_bot.providers.claude_agent import ClaudeAgentProvider, SdkCall
 from review_bot.settings import Settings
 
@@ -55,9 +65,15 @@ def calls_read(path: str) -> Any:
 
 
 async def review(
-    sdk: SdkCall, *, tools: FakeTools | None = None, settings: Settings | None = None
+    sdk: SdkCall,
+    *,
+    tools: FakeTools | None = None,
+    settings: Settings | None = None,
+    policy: Policy = BUILTIN_POLICY,
 ) -> ReviewResponse:
-    request = ReviewRequest(system_prompt="S", user_prompt="U", model="M", tools=tools)
+    request = ReviewRequest(
+        system_prompt="S", user_prompt="U", model="M", tools=tools, policy=policy
+    )
     return await ClaudeAgentProvider(settings or Settings(), sdk_call=sdk).review(request)
 
 
@@ -233,7 +249,8 @@ async def test_hook_denies_any_other_tool_naming_the_allowed_ones(tool_name: str
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": (
-                "Only mcp__repo__read, mcp__repo__grep, mcp__repo__glob may be used in this review."
+                "The policy builtin-v1 allows only mcp__repo__read, mcp__repo__grep, "
+                "mcp__repo__glob in this review."
             ),
         }
     }
@@ -377,3 +394,186 @@ async def test_later_init_listing_other_tools_stops_the_review_and_any_later_too
     assert "unexpected Bash" in str(caught.value)
     assert tools.calls == [("read", {"path": "a.py"})]
     assert later_results == ["The review has stopped: answer with no further tool calls."]
+
+
+# A policy allowing two of the three tools, under its own version (P4-S3).
+READ_AND_GLOB = dataclasses.replace(
+    BUILTIN_POLICY, version="team-7", tools=frozenset({ToolName.READ, ToolName.GLOB})
+)
+READ_AND_GLOB_REASON = (
+    "The policy team-7 allows only mcp__repo__read, mcp__repo__glob in this review."
+)
+
+
+async def read_and_glob_options() -> ClaudeAgentOptions:
+    sdk = succeeds()
+    await review(sdk, tools=FakeTools(), policy=READ_AND_GLOB)
+    return sdk.options
+
+
+async def can_use(options: ClaudeAgentOptions, tool_name: object) -> object:
+    assert options.can_use_tool is not None
+    context = ToolPermissionContext(tool_use_id="tool-use-id")
+    return await options.can_use_tool(cast(str, tool_name), {}, context)
+
+
+async def test_policy_limits_the_allowlist_and_the_servers_list_to_its_tools() -> None:
+    options = await read_and_glob_options()
+    server = options.mcp_servers["repo"]["instance"]
+    entry = server.get_request_handler("tools/list")
+
+    listed = (await entry.handler(None, None)).tools
+
+    assert options.allowed_tools == ["mcp__repo__read", "mcp__repo__glob"]
+    assert [tool.name for tool in listed] == ["read", "glob"]
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [ALLOWED, ["mcp__repo__read", "mcp__repo__glob", "Bash"], ["mcp__repo__read"]],
+    ids=["with_grep", "with_bash", "missing_glob"],
+)
+async def test_policy_init_listing_other_than_its_tools_fails_permanent(listed: object) -> None:
+    sdk = FakeSdk(init_message(listed), NO_FINDINGS)
+
+    with pytest.raises(ProviderError) as caught:
+        await review(sdk, tools=FakeTools(), policy=READ_AND_GLOB)
+
+    assert caught.value.category is ErrorCategory.PERMANENT
+
+
+async def test_policy_init_listing_exactly_its_tools_proceeds() -> None:
+    sdk = FakeSdk(init_message(["mcp__repo__glob", "mcp__repo__read"]), NO_FINDINGS)
+
+    response = await review(sdk, tools=FakeTools(), policy=READ_AND_GLOB)
+
+    assert response.offered_tools == ("mcp__repo__glob", "mcp__repo__read")
+
+
+@pytest.mark.parametrize("tool_name", ["mcp__repo__read", "mcp__repo__glob"])
+async def test_policy_hook_and_can_use_tool_allow_its_tools(tool_name: str) -> None:
+    options = await read_and_glob_options()
+
+    assert await pre_tool_use(options, tool_name) == {}
+    assert await can_use(options, tool_name) == PermissionResultAllow()
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["mcp__repo__grep", "Bash", "Read", "read", "mcp__repo__READ", "mcp__repo__read "]
+)
+async def test_policy_hook_and_can_use_tool_deny_any_other_naming_the_version(
+    tool_name: str,
+) -> None:
+    options = await read_and_glob_options()
+
+    decision = await pre_tool_use(options, tool_name)
+    permission = await can_use(options, tool_name)
+
+    assert decision == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": READ_AND_GLOB_REASON,
+        }
+    }
+    assert permission == PermissionResultDeny(message=READ_AND_GLOB_REASON)
+
+
+@pytest.mark.parametrize("tool_name", [None, 7, ["mcp__repo__read"]])
+async def test_can_use_tool_denies_a_tool_name_that_isnt_text(tool_name: object) -> None:
+    options = await read_and_glob_options()
+
+    permission = await can_use(options, tool_name)
+
+    assert isinstance(permission, PermissionResultDeny)
+
+
+async def test_context_call_sends_the_user_prompt_as_streaming_input() -> None:
+    sdk = succeeds()
+
+    await review(sdk, tools=FakeTools())
+
+    [(prompt, options)] = sdk.calls
+    assert not isinstance(prompt, str)
+    assert sdk.input_messages == [
+        {
+            "type": "user",
+            "session_id": "",
+            "message": {"role": "user", "content": "U"},
+            "parent_tool_use_id": None,
+        }
+    ]
+    assert options.permission_prompt_tool_name is None
+
+
+async def test_diff_call_sends_a_string_prompt_and_no_can_use_tool() -> None:
+    sdk = succeeds()
+
+    await review(sdk)
+
+    [(prompt, options)] = sdk.calls
+    assert prompt == "U"
+    assert options.can_use_tool is None
+
+
+def asks_hook(tool_name: object) -> Any:
+    """A script step in which the CLI asks the hook whether the model may use ``tool_name``."""
+
+    async def step(options: ClaudeAgentOptions) -> None:
+        await pre_tool_use(options, cast(str, tool_name))
+
+    return step
+
+
+def asks_can_use_tool(tool_name: str) -> Any:
+    """A script step in which the CLI asks ``can_use_tool`` about ``tool_name``."""
+
+    async def step(options: ClaudeAgentOptions) -> None:
+        await can_use(options, tool_name)
+
+    return step
+
+
+async def test_response_carries_each_denial_in_order_and_the_review_goes_on() -> None:
+    sdk = FakeSdk(
+        asks_hook("Bash"),
+        asks_hook("mcp__repo__read"),
+        asks_can_use_tool("mcp__repo__grep"),
+        asks_can_use_tool("mcp__repo__glob"),
+        result_message(findings_json(HIGH_FINDING)),
+    )
+
+    response = await review(sdk, tools=FakeTools(), policy=READ_AND_GLOB)
+
+    assert len(response.findings) == 1
+    assert response.denied_tools == (
+        DeniedTool("Bash", "hook"),
+        DeniedTool("mcp__repo__grep", "can_use_tool"),
+    )
+
+
+async def test_response_without_a_denial_carries_none() -> None:
+    response = await review(succeeds(), tools=FakeTools())
+
+    assert response.denied_tools == ()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "shown"),
+    [
+        ("B" * 200, "B" * 100),
+        ("Bash\nrm\x1b[2J", "Bash\\nrm\\x1b[2J"),
+        ("x" * 98 + "\n", "x" * 98 + "\\n"),
+        ("x" * 99 + "\n", "x" * 99),
+        (None, "None"),
+    ],
+    ids=["long", "control", "escape_fits", "escape_cut", "not_text"],
+)
+async def test_denied_tool_name_is_at_most_100_characters_escaped(
+    tool_name: object, shown: str
+) -> None:
+    sdk = FakeSdk(asks_hook(tool_name), NO_FINDINGS)
+
+    response = await review(sdk, tools=FakeTools())
+
+    assert response.denied_tools == (DeniedTool(shown, "hook"),)

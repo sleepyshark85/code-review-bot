@@ -29,6 +29,7 @@ __all__ = [
     "MAX_POLICY_BYTES",
     "Policy",
     "PolicyError",
+    "allows_tool",
     "check_context_allowed",
     "check_settings",
     "parse_policy",
@@ -183,6 +184,15 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
         tools=frozenset(parsed.tools.allowed),
         max_cost_usd=parsed.cost.max_cost_usd,
     )
+
+
+def allows_tool(allowed: frozenset[ToolName], name: str) -> bool:
+    """Whether a policy allowing ``allowed`` lets a review call the tool ``name``.
+
+    The one tool decision: the executor and Claude's hook and ``can_use_tool`` all make it here.
+    ``name`` is the model's untrusted text, so it must equal a tool's name exactly.
+    """
+    return name in allowed
 
 
 def check_settings(settings: "Settings", policy: Policy) -> "Settings":

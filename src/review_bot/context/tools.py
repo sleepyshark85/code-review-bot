@@ -37,6 +37,7 @@ from review_bot.diff_parser import glob_matches
 from review_bot.errors import GitError, GitTimeoutError, ListingTooLargeError
 from review_bot.git import GitRepo
 from review_bot.git_output import GrepMatch
+from review_bot.governance.policy import allows_tool
 from review_bot.prompt import frame_tool_result
 from review_bot.providers.base import ToolDefinition
 
@@ -119,7 +120,7 @@ class RepoTools:
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
         """The allowed tools, of ``read``, ``grep`` and ``glob`` in that order."""
-        return tuple(tool for tool in TOOL_DEFINITIONS if tool.name in self._allowed)
+        return tuple(tool for tool in TOOL_DEFINITIONS if allows_tool(self._allowed, tool.name))
 
     @property
     def ledger(self) -> tuple[ToolCall, ...]:
@@ -179,7 +180,7 @@ class RepoTools:
             return _refused(
                 RefusalReason.UNKNOWN_TOOL, "There is no such tool; use read, grep or glob."
             )
-        if tool not in self._allowed:
+        if not allows_tool(self._allowed, tool):
             allowed = [definition.name for definition in self.definitions]
             offered = f"use {' or '.join(allowed)}" if allowed else "give your findings now"
             return _refused(

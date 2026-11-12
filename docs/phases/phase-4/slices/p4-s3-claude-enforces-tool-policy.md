@@ -1,6 +1,6 @@
 # P4-S3: Let Claude's hook and `can_use_tool` enforce the tool policy
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P4-S1. **Merges only after** P3-S15's `evals-context` and `backfill` dispatches have run, so Phase 3's live evidence is measured on the wiring it was designed with ([design §1](../design.md#1-goal-and-gate))
 - **Touches:** `providers.claude_tools`, `providers.claude_agent`, `providers.base`, `review`, `tests/conformance`
 
@@ -27,3 +27,5 @@ The hook's input and the callback's tool name are the CLI's untrusted text. Each
 - The executor's own enforcement (S1); the second provider's tools (S6).
 
 ## Notes
+- **Build choices (developer, 2026-11-12):** the one tool decision is `governance.policy.allows_tool`, which the executor, the hook and `can_use_tool` all call; the Claude side first requires the exact `mcp__repo__` prefix. The policy reaches the provider as `ReviewRequest.policy` (default `BUILTIN_POLICY`), set through `build_context_request(policy=...)`. A denied name is escaped character by character and cut so the escaped text is at most 100 characters. The SDK's `CanUseToolShadowedWarning` is silenced inside the real SDK call, since the allowlist shadowing `can_use_tool` is by design ([design §5](../design.md#5-known-risks)) and the warning would otherwise reach stderr.
+- **Gap:** denials reach the audit log through `ReviewResponse`, so a review that then fails (a cap, a wrong init list) records its `agent`/`failed` but not its denials.
