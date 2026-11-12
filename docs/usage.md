@@ -45,9 +45,9 @@ Specs: [tools](phases/phase-3/slices/p3-s1-local-review-with-repo-tools.md), [co
 ## Policy and cost
 
 - `--max-cost-usd USD` (`REVIEW_BOT_MAX_COST_USD`) caps one review's cost; reaching it exits `12`.
-- `--policy PATH` (`REVIEW_BOT_POLICY`) applies a versioned TOML policy (allowed tools, cost ceiling) to `review-bot`, `pr shadow|run|backfill` and `evals live|replay`. Default `builtin-v1`. Reports record its version and hash.
+- `--policy PATH` (`REVIEW_BOT_POLICY`) applies a versioned TOML policy (allowed tools, cost ceiling) to `review-bot`, `pr shadow|run|backfill` and `evals live|replay`. Default `builtin-v1`. Reports record its version and hash. In a Claude context review, the SDK's hook and permission callback enforce the same tool list, and each denial is logged as `agent`/`denied`.
 
-Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [cost cap](phases/phase-3/slices/p3-s3-claude-drives-tools.md).
+Specs: [policy](phases/phase-4/slices/p4-s1-policy-file.md), [Claude enforcement](phases/phase-4/slices/p4-s3-claude-enforces-tool-policy.md), [cost cap](phases/phase-3/slices/p3-s3-claude-drives-tools.md).
 
 ## Second provider
 
