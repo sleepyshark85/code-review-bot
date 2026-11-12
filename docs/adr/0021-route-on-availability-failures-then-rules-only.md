@@ -13,7 +13,7 @@ A routing provider tries the policy's primary model, then its single fallback, o
 ## Consequences
 - An Anthropic outage still yields a model review, or at least the rule findings, and deterministic gate classes still gate.
 - A review's worst-case cost is two caps, which live allowances and CI caps must account for. Its deadline is unchanged: the fallback gets only the time left.
-- A degraded run never passes the merge gate unjudged: it blocks on deterministic blockers, otherwise it reports `unjudged`.
+- A degraded run never passes the merge gate unjudged: it blocks on any whole-diff or carried blocker, otherwise it reports `unjudged`.
 - Findings from the two models aren't interchangeable, so reports name the model that served, and metrics can split by it.
 
 ## Alternatives considered
