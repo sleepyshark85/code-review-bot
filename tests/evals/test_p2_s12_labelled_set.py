@@ -92,7 +92,13 @@ EXPECTED_RULE_PART = {
     "ai:testing": 8,
     "swallowed-exception": 1,
 }
-EXPECTED_REJECT_REASONS = dict.fromkeys(REJECT_REASONS, 0)
+EXPECTED_REJECTED_SPLIT: dict[str, dict[str, int]] = {"origin": {}, "source": {}, "rule_part": {}}
+EXPECTED_REJECT_REASONS = {"wrong": 0, "not_worth_it": 0, "wrong_line": 0, "duplicate": 0}
+EXPECTED_COVERAGE = "100.0%"
+EXPECTED_PRECISION = "100.0%"
+EXPECTED_LOWER_BOUND = "100.0%"
+EXPECTED_WILSON = ("91.6%", "100.0%")
+EXPECTED_LARGEST_SHARE = "7.1%"
 
 type Unit = tuple[Any, ...]
 type Record = dict[str, Any]
@@ -172,6 +178,15 @@ def test_p2_s12_ac6_every_label_judges_a_unit_in_would_be(would_be):
     assert orphans == []
 
 
+def test_p2_s12_ac6_every_label_is_an_accept_or_a_reject_with_a_known_reason():
+    for number, record in enumerate(read_jsonl(LABELS), start=1):
+        assert record["label"] in {"accept", "reject"}, f"line {number}"
+        if record["label"] == "accept":
+            assert record["reason"] is None, f"line {number}"
+        else:
+            assert record["reason"] in REJECT_REASONS, f"line {number}"
+
+
 def test_p2_s12_ac6_labels_and_would_be_agree_on_source(judged):
     for label, line in judged:
         assert label["source"] == line["source"], unit_of(label)
@@ -183,7 +198,7 @@ def test_p2_s12_ac6_labels_and_would_be_agree_on_source(judged):
 def test_p2_s12_ac6_count_and_coverage_reproduce_ac2(would_be, judged):
     assert len(would_be) == EXPECTED_UNITS
     assert len(judged) == EXPECTED_UNITS
-    assert percent(len(judged) / len(would_be)) == "100.0%"
+    assert percent(len(judged) / len(would_be)) == EXPECTED_COVERAGE
 
 
 def test_p2_s12_ac6_point_estimate_and_lower_bound_reproduce_ac2(judged):
@@ -194,8 +209,8 @@ def test_p2_s12_ac6_point_estimate_and_lower_bound_reproduce_ac2(judged):
         EXPECTED_REJECTED,
         EXPECTED_DUPLICATES,
     )
-    assert percent(accepted / (accepted + rejected)) == "100.0%"
-    assert percent(accepted / (accepted + rejected + duplicates)) == "100.0%"
+    assert percent(accepted / (accepted + rejected)) == EXPECTED_PRECISION
+    assert percent(accepted / (accepted + rejected + duplicates)) == EXPECTED_LOWER_BOUND
 
 
 def test_p2_s12_ac6_wilson_interval_reproduces_ac2(judged):
@@ -203,7 +218,7 @@ def test_p2_s12_ac6_wilson_interval_reproduces_ac2(judged):
 
     low, high = wilson_95(accepted, accepted + rejected)
 
-    assert (percent(low), percent(high)) == ("91.6%", "100.0%")
+    assert (percent(low), percent(high)) == EXPECTED_WILSON
 
 
 def test_p2_s12_ac6_pr_count_and_largest_share_reproduce_ac2(judged):
@@ -215,7 +230,7 @@ def test_p2_s12_ac6_pr_count_and_largest_share_reproduce_ac2(judged):
 
     assert len(per_pr) == EXPECTED_PRS
     assert largest == EXPECTED_LARGEST_PR
-    assert percent(largest / sum(per_pr.values())) == "7.1%"
+    assert percent(largest / sum(per_pr.values())) == EXPECTED_LARGEST_SHARE
 
 
 @pytest.mark.parametrize(
@@ -227,7 +242,7 @@ def test_p2_s12_ac6_splits_reproduce_ac2(judged, trait, expected):
     rejected = Counter(line[trait] for label, line in judged if label["label"] == "reject")
 
     assert dict(accepted) == expected
-    assert dict(rejected) == {}
+    assert dict(rejected) == EXPECTED_REJECTED_SPLIT[trait]
 
 
 def test_p2_s12_ac6_reject_reasons_and_wrong_line_reproduce_ac2(judged):

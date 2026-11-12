@@ -765,7 +765,7 @@ Every other Q1 clause is met on the cut sample, and every number below is the cu
 | AC3 | Done (recorded) | [Baseline and cost](#p2-s12-baseline-and-cost): `baseline/v1` 2026-11-03 to 2026-11-12; $0.23 per accepted finding (backfill, reported cost); comment precision n/a (no comment posted yet) |
 | AC4 | Done (recorded) | [Start-up cost](#p2-s12-start-up-cost): Actions run 43151852223 (outside the cut sample), review step 29 s of a 39 s job |
 | AC5 | Done (recorded) | [Switch decision and dogfooding limits](#p2-s12-switch-decision-and-dogfooding-limits): comment mode on 2026-11-12 04:34 UTC |
-| AC6 | Pass | [The labelled set](#p2-s12-ac6-the-labelled-set): `tests/evals/labelled/` and `tests/evals/test_p2_s12_labelled_set.py` (28 tests) |
+| AC6 | Pass | [The labelled set](#p2-s12-ac6-the-labelled-set): `tests/evals/labelled/` and `tests/evals/test_p2_s12_labelled_set.py` (29 tests) |
 | AC7 | Done | README Ownership: owner @sleepyshark85, who funds the key, the `review-bot` support label and the runbook (#65). The README status line says Phase 2 is complete |
 | AC8 | Done | [Runbook](../../runbook.md) written (0.3.0); [branch protection](#p2-s12-branch-protection-ac8) confirmed 2026-11-12 |
 | AC9 | Done | `pyproject.toml` at `0.3.0`, [release notes](release-notes.md), tag `v0.3.0` |
@@ -929,6 +929,7 @@ Committed under `tests/evals/labelled/`:
 | The three files exist | `test_p2_s12_ac6_the_three_files_are_committed_together` | pass |
 | One line per unit, with exactly the eight fields | `..._would_be_has_exactly_the_eight_fields_on_every_line`, `..._would_be_holds_one_line_per_unit` | pass |
 | Every label judges a unit, and labels and would-be agree on `source` | `..._every_label_judges_a_unit_in_would_be`, `..._labels_and_would_be_agree_on_source` | pass |
+| Every label is `accept` with no reason, or `reject` with a known reason | `..._every_label_is_an_accept_or_a_reject_with_a_known_reason` | pass |
 | Count 42, coverage 100.0% | `..._count_and_coverage_reproduce_ac2` | pass |
 | Point estimate and lower bound 100.0% | `..._point_estimate_and_lower_bound_reproduce_ac2` | pass |
 | Wilson 95% 91.6% to 100.0%, by its own formula | `..._wilson_interval_reproduces_ac2` | pass |
@@ -941,7 +942,7 @@ Committed under `tests/evals/labelled/`:
 | The owner's login appears only as the owner in `repo` | `..._the_owner_login_appears_only_as_the_repo_owner` ×3 | pass |
 | P3-S17 guard: no `scan_secrets` hit in the three files or the test | `..._committed_files_have_no_scanner_hit` ×3, `..._this_file_has_no_scanner_hit` | pass |
 
-28 passed (21 test functions, with parametrised cases). `tests/integration/test_p3_s17_shadow_sample_supply.py` (34) still passes; its AC3 guard scans tracked files, so it covers the new files once they are committed.
+29 passed (22 test functions, with parametrised cases). The expected AC2 values are named `EXPECTED_*` constants copied from this report, so a new labelled set changes only this report and those constants. `tests/integration/test_p3_s17_shadow_sample_supply.py` (34) still passes; its AC3 guard scans tracked files, so it covers the new files once they are committed.
 
 **For the designer:** AC6 says "no ... username in any line", but `repo`, which the same AC requires, is `owner/name`, and the owner is a login. The test reads "username" as a person's identity beyond the repository's name: no user-like key, no @mention, and the owner's login nowhere outside `repo`.
 
