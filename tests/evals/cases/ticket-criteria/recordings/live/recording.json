@@ -1,0 +1,102 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "ticket-criteria",
+  "kind": "live",
+  "mode": "diff",
+  "case_sha256": "5a9378364e1e7573d0ce50a0959d7a927a85e95d358ec0df322a1f7a1f8bec84",
+  "diff_sha256": "e97f52bcd9d4754c84816501af0dd7e7ffcf629d3f0d5bd6e6cfe34e3072fe3f",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "1119d99e09eb76662ee4728722f347f432fb78bcd291e340528ca5d519dd2122",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:03:01.076048Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "security",
+          "rationale": "The `customer` value is written to the CSV unchanged, and the file goes to the finance team, who will likely open it in Excel or Sheets. If a customer name starts with `=`, `+`, `-`, `@`, a tab or a carriage return, the spreadsheet treats it as a formula (CSV/formula injection). That can run attacker-controlled formulas or leak data. Fix: neutralize such values before writing, for example by prefixing them with a single quote.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The new `export_csv` function has no tests. Add at least one that writes a few invoices to a temp path and checks the header, the row values (including that `total()` is called), the encoding, and newline handling.",
+          "confidence": 0.5,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1412,
+        "output_tokens": 529,
+        "cost_usd": "0.015014599999999998"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "security",
+          "rationale": "The `customer` field goes into the CSV unchanged, and the finance team will open this file in spreadsheet software. A customer name starting with `=`, `+`, `-`, `@`, tab or CR can run as a formula (CSV/formula injection). Neutralise those values before writing, for example by prefixing them with a single quote.",
+          "confidence": 0.55,
+          "evidence": []
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The new `export_csv` function has no tests. Add a test that writes to a temporary path and checks the header, row order and values. Also cover an empty iterable and customer names that contain commas, quotes or non-ASCII characters.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1412,
+        "output_tokens": 405,
+        "cost_usd": "0.008564999999999998"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/export.py",
+          "line": 18,
+          "severity": "medium",
+          "category": "security",
+          "rationale": "The export writes `invoice.customer` (and other string fields) to the CSV without sanitizing it. The finance team will open this file in a spreadsheet. A customer name starting with `=`, `+`, `-`, `@`, tab or CR is then evaluated as a formula, which allows CSV/formula injection such as data exfiltration via HYPERLINK or DDE. Escape such values, for example by prefixing a single quote, before writing them.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/export.py",
+          "line": 12,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The new `export_csv` function has no tests. Add tests for the header row, row contents and order, an empty iterable, and the encoding of non-ASCII customer names.",
+          "confidence": 0.5,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1412,
+        "output_tokens": 418,
+        "cost_usd": "0.008825"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}

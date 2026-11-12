@@ -1,0 +1,314 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "sample-context",
+  "kind": "live",
+  "mode": "context",
+  "case_sha256": "15a1565ae86386073e1c42945b9e5738473729aae85bc3a1c9e0a37d213da49c",
+  "diff_sha256": "0ccfe6b2edae500cb89af41186a6c97a7fbbc24ab52d4dbe79271578ee9bc028",
+  "prompt_version": "p3-v5",
+  "prompt_sha256": "2ca8f68cb12af1ac553e156aa8620937fdeeeaec543de6eed2031fc99abae670",
+  "repo_tree": "715f2b94c939956e0ad1dd5eb83991ba39b05d76",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:06:15.492466Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "high",
+          "category": "logic",
+          "rationale": "total() now includes tax, but billing/checkout.py:8 still multiplies invoice.total() by (1 + invoice.tax_rate), so customers get taxed twice at checkout. Either keep tax out of total() and add a separate total_with_tax() method, or remove the tax step from checkout.py. Add a test that covers the checkout amount.",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "file": "billing/checkout.py",
+              "start_line": 8,
+              "end_line": 8
+            }
+          ]
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "medium",
+          "category": "reliability",
+          "rationale": "The `except Exception: pass` block silently discards any error raised while applying a discount, such as a bad line item or a type error. The invoice then keeps its full price and nothing is logged. Remove the try/except, or catch only the exceptions you expect and log them or raise them again.",
+          "confidence": 0.8,
+          "rule": "swallowed-exception",
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "open() is called in text mode with no encoding, so the output depends on the platform's locale. Pass encoding=\"utf-8\". For CSV output, also consider using the csv module with newline=\"\".",
+          "confidence": 0.7,
+          "rule": "open-without-encoding",
+          "evidence": [],
+          "suggestion": "        with open(path, \"w\", encoding=\"utf-8\") as f:"
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 40,
+          "severity": "low",
+          "category": "logic",
+          "rationale": "export_csv writes self.total() and ignores total_override, so a discounted invoice is exported at its undiscounted amount. Write the override when has_discount() is true.",
+          "confidence": 0.55,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 25,
+              "end_line": 26
+            }
+          ]
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 38,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The diff changes how totals are calculated (tax), how discount errors are handled, and adds CSV export, but it includes no tests for any of these.",
+          "confidence": 0.5,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 12957,
+        "output_tokens": 1211,
+        "cost_usd": "0.0388012"
+      },
+      "warnings": [],
+      "tool_calls": [
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/checkout.py",
+              "first_line": 8,
+              "last_line": 8
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 6,
+              "last_line": 6
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 9,
+              "last_line": 9
+            }
+          ],
+          "listed": [],
+          "result_bytes": 212
+        },
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 10,
+              "last_line": 10
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 26,
+              "last_line": 26
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 33,
+              "last_line": 33
+            }
+          ],
+          "listed": [],
+          "result_bytes": 211
+        },
+        {
+          "tool": "read",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 1,
+              "last_line": 30
+            }
+          ],
+          "listed": [],
+          "result_bytes": 926
+        }
+      ]
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "high",
+          "category": "logic",
+          "rationale": "total() now includes tax, but billing/checkout.py:8 still multiplies invoice.total() by (1 + invoice.tax_rate). Every taxed invoice is now taxed twice at checkout. apply_discount also builds total_override from this taxed total. Fix by removing the extra tax in checkout.py, or by keeping total() pre-tax and adding a separate total_with_tax(). Add a test covering checkout with a non-zero tax rate.",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "file": "billing/checkout.py",
+              "start_line": 8,
+              "end_line": 8
+            },
+            {
+              "file": "billing/invoice.py",
+              "start_line": 14,
+              "end_line": 14
+            }
+          ]
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "medium",
+          "category": "reliability",
+          "rationale": "`except Exception: pass` throws away every error raised while applying a discount, such as bad line item data or a TypeError. When that happens the invoice silently keeps its undiscounted total and nothing records why. Remove the try/except, or catch only the specific exceptions you expect and log or re-raise them.",
+          "confidence": 0.9,
+          "rule": "swallowed-exception",
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 32,
+              "end_line": 36
+            }
+          ]
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "The file is opened in text mode without an encoding, so the output depends on the platform's default locale. Pass encoding=\"utf-8\". The csv module docs also recommend newline=\"\".",
+          "confidence": 0.8,
+          "rule": "open-without-encoding",
+          "evidence": [],
+          "suggestion": "        with open(path, \"w\", encoding=\"utf-8\", newline=\"\") as f:"
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 40,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "export_csv writes self.total() and ignores self.total_override. If a discount has been applied, the exported total won't match the amount actually being charged. Export total_override when it is set.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 38,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "None of this is tested: the tax change in total(), the new error handling in apply_discount, or the new export_csv method. Add unit tests for zero and non-zero tax rates, for discount codes, and for the CSV output.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 12063,
+        "output_tokens": 1246,
+        "cost_usd": "0.0323407"
+      },
+      "warnings": [],
+      "tool_calls": [
+        {
+          "tool": "grep",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/checkout.py",
+              "first_line": 8,
+              "last_line": 8
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 6,
+              "last_line": 6
+            },
+            {
+              "path": "billing/invoice.py",
+              "first_line": 9,
+              "last_line": 9
+            }
+          ],
+          "listed": [],
+          "result_bytes": 212
+        },
+        {
+          "tool": "read",
+          "outcome": "ok",
+          "spans": [
+            {
+              "path": "billing/invoice.py",
+              "first_line": 1,
+              "last_line": 12
+            }
+          ],
+          "listed": [],
+          "result_bytes": 363
+        }
+      ]
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/invoice.py",
+          "line": 35,
+          "severity": "medium",
+          "category": "reliability",
+          "rationale": "`except Exception: pass` hides every error from the discount calculation. Examples are a bad discount value, a non-numeric price, or an `AttributeError` on `tax_rate`. The invoice then silently keeps its full price and nothing is logged. Catch only the specific exceptions you expect, log them, and re-raise or report the failure to the caller. The try block can also just be removed.",
+          "confidence": 0.85,
+          "rule": "swallowed-exception",
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 32,
+              "end_line": 36
+            }
+          ],
+          "suggestion": "        except (TypeError, ValueError):\n            logger.exception(\"Failed to apply discount code %s\", code)\n            raise"
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 39,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "`open()` in text mode without an `encoding` uses the platform's default locale encoding, so the CSV output can differ between machines. Pass `encoding=\"utf-8\"` and `newline=\"\"`; `newline=\"\"` is the setting the csv module expects for CSV files.",
+          "confidence": 0.8,
+          "rule": "open-without-encoding",
+          "evidence": [],
+          "suggestion": "        with open(path, \"w\", encoding=\"utf-8\", newline=\"\") as f:"
+        },
+        {
+          "file": "billing/invoice.py",
+          "line": 14,
+          "severity": "medium",
+          "category": "testing",
+          "rationale": "The change to tax in `total()` affects every caller, including `apply_discount` and the new `export_csv`, and no tests come with it. Add tests for: a tax rate of zero or None, a non-zero tax rate, a discount applied on top of tax, and the CSV output. If `tax_rate` might not be set on older Invoice objects, test that case too, because `self.tax_rate` would raise `AttributeError` there.",
+          "confidence": 0.6,
+          "evidence": [
+            {
+              "file": "billing/invoice.py",
+              "start_line": 38,
+              "end_line": 41
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 3514,
+        "output_tokens": 897,
+        "cost_usd": "0.0188286"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}

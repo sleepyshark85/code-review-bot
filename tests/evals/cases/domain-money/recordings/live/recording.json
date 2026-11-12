@@ -1,0 +1,129 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "domain-money",
+  "kind": "live",
+  "mode": "diff",
+  "case_sha256": "083b946cdceffdc4301c2da368abeec29655288c33f5278c96ef2c11d7c767d2",
+  "diff_sha256": "1ecc941609187a5f85e9da24d758e6a9d4561cb2657cce60b4dbb5a3b7648c9f",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "9f3dbe3e474e1e9da4810a0eb72bd26de9395c9b6835d95ae8631275de93a383",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:00:37.398613Z",
+  "runs": [
+    {
+      "findings": [
+        {
+          "file": "billing/shipping.py",
+          "line": 6,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "PER_KG_RATE is a float. Decimal(0.85) on line 11 keeps the binary float error and gives Decimal('0.84999999999999997779553950749686919152736663818359375'). Shipping charges will be slightly wrong and carry long, unrounded fractions into billing totals. Define it as Decimal(\"0.85\"), the same way as FLAT_RATE.",
+          "confidence": 0.95,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "low",
+          "category": "logic",
+          "rationale": "The result is never quantized to cents. Multiplying by an arbitrary weight can return values with many decimal places, and callers that charge or display money may round inconsistently. Quantize to Decimal(\"0.01\") with an explicit rounding mode.",
+          "confidence": 0.6,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The billing formula changed from a flat rate to a weight-based one, and no tests come with it. Add tests for zero weight, typical weights and fractional weights that assert exact Decimal results. Such tests would have caught the float precision issue.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1304,
+        "output_tokens": 586,
+        "cost_usd": "0.015604800000000002"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/shipping.py",
+          "line": 6,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "PER_KG_RATE is a binary float. Decimal(0.85) gives Decimal('0.849999999999999977795539507496869...'), so per-kg charges are slightly wrong and carry spurious long fractional digits into billing amounts. Define it as Decimal(\"0.85\"), as FLAT_RATE already is, and use it directly without wrapping it at the call site.",
+          "confidence": 0.95,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "The result of multiplying by an arbitrary weight_kg is never rounded to currency precision, so shipping_for now returns amounts with many decimal places (e.g. 4.99 + 0.85*1.234). That can cause mismatched totals or rounding inconsistencies downstream. Quantize the result, e.g. .quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP), or use whatever rounding policy billing already applies.",
+          "confidence": 0.7,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "The pricing behaviour changed from a flat rate to a weight-based rate, but no tests are added or updated. Add tests for zero weight, typical weights, exact-cent results and rounding.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1304,
+        "output_tokens": 656,
+        "cost_usd": "0.013554099999999998"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/shipping.py",
+          "line": 6,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "PER_KG_RATE is a binary float, and Decimal(0.85) converts it exactly to 0.84999999999999997779553950749686919152736663818359375. Shipping charges will carry float error and many spurious digits, so they will drift off by fractions of a cent. Define it as Decimal(\"0.85\") to match FLAT_RATE.",
+          "confidence": 0.93,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "medium",
+          "category": "logic",
+          "rationale": "The result is never rounded to currency precision. Multiplying by an arbitrary weight such as 1.237 kg gives sub-cent amounts that will be invoiced or compared inconsistently. Quantize to Decimal(\"0.01\") with an explicit rounding mode such as ROUND_HALF_UP.",
+          "confidence": 0.7,
+          "evidence": []
+        },
+        {
+          "file": "billing/shipping.py",
+          "line": 11,
+          "severity": "low",
+          "category": "testing",
+          "rationale": "This changes billing behaviour from a flat rate to a weight-based rate, but no tests are added. Add tests for zero weight, typical weights, fractional weights and rounding, with exact Decimal expected values. Those tests would have caught the float-conversion error.",
+          "confidence": 0.6,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 1304,
+        "output_tokens": 646,
+        "cost_usd": "0.013353599999999998"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}

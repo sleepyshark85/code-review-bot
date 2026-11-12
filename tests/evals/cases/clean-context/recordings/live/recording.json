@@ -1,0 +1,55 @@
+{
+  "schema": "eval-recording/v1",
+  "case_id": "clean-context",
+  "kind": "live",
+  "mode": "diff",
+  "case_sha256": "46cfe8bdf1406e33282ef5f8f4907be8bd49ca6c7d2be110bcbd34d3c9130ffc",
+  "diff_sha256": "6b75e551361dbfce02ebf73dab6d2e400e16795bf4c24d317cd9422716fdd750",
+  "prompt_version": "p1-v1",
+  "prompt_sha256": "90bc401a3f17a0cd167ce66a4c117649dd8db0af332db94cf28b900562c0c79d",
+  "model": "claude-opus-5-5",
+  "sdk_version": "0.2.178",
+  "recorded_at": "2026-11-10T03:00:16.859939Z",
+  "runs": [
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 2394,
+        "output_tokens": 426,
+        "cost_usd": "0.0207642"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [
+        {
+          "file": "billing/refunds.py",
+          "line": 16,
+          "severity": "low",
+          "category": "reliability",
+          "rationale": "Deeply nested JSON, such as a rate value nested in thousands of arrays, makes json.load raise RecursionError. RecursionError is not an OSError or ValueError, so it escapes as a raw exception rather than the documented RefundRatesError. Callers that catch RefundRatesError to report a bad rates file will crash instead. Catch RecursionError here too and wrap it in RefundRatesError, and add a test for it.",
+          "confidence": 0.4,
+          "evidence": []
+        }
+      ],
+      "usage": {
+        "input_tokens": 2394,
+        "output_tokens": 751,
+        "cost_usd": "0.0157826"
+      },
+      "warnings": [],
+      "tool_calls": []
+    },
+    {
+      "findings": [],
+      "usage": {
+        "input_tokens": 2394,
+        "output_tokens": 321,
+        "cost_usd": "0.007182600000000001"
+      },
+      "warnings": [],
+      "tool_calls": []
+    }
+  ]
+}
