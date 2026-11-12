@@ -12,7 +12,9 @@ Each review run decides the blockers for the approved classes the repository opt
 
 ## Consequences
 - The gate check never depends on the model being up, and re-evaluates on override replies and reviews without a new review. Its concurrency group includes the event name, so a reply never cancels a push's gate run.
-- A deterministic blocker clears as soon as the code is fixed. A model blocker clears when its line goes, or by override.
+- A deterministic blocker clears as soon as the code is fixed. A model blocker clears when its line goes, or by override; a withheld one, or one whose comment is gone, clears only by override, given by a PR review naming its fingerprint, as for a secret.
+- Rule classes count only the rules' own findings, so a model finding tagged with a rule's ID gates under no class, and a rule that can't reach `high` can't be a class. The marker tags each blocker with its class, so only model blockers carry, except when the whole diff can't be checked.
+- Model blockers beyond the marker's 25 entries aren't carried, and when a diff can't be checked the listed blockers carry but no new one is found; both are disclosed.
 - The gate job needs `actions: read`, a read-only permission, to tell a deleted summary from a PR the bot never reviewed.
 - Overrides use review comments and reviews, never `issue_comment`, whose check runs land on the default branch rather than the PR's head.
 - Each class earns gating on shadow evidence first, and each override is recorded per finding.
