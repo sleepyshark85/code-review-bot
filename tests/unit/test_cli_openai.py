@@ -322,3 +322,29 @@ def test_check_provider_settings_keeps_a_given_model_through_a_policy_ceiling() 
 
     with pytest.raises(ConfigError, match="--max-cost-usd"):
         cli.check_provider_settings(capped, openai_api_key=API_KEY)
+
+
+def test_main_with_a_key_ending_in_a_newline_exits_2_naming_the_variable(
+    diff_path: Path,
+    fake: FakeTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", f"{API_KEY}\n")
+
+    exit_code = cli.main([str(diff_path), *OPENAI_M1])
+
+    error = capsys.readouterr().err
+    assert exit_code == 2
+    assert "OPENAI_API_KEY" in error
+    assert API_KEY not in error
+    assert fake.sent == []
+
+
+@pytest.mark.parametrize("url", ["http://[::1]:x/v1", "https://x.example/v 1"])
+def test_main_with_a_base_url_urllib_cant_send_exits_2(
+    diff_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+
+    assert cli.main([str(diff_path), *OPENAI_M1, "--openai-base-url", url]) == 2

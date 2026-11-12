@@ -24,11 +24,12 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "ChatRequest",
     "Completion",
+    "ErrorReply",
     "check_base_url",
-    "error_category",
-    "error_text",
     "is_loopback_url",
+    "is_plain_text",
     "read_completion",
+    "read_error",
     "retry_after_s",
 ]
 
@@ -84,6 +85,19 @@ class ChatRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ErrorReply:
+    """An error response's category, and its text, which is untrusted.
+
+    ``text`` is ``error.message``, else the body as text, or None if it is empty. It may only
+    become diagnostics, which are scrubbed before they are kept.
+    """
+
+    category: ErrorCategory
+    is_quota_exhausted: bool
+    text: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class Completion:
     """A successful completion's validated findings and token usage."""
 
@@ -94,12 +108,19 @@ class Completion:
 def check_base_url(url: str) -> str:
     """Return ``url`` if it may be a base URL, else raise ``ValueError`` saying why.
 
-    It must be ``https``, or ``http`` on a loopback host, and hold no userinfo, query or
-    fragment, so no credential or parameter hides in it.
+    It must be ``https``, or ``http`` on a loopback host, with a valid port if it has one, and
+    hold no userinfo, query or fragment, so no credential or parameter hides in it. It must be
+    plain ASCII with no space or control character, as a request line needs.
     """
+    if not is_plain_text(url):
+        raise ValueError("must hold only ASCII with no space or control character")
     parts = urlsplit(url)
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         raise ValueError("must be an http or https URL with a host")
+    try:
+        parts.port  # noqa: B018 - read only for the ValueError a bad port raises
+    except ValueError as exc:
+        raise ValueError("must have a port from 0 to 65535, if it has one") from exc
     if parts.username is not None or parts.password is not None:
         raise ValueError("must not hold a user name or password")
     if parts.query or parts.fragment or url.endswith(("?", "#")):
@@ -107,6 +128,11 @@ def check_base_url(url: str) -> str:
     if parts.scheme == "http" and not is_loopback_url(url):
         raise ValueError("must use https, except on a loopback host such as 127.0.0.1")
     return url
+
+
+def is_plain_text(text: str) -> bool:
+    """Whether ``text`` is printable ASCII with no space, so it fits in a request's head."""
+    return text.isascii() and text.isprintable() and " " not in text
 
 
 def is_loopback_url(url: str) -> bool:
@@ -147,31 +173,26 @@ def read_completion(body: bytes) -> Completion:
     return Completion(findings, _token_usage(completion.get("usage")))
 
 
-def error_category(status: int, body: bytes) -> ErrorCategory:
-    """The category of a response whose status isn't 200.
+def read_error(status: int, body: bytes) -> ErrorReply:
+    """Read a response whose status isn't a success: its category, and its text.
 
     A redirect is never followed, so it is ``permanent`` like any 4xx without its own category.
     """
+    error = _error_object(body)
+    is_quota_exhausted = (
+        status == HTTPStatus.TOO_MANY_REQUESTS and error.get("code") == _QUOTA_EXHAUSTED
+    )
     if status in _AUTH_STATUSES:
-        return ErrorCategory.AUTH
-    if status == HTTPStatus.TOO_MANY_REQUESTS:
-        is_quota = _error_field(body, "code") == _QUOTA_EXHAUSTED
-        return ErrorCategory.PERMANENT if is_quota else ErrorCategory.RATE_LIMIT
-    if status in _SERVER_ERROR_STATUSES:
-        return ErrorCategory.TRANSIENT
-    return ErrorCategory.PERMANENT
-
-
-def error_text(body: bytes) -> str | None:
-    """An error response's ``error.message``, else its body as text, or None if it is empty.
-
-    Untrusted: it may only become diagnostics, which are scrubbed before they are kept.
-    """
-    message = _error_field(body, "message")
-    if message is not None:
-        return message
-    text = body[:MAX_RESPONSE_BYTES].decode("utf-8", "replace").strip()
-    return text or None
+        category = ErrorCategory.AUTH
+    elif status == HTTPStatus.TOO_MANY_REQUESTS and not is_quota_exhausted:
+        category = ErrorCategory.RATE_LIMIT
+    elif status in _SERVER_ERROR_STATUSES:
+        category = ErrorCategory.TRANSIENT
+    else:
+        category = ErrorCategory.PERMANENT
+    message = error.get("message")
+    text = message if isinstance(message, str) else _body_text(body)
+    return ErrorReply(category, is_quota_exhausted=is_quota_exhausted, text=text)
 
 
 def retry_after_s(value: str, *, now: datetime) -> float | None:
@@ -209,12 +230,16 @@ def _json_object(body: bytes) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _error_field(body: bytes, name: str) -> str | None:
-    """The string ``error.<name>`` of an error body, or None if it has none."""
+def _error_object(body: bytes) -> dict[str, object]:
+    """The ``error`` object of an error body, or an empty one if it has none."""
     parsed = _json_object(body)
     error = None if parsed is None else parsed.get("error")
-    value = error.get(name) if isinstance(error, dict) else None
-    return value if isinstance(value, str) else None
+    return error if isinstance(error, dict) else {}
+
+
+def _body_text(body: bytes) -> str | None:
+    text = body[:MAX_RESPONSE_BYTES].decode("utf-8", "replace").strip()
+    return text or None
 
 
 def _token_usage(usage: object) -> TokenUsage:

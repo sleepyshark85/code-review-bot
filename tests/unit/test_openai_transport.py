@@ -3,6 +3,7 @@
 import json
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -116,13 +117,14 @@ async def test_post_json_reads_at_most_one_byte_past_4_mb(server: Server) -> Non
     assert len(response.body) == MAX_RESPONSE_BYTES + 1
 
 
-async def test_post_json_to_a_closed_port_raises_connection_refused() -> None:
+@pytest.mark.parametrize("scheme", ["http", "https"])
+async def test_post_json_to_a_closed_port_raises_connection_refused(scheme: str) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
     with pytest.raises(ConnectionRefusedError):
-        await post(f"http://127.0.0.1:{port}/v1")
+        await post(f"{scheme}://127.0.0.1:{port}/v1")
 
 
 async def test_post_json_raises_when_the_server_hangs_up(server: Server) -> None:
@@ -130,3 +132,68 @@ async def test_post_json_raises_when_the_server_hangs_up(server: Server) -> None
 
     with pytest.raises(ConnectionResetError):
         await post(server.url)
+
+
+DRIP_HEAD = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+
+
+@pytest.fixture
+def drip() -> Iterator[Callable[[bytes, bytes], str]]:
+    """Serves one request: ``head`` at once, then ``tail`` a byte every 0.1 s, for 20 s at most."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    stop = threading.Event()
+
+    def start(head: bytes, tail: bytes) -> str:
+        def serve() -> None:
+            connection, _address = listener.accept()
+            with connection:
+                connection.recv(65536)
+                connection.sendall(head)
+                for byte in tail[:200]:
+                    if stop.wait(0.1):
+                        return
+                    try:
+                        connection.sendall(bytes([byte]))
+                    except OSError:
+                        return
+
+        threading.Thread(target=serve, daemon=True).start()
+        return f"http://127.0.0.1:{listener.getsockname()[1]}/v1"
+
+    yield start
+    stop.set()
+    listener.close()
+
+
+async def elapsed_until_timeout(url: str, timeout_s: float) -> float:
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await UrllibTransport().post_json(url, {}, headers={}, timeout_s=timeout_s)
+    return time.monotonic() - started
+
+
+async def test_post_json_bounds_a_body_sent_a_byte_at_a_time(
+    drip: Callable[[bytes, bytes], str],
+) -> None:
+    url = drip(DRIP_HEAD + b"Content-Length: 100000\r\n\r\n", b" " * 200)
+
+    assert await elapsed_until_timeout(url, 0.5) < 3
+
+
+async def test_post_json_bounds_a_body_of_no_declared_length(
+    drip: Callable[[bytes, bytes], str],
+) -> None:
+    # Cut off by the deadline, it would otherwise look whole: the connection just closes.
+    url = drip(DRIP_HEAD + b"Connection: close\r\n\r\n", b" " * 200)
+
+    assert await elapsed_until_timeout(url, 0.5) < 3
+
+
+async def test_post_json_bounds_headers_sent_a_byte_at_a_time(
+    drip: Callable[[bytes, bytes], str],
+) -> None:
+    url = drip(b"", DRIP_HEAD + b"X-Slow: " + b"a" * 150)
+
+    assert await elapsed_until_timeout(url, 0.5) < 3

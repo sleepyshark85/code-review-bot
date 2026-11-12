@@ -13,10 +13,10 @@ from review_bot.providers.openai_wire import (
     MAX_RESPONSE_BYTES,
     ChatRequest,
     check_base_url,
-    error_category,
-    error_text,
     is_loopback_url,
+    is_plain_text,
     read_completion,
+    read_error,
     retry_after_s,
 )
 
@@ -95,6 +95,12 @@ def test_check_base_url_accepts_https_and_loopback_http(url: str) -> None:
         ("ftp://models.example.org/v1", "http or https"),
         ("https:///v1", "http or https"),
         ("models.example.org/v1", "http or https"),
+        ("http://[::1]:x/v1", "port"),
+        ("https://models.example.org:99999/v1", "port"),
+        ("https://models.example.org/v 1", "space"),
+        ("https://models.example.org/v1\n", "control"),
+        ("https://models.example.org/v1\t", "control"),
+        ("https://models.example.org/v\u00e9", "ASCII"),
     ],
 )
 def test_check_base_url_rejects_an_unsafe_url_saying_why(url: str, problem: str) -> None:
@@ -237,8 +243,23 @@ def test_read_completion_never_shows_the_endpoints_text() -> None:
         (600, b"", ErrorCategory.PERMANENT),
     ],
 )
-def test_error_category_maps_each_status(status: int, body: bytes, category: str) -> None:
-    assert error_category(status, body) is category
+def test_read_error_maps_each_status(status: int, body: bytes, category: ErrorCategory) -> None:
+    assert read_error(status, body).category is category
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "is_quota_exhausted"),
+    [
+        (429, b'{"error": {"code": "insufficient_quota"}}', True),
+        (429, b'{"error": {"code": "rate_limit_exceeded"}}', False),
+        (400, b'{"error": {"code": "insufficient_quota"}}', False),
+        (429, b'{"error": "insufficient_quota"}', False),
+    ],
+)
+def test_read_error_tells_an_exhausted_quota_only_from_a_429_code(
+    status: int, body: bytes, is_quota_exhausted: bool
+) -> None:
+    assert read_error(status, body).is_quota_exhausted is is_quota_exhausted
 
 
 @pytest.mark.parametrize(
@@ -252,8 +273,28 @@ def test_error_category_maps_each_status(status: int, body: bytes, category: str
         (b"  \n", None),
     ],
 )
-def test_error_text_prefers_the_error_message_then_the_body(body: bytes, text: str | None) -> None:
-    assert error_text(body) == text
+def test_read_error_text_prefers_the_error_message_then_the_body(
+    body: bytes, text: str | None
+) -> None:
+    assert read_error(500, body).text == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("sk-abc_123.XYZ", True),
+        ("key\n", False),
+        ("key\r", False),
+        ("a key", False),
+        ("tab\tkey", False),
+        ("ke\x00y", False),
+        ("k\u00e9y", False),
+    ],
+)
+def test_is_plain_text_allows_only_printable_ascii_without_spaces(
+    text: str, expected: bool
+) -> None:
+    assert is_plain_text(text) is expected
 
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)

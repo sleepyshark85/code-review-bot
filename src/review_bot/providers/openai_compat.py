@@ -7,29 +7,25 @@ the deadline.
 
 import asyncio
 import dataclasses
-import json
-import urllib.error
-import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
-from http import HTTPStatus
-from http.client import HTTPException, HTTPMessage
+from http.client import HTTPException
 from typing import Final, Protocol
 
 from review_bot.audit import JsonValue, utc_now
 from review_bot.errors import ConfigError, ErrorCategory, ProviderError
 from review_bot.providers.base import ReviewRequest, ReviewResponse
 from review_bot.providers.openai_wire import (
-    MAX_RESPONSE_BYTES,
     ChatRequest,
     Completion,
     check_base_url,
-    error_category,
-    error_text,
     is_loopback_url,
+    is_plain_text,
     read_completion,
+    read_error,
     retry_after_s,
 )
+from review_bot.providers.urllib_transport import HttpResponse, UrllibTransport
 from review_bot.settings import OPENAI_API_KEY_VARIABLE, Settings
 
 __all__ = [
@@ -49,6 +45,10 @@ _SUCCESS_STATUSES: Final = range(200, 300)
 _NO_KEY_MESSAGE: Final = (
     f"--provider openai needs {OPENAI_API_KEY_VARIABLE}, which is unset or empty, so nothing "
     "was sent. Set it, or point --openai-base-url at a loopback server that needs no key."
+)
+_UNSENDABLE_KEY_MESSAGE: Final = (
+    f"{OPENAI_API_KEY_VARIABLE} holds a space, a control character such as a newline, or a "
+    "character that isn't ASCII, so it can't be sent. Set it to the key alone."
 )
 _TOOLS_MESSAGE: Final = (
     "The OpenAI-compatible provider can't review with repository context yet. Review in diff mode."
@@ -73,18 +73,6 @@ _QUOTA_MESSAGE: Final = (
 )
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class HttpResponse:
-    """An HTTP response: its status, headers and body, of which at most 4 MB and a byte are read.
-
-    The byte past 4 MB lets the provider tell an oversized body from one exactly at the limit.
-    """
-
-    status: int
-    headers: Mapping[str, str]
-    body: bytes
-
-
 class HttpTransport(Protocol):
     """Sends one JSON POST. One real implementation, ``UrllibTransport``, and fakes for tests."""
 
@@ -98,6 +86,8 @@ class HttpTransport(Protocol):
     ) -> HttpResponse:
         """Send ``body`` and return the response, whatever its status; never follow a redirect.
 
+        ``timeout_s`` bounds the whole request, and the body read is at most 4 MB and a byte.
+
         Raises:
             OSError: If no response came back, as the standard library raises it: such as
                 ``TimeoutError``, ``ConnectionRefusedError`` or ``socket.gaierror``.
@@ -106,73 +96,19 @@ class HttpTransport(Protocol):
         ...
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuses every redirect, so the key never follows one to another host."""
-
-    def redirect_request(  # noqa: PLR0913, PLR0917 - urllib's signature
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> None:
-        """Return None, so urllib returns the redirect's status as an ``HTTPError``."""
-
-
-class UrllibTransport:
-    """An ``HttpTransport`` over ``urllib``, run in a thread so the event loop never blocks."""
-
-    def __init__(self) -> None:
-        """Build the opener, which follows no redirect."""
-        self._opener = urllib.request.build_opener(_NoRedirect)
-
-    async def post_json(
-        self,
-        url: str,
-        body: Mapping[str, JsonValue],
-        *,
-        headers: Mapping[str, str],
-        timeout_s: float,
-    ) -> HttpResponse:
-        """Send ``body`` as JSON; see ``HttpTransport.post_json``."""
-        data = json.dumps(body).encode("utf-8")
-        return await asyncio.to_thread(self._post, url, data, headers, timeout_s)
-
-    def _post(
-        self, url: str, data: bytes, headers: Mapping[str, str], timeout_s: float
-    ) -> HttpResponse:
-        request = urllib.request.Request(  # noqa: S310 - the base URL's scheme is checked
-            url,
-            data=data,
-            method="POST",
-            headers={**headers, "Content-Type": "application/json", "User-Agent": "review-bot"},
-        )
-        try:
-            with self._opener.open(request, timeout=timeout_s) as response:
-                return HttpResponse(
-                    response.status, dict(response.headers), response.read(MAX_RESPONSE_BYTES + 1)
-                )
-        except urllib.error.HTTPError as exc:
-            with exc:
-                return HttpResponse(exc.code, dict(exc.headers), exc.read(MAX_RESPONSE_BYTES + 1))
-        except urllib.error.URLError as exc:
-            # The OS error inside says what failed, such as a refused connection.
-            if isinstance(exc.reason, OSError):
-                raise exc.reason from exc
-            raise
-
-
 def check_api_key(base_url: str, api_key: str | None) -> None:
     """Check that a request to ``base_url`` can be authorised: only a loopback host needs no key.
 
     Raises:
         ConfigError: Naming ``OPENAI_API_KEY``, if it is unset or empty and the host isn't
-            loopback.
+            loopback, or if it can't be sent in a header; never quoting the key.
     """
-    if not api_key and not is_loopback_url(base_url):
-        raise ConfigError(_NO_KEY_MESSAGE)
+    if not api_key:
+        if not is_loopback_url(base_url):
+            raise ConfigError(_NO_KEY_MESSAGE)
+        return
+    if not is_plain_text(api_key):
+        raise ConfigError(_UNSENDABLE_KEY_MESSAGE)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -214,7 +150,8 @@ class OpenAICompatibleProvider:
             ValueError: If ``base_url`` isn't allowed (``check_base_url``).
             ConfigError: If there is no key and the host isn't loopback.
         """
-        check_api_key(check_base_url(base_url), api_key)
+        check_base_url(base_url)
+        check_api_key(base_url, api_key)
         self._settings = settings
         self._base_url = base_url
         self._url = f"{base_url.rstrip('/')}/chat/completions"
@@ -304,12 +241,13 @@ class OpenAICompatibleProvider:
 
     def _failure_from_status(self, response: HttpResponse) -> _Failure:
         status = response.status
-        category = error_category(status, response.body)
-        if status == HTTPStatus.TOO_MANY_REQUESTS and category is ErrorCategory.PERMANENT:
+        reply = read_error(status, response.body)
+        if reply.is_quota_exhausted:
             message = _QUOTA_MESSAGE
         else:
-            message = _status_message(category, status)
-        error = ProviderError(category, message, diagnostics=self._diagnostics(response.body))
+            message = _status_message(reply.category, status)
+        diagnostics = self._diagnostics(reply.text)
+        error = ProviderError(reply.category, message, diagnostics=diagnostics)
         return _Failure(error, self._retry_after_s(response.headers), f"HTTP {status}")
 
     def _retry_after_s(self, headers: Mapping[str, str]) -> float | None:
@@ -319,9 +257,8 @@ class OpenAICompatibleProvider:
                 return retry_after_s(value, now=self._clock())
         return None
 
-    def _diagnostics(self, body: bytes) -> tuple[str, ...]:
-        """An error body's text as diagnostics, with the key, should it be echoed, removed."""
-        text = error_text(body)
+    def _diagnostics(self, text: str | None) -> tuple[str, ...]:
+        """An error response's text as diagnostics, with the key, should it be echoed, removed."""
         if text is None:
             return ()
         if self._api_key is not None:

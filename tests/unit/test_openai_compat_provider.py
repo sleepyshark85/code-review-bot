@@ -389,3 +389,18 @@ def test_provider_without_a_key_for_a_remote_host_raises_config_error(
 def test_provider_refuses_an_unsafe_base_url() -> None:
     with pytest.raises(ValueError, match="https"):
         provider(transport(), base_url="http://models.example.org/v1")
+
+
+@pytest.mark.parametrize(
+    "suffix", ["\n", " ", "\r\n", "\x00"], ids=["newline", "space", "crlf", "nul"]
+)
+def test_provider_refuses_a_key_that_cant_go_in_a_header_without_quoting_it(suffix: str) -> None:
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY") as caught:
+        provider(transport(), api_key=API_KEY + suffix)
+
+    assert API_KEY not in str(caught.value)
+
+
+def test_provider_refuses_an_unsendable_key_on_loopback_too() -> None:
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        provider(transport(), base_url="http://127.0.0.1/v1", api_key=f"{API_KEY}\n")
