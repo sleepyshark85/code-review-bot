@@ -15,6 +15,7 @@ from review_bot.audit import AuditLog
 from review_bot.errors import ErrorCategory, ProviderCap, ProviderError
 from review_bot.findings import EvidenceSpan, Finding
 from review_bot.git import GitRepo
+from review_bot.governance.policy import BUILTIN_POLICY
 from review_bot.pr.comments import with_summary_marker
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.fake_github import FakeGitHubClient
@@ -85,6 +86,7 @@ def run(  # noqa: PLR0913 - keyword-only, each a separate input of the run
             issue_reader=issue_reader,
             github=github,
             settings=settings,
+            policy=BUILTIN_POLICY,
             audit=audit,
             environ={},
             clock=lambda: NOW,
@@ -228,6 +230,7 @@ def test_backfill_pull_request_in_context_mode_reads_the_head_commit(
             make_provider=lambda: provider,
             issue_reader=None,
             settings=CONTEXT,
+            policy=BUILTIN_POLICY,
             audit=audit,
             clock=lambda: NOW,
         )
@@ -390,6 +393,7 @@ def test_backfill_pull_request_in_context_mode_reads_linked_issues(
             make_provider=MockProvider,
             issue_reader=reader,
             settings=CONTEXT,
+            policy=BUILTIN_POLICY,
             audit=audit,
             clock=lambda: NOW,
         )

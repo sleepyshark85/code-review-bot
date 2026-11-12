@@ -44,6 +44,12 @@ INPUT_EXIT = 19
 # cli.py's provider exit codes (Phase 0 design): rate limit 9, auth 8.
 RATE_LIMIT_EXIT = 9
 REVIEW_BYTES_VARIABLE = "REVIEW_BOT_MAX_REVIEW_BYTES"
+# P4-S1 AC8: backfill refuses in every mode without `--max-usd` and a per-call cap. These are
+# generous enough that no run here is refused or stopped by them (an unreported cost counts as
+# the cap), so each test keeps its intent; a test of the dollar flags passes its own.
+WITHIN_BUDGET = ("--max-usd", "1000", "--max-cost-usd", "0.10")
+# With a dollar budget, the entries line adds the spend (P3-S8 AC8).
+SPEND = re.compile(r" spent_usd=\d+(?:\.\d+)?")
 # Generous: it catches a hang or reading the whole file, not a slow CI machine.
 BOUND_S = 60.0
 
@@ -177,7 +183,7 @@ class Backfiller:
         path.write_bytes(pulls)
         return path
 
-    def run(
+    def run(  # noqa: PLR0913 - one keyword per thing a test varies
         self,
         pulls: Sequence[MergedPull | dict[str, Any]] | str | bytes,
         repo: Path,
@@ -185,8 +191,13 @@ class Backfiller:
         max_calls: int = 10,
         provider: Any = None,
         provider_name: str = "mock",
+        dollar_flags: Sequence[str] = WITHIN_BUDGET,
     ) -> Run:
-        """`backfill --pulls F --github-repo R --repo DIR --out OUT --max-calls N --provider P`."""
+        """`backfill --pulls F --github-repo R --repo DIR --out OUT --max-calls N --provider P`.
+
+        `dollar_flags` come before `flags`, so a test's own value of either flag wins; `()` leaves
+        both out.
+        """
         pr_cli = importlib.import_module("review_bot.pr.cli")
         pulls_path = self.write_pulls(pulls)
         self._capsys.readouterr()
@@ -195,7 +206,7 @@ class Backfiller:
                 "backfill", "--pulls", str(pulls_path), "--github-repo", self.github_repo,
                 "--repo", str(repo),
                 "--out", str(self.out), "--max-calls", str(max_calls),
-                "--provider", provider_name, *flags,
+                "--provider", provider_name, *dollar_flags, *flags,
             ],
             provider=provider,
         )  # fmt: skip
@@ -223,6 +234,11 @@ def assert_refused_before_any_call(run: Run, provider: PerPullProvider, exit_cod
 def closing_lines(stdout: str) -> list[str]:
     """stdout's last two lines: the entries line, then the outcome and reason counts."""
     return stdout.rstrip("\n").splitlines()[-2:]
+
+
+def counts_without_spend(stdout: str) -> list[str]:
+    """`closing_lines` without the spend the dollar budget adds to the entries line."""
+    return [SPEND.sub("", line) for line in closing_lines(stdout)]
 
 
 def assert_missing_commit_hint(stderr: str, number: int) -> None:
@@ -575,7 +591,7 @@ def test_p2_s13_ac9_stdout_ends_with_counts_per_outcome_and_reason(backfill, his
     run = backfill.run(pulls, history.repo.path, provider=provider)
 
     assert run.exit_code == RATE_LIMIT_EXIT, run.stderr
-    assert closing_lines(run.stdout) == [
+    assert counts_without_spend(run.stdout) == [
         "backfill: entries=6 already_in_out=0 run=6",
         "backfill: reviewed=1 blocked_secret=0 skipped=4 failed=1 fork=1 missing_commit=1 "
         "nothing_to_review=1 rate_limit=1 too_large=1",
@@ -588,7 +604,7 @@ def test_p2_s13_ac9_counts_say_how_many_were_too_large_even_when_none_were(backf
     run = backfill.run(pulls, history.repo.path, provider=PerPullProvider())
 
     assert run.exit_code == 0, run.stderr
-    assert closing_lines(run.stdout) == [
+    assert counts_without_spend(run.stdout) == [
         "backfill: entries=2 already_in_out=0 run=2",
         "backfill: reviewed=2 blocked_secret=0 skipped=0 failed=0 too_large=0",
     ], run.stdout
@@ -629,7 +645,7 @@ def test_p2_s13_ac10_existing_reports_are_kept_and_not_counted_towards_max_calls
         assert report_bytes(run.out, number) == content
     for number in (101, 103, 105):
         assert run.shadow(number)["outcome"] == "reviewed"
-    assert closing_lines(run.stdout)[0] == "backfill: entries=6 already_in_out=3 run=3"
+    assert counts_without_spend(run.stdout)[0] == "backfill: entries=6 already_in_out=3 run=3"
 
 
 def test_p2_s13_ac10_an_unreadable_existing_report_counts_as_done(backfill, history):
@@ -646,7 +662,7 @@ def test_p2_s13_ac10_an_unreadable_existing_report_counts_as_done(backfill, hist
     assert provider.prompts_holding(pr_file(111)) == []
     assert len(provider.requests) == 1
     assert report_bytes(run.out, 111) == content
-    assert closing_lines(run.stdout)[0] == "backfill: entries=2 already_in_out=1 run=1"
+    assert counts_without_spend(run.stdout)[0] == "backfill: entries=2 already_in_out=1 run=1"
 
 
 def test_p2_s13_ac10_a_failed_report_is_reviewed_again_and_replaced(backfill, history):
@@ -671,7 +687,7 @@ def test_p2_s13_ac10_a_failed_report_is_reviewed_again_and_replaced(backfill, hi
     assert replaced["outcome"] == "reviewed"
     assert replaced["run_id"] != failed_run_id
     assert report_bytes(run.out, 108) == done_bytes
-    assert closing_lines(run.stdout)[0] == "backfill: entries=2 already_in_out=1 run=1"
+    assert counts_without_spend(run.stdout)[0] == "backfill: entries=2 already_in_out=1 run=1"
 
 
 def test_p2_s13_ac10_a_failed_report_counts_towards_max_calls(backfill, history):

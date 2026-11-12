@@ -394,3 +394,54 @@ def test_grep_on_unreadable_git_output_is_refused_and_the_review_goes_on(
 def test_tool_caps_reject_values_too_small_to_hold_a_result(caps: dict[str, int]) -> None:
     with pytest.raises(ValueError, match="at least"):
         ToolCaps(**caps)
+
+
+READ_AND_GLOB = frozenset({ToolName.READ, ToolName.GLOB})
+
+
+def test_definitions_offer_only_the_allowed_tools_in_order(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+    tools = RepoTools(RepoRef(GitRepo(repo, timeout_s=60), sha), caps=CAPS, allowed=READ_AND_GLOB)
+
+    assert [definition.name for definition in tools.definitions] == ["read", "glob"]
+
+
+def test_a_denied_tool_is_refused_policy_denied_and_recorded(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+    tools = RepoTools(RepoRef(GitRepo(repo, timeout_s=60), sha), caps=CAPS, allowed=READ_AND_GLOB)
+
+    text = call(tools, "grep", {"literal": "x"})
+
+    assert text == (
+        "refused: policy_denied: This review's policy doesn't allow the grep tool; use read or "
+        "glob."
+    )
+    entry = tools.ledger[-1]
+    assert (entry.tool, entry.outcome, entry.reason) == (
+        ToolName.GREP,
+        ToolOutcome.REFUSED,
+        RefusalReason.POLICY_DENIED,
+    )
+
+
+def test_a_denied_call_counts_towards_the_call_cap(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+    caps = ToolCaps(max_calls=1, max_result_bytes=16_000, max_total_bytes=96_000)
+    tools = RepoTools(RepoRef(GitRepo(repo, timeout_s=60), sha), caps=caps, allowed=READ_AND_GLOB)
+
+    call(tools, "grep", {"literal": "x"})
+
+    assert call(tools, "read", {"path": "a.py"}).startswith("refused: call_limit: ")
+
+
+def test_with_no_tool_allowed_a_call_is_refused_without_offering_one(repo: Path) -> None:
+    sha = commit(repo, {"a.py": "x\n"})
+    tools = RepoTools(RepoRef(GitRepo(repo, timeout_s=60), sha), caps=CAPS, allowed=frozenset())
+
+    text = call(tools, "read", {"path": "a.py"})
+
+    assert tools.definitions == ()
+    assert text == (
+        "refused: policy_denied: This review's policy doesn't allow the read tool; give your "
+        "findings now."
+    )

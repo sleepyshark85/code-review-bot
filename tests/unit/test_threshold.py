@@ -1,7 +1,7 @@
 import pytest
 
 from review_bot.findings import Category, Finding, ReviewedFinding, Severity, Source
-from review_bot.policy import Decision, decide
+from review_bot.threshold import Decision, decide
 
 
 def reviewed(severity: Severity, line: int = 7) -> ReviewedFinding:

@@ -58,6 +58,7 @@ from test_p2_s13_shadow_backfill import (
     History,
     MergedPull,
     closing_lines,
+    counts_without_spend,
     pr_file,
 )
 from test_p3_s1_local_review_with_repo_tools import (
@@ -108,6 +109,7 @@ PHASE_2_REPORT_KEYS = {
     "schema", "run_id", "provider", "model", "prompt_version", "threshold", "findings", "counts",
     "skipped_files", "usage",
 }  # fmt: skip
+BUILTIN_POLICY_VERSION = "builtin-v1"  # P4-S1's Interfaces
 # AC11's literals.
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "live.yml"
 BACKFILL = "backfill"
@@ -512,13 +514,16 @@ def assert_phase_2_run(run: PrRun, provider: ContextProvider) -> None:
     assert request.tools is None
     assert provider.tool_results == []
     document = run.shadow
-    for key in set(document) - PHASE_2_SHADOW_KEYS:
+    # P4-S1 AC1: `policy` is never empty; without --policy it is the built-in policy.
+    assert document["policy"]["version"] == BUILTIN_POLICY_VERSION
+    for key in set(document) - PHASE_2_SHADOW_KEYS - {"policy"}:
         assert document[key] in (None, [], {}), (key, document[key])
     for key in set(document["caps"]) - PHASE_2_CAPS:
         assert document["caps"][key] is None, (key, document["caps"])
     report = run.report
     assert report["prompt_version"] == PHASE_1_PROMPT_VERSION
-    for key in set(report) - PHASE_2_REPORT_KEYS:
+    assert report["policy"]["version"] == BUILTIN_POLICY_VERSION
+    for key in set(report) - PHASE_2_REPORT_KEYS - {"policy"}:
         # `mode` is report/v1's own since P3-S1: `diff` whenever there are no tools.
         expected: tuple[Any, ...] = ("diff",) if key == "mode" else (None, [], {})
         assert report[key] in expected, (key, report[key])
@@ -726,7 +731,9 @@ def written_numbers(out: Path) -> list[int]:
 def test_p3_s8_ac7_context_backfill_without_a_dollar_cap_refuses(backfill, history, flags, named):
     provider = ContextProvider()
 
-    run = backfill.run(history.merged_many(71, 72), history.repo.path, *flags, provider=provider)
+    run = backfill.run(
+        history.merged_many(71, 72), history.repo.path, *flags, provider=provider, dollar_flags=()
+    )
 
     assert run.exit_code == USAGE_EXIT, run.stderr
     assert provider.requests == []
@@ -777,7 +784,7 @@ def test_p3_s8_ac7_the_cap_may_come_from_its_variable(backfill, history, monkeyp
         history.merged_many(79),
         history.repo.path,
         "--context", "repo", "--max-usd", "0.60",
-        provider=provider,
+        provider=provider, dollar_flags=(),
     )  # fmt: skip
 
     assert run.exit_code == 0, run.stderr
@@ -869,7 +876,7 @@ def test_p3_s8_ac9_backfill_without_context_is_p2_s13s(backfill, history):
         report = shadow_of(run, number)["report"]
         assert report["prompt_version"] == PHASE_1_PROMPT_VERSION
         assert report["context"] is None
-    assert closing_lines(run.stdout) == [
+    assert counts_without_spend(run.stdout) == [
         "backfill: entries=2 already_in_out=0 run=2",
         "backfill: reviewed=2 blocked_secret=0 skipped=0 failed=0 too_large=0",
     ], run.stdout

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn, override
 
+from review_bot.cli import read_policy
 from review_bot.console import keep_library_logs_off_stderr, write_diagnostic, write_output
 from review_bot.errors import ConfigError
 from review_bot.evals.compare import compare_cases
@@ -19,6 +20,7 @@ from review_bot.evals.live import LiveRequest, LiveRun, record_live
 from review_bot.evals.render import render_live, render_replay
 from review_bot.evals.replay import replay_both_modes, replay_cases, require_live
 from review_bot.evals.score import CaseResult
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.price_flags import add_price_arguments, prices_from_flags
 from review_bot.secret_scan import redact
 from review_bot.settings import Settings, take_github_token
@@ -32,6 +34,8 @@ __all__ = ["main"]
 _PASS: Final = 0
 _FAIL: Final = 1
 _USAGE: Final = 2
+
+_POLICY_VARIABLE: Final = "REVIEW_BOT_POLICY"
 
 _INTERNAL_ERROR_MESSAGE: Final = (
     "review-bot evals: error: internal error. Its text isn't shown, as it can hold model or CLI "
@@ -64,7 +68,8 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     take_github_token()
     try:
         args = _parse_args(argv)
-        output, exit_code = asyncio.run(_run(args, sdk_call))
+        policy = BUILTIN_POLICY if args.command == "compare" else _read_policy(args.policy)
+        output, exit_code = asyncio.run(_run(args, policy, sdk_call))
     except (EvalInputError, ConfigError) as exc:
         # Paths come from the command line and case files; redact them like the review's errors.
         write_diagnostic(f"review-bot evals: error: {redact(str(exc))}")
@@ -77,18 +82,29 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     return exit_code
 
 
-async def _run(args: argparse.Namespace, sdk_call: "SdkCall | None") -> tuple[str, int]:
-    """The command's report and exit code."""
+def _read_policy(flag: str | None) -> Policy:
+    """The policy ``--policy`` names, else ``REVIEW_BOT_POLICY``, else the built-in policy.
+
+    Raises:
+        PolicyError: If the policy file can't be read or is invalid.
+    """
+    return read_policy(flag if flag is not None else os.environ.get(_POLICY_VARIABLE))
+
+
+async def _run(
+    args: argparse.Namespace, policy: Policy, sdk_call: "SdkCall | None"
+) -> tuple[str, int]:
+    """The command's report and exit code; ``live`` and ``replay`` review under ``policy``."""
     if args.command == "compare":
         return await _compare(args)
     if args.command == "live":
-        run = await _record(args, sdk_call)
+        run = await _record(args, policy, sdk_call)
         return render_live(run), _PASS if run.passed else _FAIL
-    return await _replay(args)
+    return await _replay(args, policy)
 
 
-async def _replay(args: argparse.Namespace) -> tuple[str, int]:
-    results = await replay_cases(args.cases, args.recording, mode=args.mode)
+async def _replay(args: argparse.Namespace, policy: Policy) -> tuple[str, int]:
+    results = await replay_cases(args.cases, args.recording, mode=args.mode, policy=policy)
     if args.require_live:
         default_model = Settings().model
         results = [require_live(result, default_model, mode=args.mode) for result in results]
@@ -106,7 +122,7 @@ def _exit_code(results: Sequence[CaseResult]) -> int:
     return _PASS if all(result.passed for result in results) else _FAIL
 
 
-async def _record(args: argparse.Namespace, sdk_call: "SdkCall | None") -> LiveRun:
+async def _record(args: argparse.Namespace, policy: Policy, sdk_call: "SdkCall | None") -> LiveRun:
     request = LiveRequest(
         args.cases,
         runs=args.runs,
@@ -116,6 +132,7 @@ async def _record(args: argparse.Namespace, sdk_call: "SdkCall | None") -> LiveR
         max_usd=args.max_usd,
         max_cost_usd=args.max_cost_usd,
         allow_dispatch=args.allow_dispatch,
+        policy=policy,
     )
     return await record_live(request, environ=os.environ, sdk_call=sdk_call)
 
@@ -145,6 +162,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="fail unless every case has a live recording of the default model",
     )
+    _add_policy_argument(replay)
     live = commands.add_parser(
         "live",
         help="call the real model on every case and record its findings; spends real tokens",
@@ -172,22 +190,20 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--max-calls", type=_positive_int, help="the most calls allowed in all; required"
     )
     live.add_argument(
-        "--max-usd",
-        type=usd_amount,
-        help="the most all calls may cost, in USD; required with --mode context and with "
-        "--max-cost-usd",
+        "--max-usd", type=usd_amount, help="the most all calls may cost, in USD; required"
     )
     live.add_argument(
         "--max-cost-usd",
         type=usd_amount,
-        help="the most one call may cost, in USD, from 0.01 to 1000; required with --mode "
-        "context and with --max-usd",
+        help="the most one call may cost, in USD, from 0.01 to 1000; required unless the "
+        "policy sets a ceiling, which is then the default and the most it may be",
     )
     live.add_argument(
         "--allow-dispatch",
         action="store_true",
         help="in CI, run only if started by workflow_dispatch; any other CI run still refuses",
     )
+    _add_policy_argument(live)
     _add_compare_command(commands)
     args = parser.parse_args(argv)
     if args.command == "replay" and args.recording is not None and args.require_live:
@@ -196,6 +212,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "live evidence. Leave one out."
         )
     return args
+
+
+def _add_policy_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--policy",
+        help=f"the policy file the reviews are under (default: {_POLICY_VARIABLE}, else the "
+        "built-in policy)",
+    )
 
 
 def _positive_int(text: str) -> int:

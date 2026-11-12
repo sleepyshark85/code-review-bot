@@ -37,6 +37,7 @@ from review_bot.errors import (
     RepoConfigError,
 )
 from review_bot.git import GitRepo
+from review_bot.governance.policy import Policy
 from review_bot.pr.config import (
     CONFIG_PATH,
     DEFAULT_REPO_CONFIG,
@@ -86,6 +87,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     github: GitHubClient | None,
     issue_reader: IssueReader | None,
     settings: Settings,
+    policy: Policy,
     audit: AuditLog,
     environ: Mapping[str, str],
     clock: Callable[[], datetime],
@@ -117,7 +119,8 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         github: The GitHub client in comment mode; None in shadow mode.
         issue_reader: Reads a context review's linked issues; None without a token, so each
             is ``no_token``.
-        settings: The run's settings.
+        settings: The run's settings, within ``policy``.
+        policy: The policy the run is under, which the review and the report follow.
         audit: Where the run's records go; its end is the caller's to record.
         environ: The environment, read for ``CI`` and ``ANTHROPIC_API_KEY``.
         clock: Returns the current time, timezone-aware.
@@ -140,6 +143,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         github=github,
         issue_reader=issue_reader,
         settings=settings,
+        policy=policy,
         audit=audit,
         clock=clock,
     )
@@ -152,6 +156,7 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
     make_provider: Callable[[], LLMProvider],
     issue_reader: IssueReader | None,
     settings: Settings,
+    policy: Policy,
     audit: AuditLog,
     clock: Callable[[], datetime],
 ) -> ShadowReport:
@@ -168,7 +173,8 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
         make_provider: Makes the provider, only once the run isn't refused.
         issue_reader: Reads a context review's linked issues; None without a token, so each
             is ``no_token``.
-        settings: The run's settings.
+        settings: The run's settings, within ``policy``.
+        policy: The policy the run is under, which the review and the report follow.
         audit: Where the run's records go; its end is the caller's to record.
         clock: Returns the current time, timezone-aware.
 
@@ -187,6 +193,7 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
         github=None,
         issue_reader=issue_reader,
         settings=settings,
+        policy=policy,
         audit=audit,
         clock=clock,
     )
@@ -203,6 +210,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
     github: GitHubClient | None,
     issue_reader: IssueReader | None,
     settings: Settings,
+    policy: Policy,
     audit: AuditLog,
     clock: Callable[[], datetime],
 ) -> ShadowReport:
@@ -238,7 +246,9 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
             if settings.context != "off":
                 issues = _LinkedIssues(pr, issue_reader)
                 context = _review_context(pr, git, issues)
-            review = await _review(pr, git, github, make_provider, settings, config, context, audit)
+            review = await _review(
+                pr, git, github, make_provider, settings, policy, config, context, audit
+            )
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
     if review.plans_comments:
@@ -256,6 +266,7 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
         finished_at=clock(),
         origin=origin,
         pr=pr,
+        policy=policy,
         since=review.since,
         incremental=review.incremental,
         codeowners=codeowners,
@@ -372,6 +383,7 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     github: GitHubClient | None,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
+    policy: Policy,
     config: RepoConfig,
     context: ReviewContext | None,
     audit: AuditLog,
@@ -400,6 +412,7 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         _review_diff,
         make_provider=make_provider,
         settings=settings,
+        policy=policy,
         config=config,
         context=context,
         audit=audit,
@@ -482,11 +495,12 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     *,
     make_provider: Callable[[], LLMProvider],
     settings: Settings,
+    policy: Policy,
     config: RepoConfig,
     context: ReviewContext | None,
     audit: AuditLog,
 ) -> PipelineResult | ReportedError:
-    """Review ``diff`` under ``config``: its exclusions and its domain rules.
+    """Review ``diff`` under ``config``, its exclusions and its domain rules, and ``policy``.
 
     ``context`` is the commit the model's tools read; None reviews in diff mode. An error that
     still ends in a report is returned.
@@ -501,6 +515,7 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
             exclude=config.exclude,
             context=context,
             domain_rules=config.domain_rules,
+            policy=policy,
         )
     except REPORTED_ERRORS as exc:
         return exc
