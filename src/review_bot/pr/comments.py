@@ -70,6 +70,7 @@ _REACTION_REQUEST: Final = (
     "Is this right and worth acting on? React with a thumbs-up if so, or a thumbs-down if not."
 )
 _NEW_PARAGRAPH: Final = "\n\n"
+_DEGRADED: Final = "Degraded: no model was available, so only the built-in rules ran."
 # What ``comment_body`` writes on its first and last lines, read back exactly.
 _SEVERITY_HEADING: Final = re.compile(rf"\*\*({'|'.join(Severity)})\*\* ")
 _CONFIDENCE_SHOWN: Final = re.compile(r", confidence ([01]\.[0-9]{2})\)$")
@@ -313,15 +314,19 @@ def _shown_rationale(rationale: str) -> str:
     return f"{escape_markdown(rationale[:_MAX_RATIONALE_CHARS])} (cut)"
 
 
-def reviewed_summary(
+def reviewed_summary(  # noqa: PLR0913 - keyword-only, each a separate part of the summary
     plan: CommentPlan,
     *,
     threshold: Severity,
     since: str | None = None,
     open_comments: int = 0,
     codeowners: CodeOwners = NO_CODEOWNERS,
+    degraded: ErrorCategory | None = None,
 ) -> str:
     """Return the summary of a review: its counts, up to 20 withheld findings, then owners.
+
+    A review that ``degraded`` after a provider failure of that category opens by saying only
+    the rules ran, and its headline is ``degraded`` with the category.
 
     With nothing planned or withheld, it says there are no findings at or above ``threshold``.
     A review of only the changes since the commit ``since`` names that commit, calls its
@@ -329,7 +334,10 @@ def reviewed_summary(
     request after the run; a whole review gives that count only when it isn't zero. Last, it
     counts the findings of each owner ``codeowners`` names (``_owners_section``).
     """
-    headline = f"{_HEADLINE} `{Outcome.REVIEWED}`."
+    if degraded is None:
+        headline = f"{_HEADLINE} `{Outcome.REVIEWED}`."
+    else:
+        headline = f"{_HEADLINE} `{Outcome.DEGRADED}` (`{degraded}`)."
     if since is not None:
         headline = f"{headline} Changes since {_short_sha(since)} reviewed."
     if not plan.comments and not plan.withheld:
@@ -339,7 +347,7 @@ def reviewed_summary(
         counts = f"{headline} {len(plan.comments)} comments, {len(plan.withheld)} withheld."
     if since is not None or open_comments:
         counts = f"{counts} {_open_count(open_comments)}"
-    sections = [counts]
+    sections = [counts] if degraded is None else [_DEGRADED, counts]
     if plan.withheld:
         listed = [
             f"{_location(item.reviewed.finding.file, item.reviewed.finding.line)}: `{item.reason}`"

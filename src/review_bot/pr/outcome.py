@@ -4,23 +4,33 @@ Its own module, so both the report and the summary comment can name it.
 """
 
 from enum import StrEnum
+from typing import Final
 
-__all__ = ["Outcome", "Reason"]
+__all__ = ["OUTCOMES_WITH_FINDINGS", "Outcome", "Reason"]
 
 
 class Outcome(StrEnum):
-    """How a run ended. Only ``reviewed`` can plan comments."""
+    """How a run ended. Only ``reviewed`` and ``degraded`` can plan comments.
+
+    ``degraded``: no model was available, so only the rules' findings are reported (ADR 0021).
+    """
 
     REVIEWED = "reviewed"
     BLOCKED_SECRET = "blocked_secret"  # noqa: S105 - an outcome's name, not a secret
     SKIPPED = "skipped"
     FAILED = "failed"
+    DEGRADED = "degraded"
+
+
+# The outcomes whose reports hold findings; a degraded run's are the rules' alone (P4-S8).
+OUTCOMES_WITH_FINDINGS: Final = frozenset({Outcome.REVIEWED, Outcome.DEGRADED})
 
 
 class Reason(StrEnum):
     """Why a run was skipped, reviewed without the model, or failed before any review.
 
-    A run the provider failed has the provider's ``ErrorCategory`` as its reason instead.
+    A run the provider failed, or that degraded, has the provider's ``ErrorCategory`` as its
+    reason instead.
     """
 
     TOO_LARGE = "too_large"

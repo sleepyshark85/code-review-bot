@@ -1306,7 +1306,8 @@ def _backfill_counts(progress: _BackfillProgress, *, entries: int, already: int)
     """Two lines of ``name=N`` pairs: the totals, then each outcome and each reason given.
 
     With a dollar budget, the totals add the spend, and ``stopped=budget`` if it stopped the
-    backfill. Every outcome is shown, and so is ``too_large``: it is how many the
+    backfill. Every outcome a backfill can end with is shown, so not ``degraded``
+    (``backfill_pull_request``), and so is ``too_large``: it is how many the
     reviewable-bytes cap left out (Phase 2 design, PR supply). Outcome, skip reason and error
     category names never coincide.
     """
@@ -1314,7 +1315,9 @@ def _backfill_counts(progress: _BackfillProgress, *, entries: int, already: int)
     outcomes = Counter(report.outcome for report in reports)
     reasons = Counter(str(report.reason) for report in reports if report.reason is not None)
     reasons.setdefault(Reason.TOO_LARGE, 0)
-    pairs = [f"{outcome}={outcomes[outcome]}" for outcome in Outcome]
+    pairs = [
+        f"{outcome}={outcomes[outcome]}" for outcome in Outcome if outcome is not Outcome.DEGRADED
+    ]
     pairs += [f"{reason}={count}" for reason, count in sorted(reasons.items())]
     totals = f"entries={entries} already_in_out={already} run={len(reports)}"
     if progress.budget is not None:

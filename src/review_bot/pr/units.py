@@ -7,7 +7,7 @@ here, and any text from them must be escaped before it is shown.
 """
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Final, Literal, Self
@@ -16,7 +16,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from review_bot.findings import Severity, Source
 from review_bot.pr.feedback import Hex16, RepoName, Text, Unit
-from review_bot.pr.outcome import Outcome
+from review_bot.pr.outcome import OUTCOMES_WITH_FINDINGS, Outcome
 from review_bot.pr.plan import Action
 
 __all__ = [
@@ -123,8 +123,8 @@ class ShadowFile(_ReportPart):
 
     @model_validator(mode="after")
     def _check_review(self) -> Self:
-        if self.outcome is Outcome.REVIEWED and self.report is None:
-            raise ValueError("a reviewed report must hold its report/v1 object")
+        if self.outcome in OUTCOMES_WITH_FINDINGS and self.report is None:
+            raise ValueError(f"a {self.outcome} report must hold its report/v1 object")
         return self
 
 
@@ -160,7 +160,14 @@ def reviewed_shadow(report: ShadowFile) -> tuple[_PullRequest, _Review] | None:
 
     None for any other report: comment mode, another outcome, or a local run with no PR.
     """
-    if report.mode != "shadow" or report.outcome is not Outcome.REVIEWED:
+    return _shadow_review(report, outcomes={Outcome.REVIEWED})
+
+
+def _shadow_review(
+    report: ShadowFile, *, outcomes: Collection[Outcome]
+) -> tuple[_PullRequest, _Review] | None:
+    """The pull request and review of a shadow mode report of a PR with one of ``outcomes``."""
+    if report.mode != "shadow" or report.outcome not in outcomes:
         return None
     if report.pr is None or report.report is None:
         return None
@@ -170,16 +177,17 @@ def reviewed_shadow(report: ShadowFile) -> tuple[_PullRequest, _Review] | None:
 def would_be_comments(reports: Iterable[ShadowFile]) -> tuple[WouldBeComment, ...]:
     """Group the reports' ``create`` entries into would-be comments.
 
-    Only ``shadow`` reports with outcome ``reviewed`` and a pull request count, whatever their
-    origin. Within one report, a key's entries are indexed in line order. Each would-be comment
-    takes its entry from the report with the latest ``finished_at``; between reports finished at
-    the same moment, the later one given wins. A report given twice, by ``run_id``, counts once
+    Only ``shadow`` reports with outcome ``reviewed``, or ``degraded``, whose comments are the
+    rules' findings, and a pull request count, whatever their origin. Within one report, a
+    key's entries are indexed in line order. Each would-be comment takes its entry from the
+    report with the latest ``finished_at``; between reports finished at the same moment, the
+    later one given wins. A report given twice, by ``run_id``, counts once
     (``distinct_runs``). They come in order of repo, PR, file and line.
     """
     latest: dict[Unit, tuple[ShadowEntry, str, _Review]] = {}
     counts: Counter[Unit] = Counter()
     for report in sorted(distinct_runs(reports), key=lambda report: report.finished_at):
-        reviewed = reviewed_shadow(report)
+        reviewed = _shadow_review(report, outcomes=OUTCOMES_WITH_FINDINGS)
         if reviewed is None:
             continue
         pr, review = reviewed

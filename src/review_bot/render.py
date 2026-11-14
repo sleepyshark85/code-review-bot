@@ -38,6 +38,8 @@ __all__ = [
 _REPORT_SCHEMA: Final = "report/v1"
 _MARKDOWN_HEADING: Final = "## Review"
 _MAX_FILES_READ: Final = 200  # Phase 3 design, Report keys
+# ``report/v1``'s ``degraded`` for a review that reported only the rules' findings (P4-S8).
+_RULES_ONLY: Final = "rules_only"
 # CommonMark's ASCII punctuation, each of which a backslash makes literal.
 _MARKDOWN_PUNCTUATION: Final = frozenset(string.punctuation)
 _BACKTICK_RUN: Final = re.compile("`+")
@@ -139,6 +141,7 @@ def report_document(
         "policy": policy_json(result.policy),
         "redaction": redaction_json(result.redaction),
         "route": [attempt_json(attempt) for attempt in result.route],
+        "degraded": None if result.degraded is None else _RULES_ONLY,
     }
 
 

@@ -1,6 +1,6 @@
 # P4-S8: Report the rules' findings when every model is down
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P4-S5, P4-S7
 - **Touches:** `review`, `governance.policy`, `report`, `pr.outcome`, `pr.shadow`, `pr.runner`, `pr.comments`, `pr.run_metrics`, `cli`
 
@@ -28,3 +28,4 @@ None: no new input.
 
 ## Notes
 - 2026-11-12, designer: AC4 used `swallowed-exception`, whose rule always reports `medium` and so can never be a gate class (P4-S5 AC13); it now uses `decimal-money`.
+- 2026-11-14, developer: "routable" is `router.is_routable`, shared with the router: `unavailable`, `transient` or `rate_limit` with no cap. `review_diff` and `run_pipeline` degrade only when the caller passes `degrade_to_rules` (default false): `review-bot DIFF`, `pr shadow` and `pr run` pass the policy's value; `pr backfill` and `evals live` never do, since like routing they measure one model. A degraded run keeps its `agent`/`failed` record, then adds `agent`/`degraded`. Precision counts a degraded run's findings in both channels: `would_be_comments` (so `pr label` too) and comment mode's posted comments; `pr compare` still takes `reviewed` runs only. The backfill counts line leaves out `degraded`, which a backfill can't end with.

@@ -50,6 +50,7 @@ from review_bot.providers.base import (
     ReviewResponse,
     TokenUsage,
 )
+from review_bot.providers.router import is_routable
 from review_bot.report import PipelineResult, attempt_json, redaction_json, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
@@ -100,7 +101,7 @@ class ReviewContext:
     read_issues: Callable[[frozenset[RedactionKind]], tuple[LinkedIssue, ...]] = lambda _: ()
 
 
-async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are keyword-only
+async def run_pipeline(  # noqa: PLR0913 - all but the first four are keyword-only
     diff_path: Path,
     settings: Settings,
     provider: LLMProvider,
@@ -109,6 +110,7 @@ async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are 
     context: ReviewContext | None = None,
     domain_rules: Sequence[DomainRule] = (),
     policy: Policy = BUILTIN_POLICY,
+    degrade_to_rules: bool = False,
 ) -> PipelineResult:
     """Read the diff at ``diff_path``, then review it as ``review_diff`` does.
 
@@ -128,10 +130,11 @@ async def run_pipeline(  # noqa: PLR0913 - context, domain_rules and policy are 
         context=context,
         domain_rules=domain_rules,
         policy=policy,
+        degrade_to_rules=degrade_to_rules,
     )
 
 
-async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules and policy are keyword-only
+async def review_diff(  # noqa: PLR0913 - all but the first four are keyword-only
     diff: str,
     settings: Settings,
     provider: LLMProvider,
@@ -142,6 +145,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
     context: ReviewContext | None = None,
     domain_rules: Sequence[DomainRule] = (),
     policy: Policy = BUILTIN_POLICY,
+    degrade_to_rules: bool = False,
 ) -> PipelineResult:
     """Review ``diff`` with ``provider``, sending only the files not skipped.
 
@@ -170,6 +174,10 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
             tool results and the linked issues sent, after the secret scan, and if it has any,
             the counts are recorded. ``settings`` must already be within it, as
             ``check_settings`` makes them, since the provider was built from them.
+        degrade_to_rules: Whether a provider failure that is routable (``is_routable``) ends
+            in a ``degraded`` result, the rules' findings alone, instead of raising: the
+            policy's ``degrade_to_rules``, for a command that routes. Live commands, which
+            measure one model, never pass it.
 
     Raises:
         InputError: If the diff isn't a diff, holds a possible secret, or its files to review
@@ -179,7 +187,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
             tool.
         ValueError: If the policy has a ceiling and ``settings`` have no cost cap, so
             ``check_settings`` wasn't applied.
-        ProviderError: If the provider fails.
+        ProviderError: If the provider fails, unless the review degrades.
         AuditError: If a record can't be written.
     """
     _require_within_policy(settings, policy, is_context=context is not None)
@@ -241,8 +249,16 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         )
         _record_issues(issues, audit)
     route = route_name(settings.provider, settings.model)
+    degraded: ProviderError | None = None
     try:
         response = await _call_provider(provider, request, diff, audit, route=route)
+    except ProviderError as exc:
+        if not (degrade_to_rules and is_routable(exc)):
+            raise
+        audit.record(Stage.AGENT, "degraded", {"category": exc.category})
+        degraded = exc
+        # No model finding, so only the rules' are verified and decided below (ADR 0021).
+        response = ReviewResponse((), TokenUsage(0, 0), attempts=_attempts(exc, route))
     finally:
         # Every call is recorded, even when the review then fails.
         ledger = () if tools is None else tools.ledger
@@ -281,6 +297,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         cost_usd=response.cost_usd,
         redaction=redaction,
         route=response.attempts,
+        degraded=degraded,
     )
 
 
@@ -331,7 +348,7 @@ async def _call_provider(
     try:
         response = await provider.review(request)
     except ProviderError as exc:
-        _record_attempts(exc.attempts or (Attempt(route, exc.category, None),), audit)
+        _record_attempts(_attempts(exc, route), audit)
         _record_denials(exc.denied_tools, request.policy, audit)
         diagnostics = _scrubbed(exc.diagnostics, diff)
         failure = {"category": exc.category, "cap": exc.cap, "diagnostics": diagnostics}
@@ -359,6 +376,11 @@ async def _call_provider(
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
     return response
+
+
+def _attempts(error: ProviderError, route: str) -> tuple[Attempt, ...]:
+    """The attempts ``error`` ended: its own, or the one on ``route`` if it wasn't routed."""
+    return error.attempts or (Attempt(route, error.category, None),)
 
 
 def _record_attempts(attempts: Iterable[Attempt], audit: AuditLog) -> None:
