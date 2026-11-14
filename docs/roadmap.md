@@ -140,7 +140,7 @@ Each phase ships on its own and starts only when the previous gate is met: gates
 - Auto-fix PRs for finding classes with sustained high acceptance; suppression rules learned from rejections.
 - A template for other teams to contribute agents.
 
-**Gate:** each agent has its own eval set and acceptance target. **Autonomy:** act (auto-fix PRs, still merged by humans).
+**Gate:** each agent has its own eval set and acceptance target, built as the [eval plan](eval-plan.md) describes. **Autonomy:** act (auto-fix PRs, still merged by humans).
 
 ### Alongside the build (from Phase 2)
 
