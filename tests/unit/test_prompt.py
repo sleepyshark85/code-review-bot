@@ -4,10 +4,9 @@ from collections.abc import Mapping
 
 import pytest
 
-from review_bot import prompt
+from review_bot import prompt, rules
 from review_bot.context import tool_args
 from review_bot.context.issues import IssueStatus, LinkedIssue
-from review_bot.evals.gate import check_prompt_pins
 from review_bot.findings import RuleId, Severity
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
@@ -249,4 +248,19 @@ def test_prompt_fingerprints_change_with_a_tools_description(
 
     assert before[PROMPT_VERSION] == after[PROMPT_VERSION]
     assert before[CONTEXT_PROMPT_VERSION] != after[CONTEXT_PROMPT_VERSION]
-    assert check_prompt_pins(prompt.PROMPT_FINGERPRINTS, after) != []
+    assert after[CONTEXT_PROMPT_VERSION] != prompt.PROMPT_FINGERPRINTS[CONTEXT_PROMPT_VERSION]
+
+
+@pytest.mark.parametrize("rule", sorted(rules.DOMAIN_RULE_IDS))
+def test_prompt_fingerprints_change_with_a_domain_rules_description(
+    monkeypatch: pytest.MonkeyPatch, rule: RuleId
+) -> None:
+    before = prompt_fingerprints()
+    check = rules._DOMAIN_CATALOGUE[rule]
+    changed = dataclasses.replace(check, description=check.description + " Changed.")
+    monkeypatch.setitem(rules._DOMAIN_CATALOGUE, rule, changed)  # type: ignore[index]
+
+    after = prompt_fingerprints()
+
+    assert before[PROMPT_VERSION] == after[PROMPT_VERSION]
+    assert after[CONTEXT_PROMPT_VERSION] != prompt.PROMPT_FINGERPRINTS[CONTEXT_PROMPT_VERSION]
