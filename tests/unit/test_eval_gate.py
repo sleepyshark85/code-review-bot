@@ -10,12 +10,14 @@ import pytest
 from eval_cases import finding, recording, run_of, write_case, write_json, write_live
 
 from review_bot import prompt
+from review_bot.evals import main as evals_main
 from review_bot.evals.formats import EvalInputError, find_case_files, live_recording_dir, load_case
 from review_bot.evals.gate import (
     GateResult,
     Suite,
     check_coverage,
     check_prompt_pins,
+    live_command,
     load_suites,
     run_gate,
 )
@@ -324,7 +326,44 @@ def test_run_gate_fails_a_stale_recording_naming_the_field(tmp_path: Path, cases
     case = only_case(gate(cases, suites_file(tmp_path)))
 
     assert not case.is_fresh
-    assert "stale: its diff_sha256 differs" in case.problems[0]
+    assert case.problems == (
+        "its live recording is stale: its diff_sha256 differs from today's, so it wasn't "
+        f"scored; record it with {live_command(Suite('claude', MODEL, 'diff', ()), 'calc')}",
+    )
+
+
+def test_run_gate_advises_recording_a_stale_openai_recording_with_openai(
+    tmp_path: Path, cases: Path
+) -> None:
+    case_file = write_case(cases)
+    stale_runs = [run_of(FLOAT_FINDING)] * 2
+    write_live_recording(case_file, stale_runs, provider="openai", model="m1", case_sha256="0")
+    text = SUITE.replace('"claude"', '"openai"').replace(MODEL, "m1")
+
+    [problem] = only_case(gate(cases, suites_file(tmp_path, text))).problems
+
+    assert "stale: its case_sha256 differs" in problem
+    assert problem.endswith(
+        "record it with python -m review_bot.evals live --cases DIR --runs N --max-calls M "
+        "--max-usd X --max-cost-usd Y --provider openai --model m1 --price-input-usd-per-mtok I "
+        "--price-output-usd-per-mtok O --mode diff --case calc"
+    )
+    assert "--provider claude" not in problem
+
+
+@pytest.mark.parametrize("provider", ["claude", "openai"])
+def test_live_command_as_printed_parses_with_every_required_flag(
+    provider: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every flag parses: the run gets as far as reading --cases, which doesn't exist."""
+    argv = live_command(Suite(provider, "m1", "context", ("calc",)), "calc").split()[3:]
+    absent = str(tmp_path / "absent")
+    filled = {"DIR": absent, "N": "1", "M": "1", "X": "1", "Y": "0.10", "I": "1", "O": "1"}
+
+    exit_code = evals_main([filled.get(word, word) for word in argv])
+
+    assert exit_code == 2
+    assert f"--cases {absent} isn't a directory" in capsys.readouterr().err
 
 
 def test_run_gate_reads_another_providers_recordings_from_its_own_directory(
@@ -367,8 +406,8 @@ def test_render_gate_text_has_a_line_per_suite_its_failures_and_the_verdict(
     assert text.splitlines() == [
         f"suite claude:{MODEL} diff: cases 1, fresh 0, passed 0, accepted misses 0, fail",
         "  case calc: its live recording recordings/live/recording.json is missing; record it "
-        f"with python -m review_bot.evals live --provider claude --model {MODEL} --mode diff "
-        "--case calc",
+        "with python -m review_bot.evals live --cases DIR --runs N --max-calls M --max-usd X "
+        f"--max-cost-usd Y --provider claude --model {MODEL} --mode diff --case calc",
         "verdict: fail",
     ]
 

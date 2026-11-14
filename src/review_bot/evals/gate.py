@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from review_bot import prompt
 from review_bot.evals.formats import (
+    MODES,
     EvalInputError,
     EvalMode,
     LoadedCase,
@@ -27,7 +28,7 @@ from review_bot.evals.formats import (
     live_recording_dir,
     load_case,
 )
-from review_bot.evals.replay import read_live_recording, score_recording
+from review_bot.evals.replay import read_live_recording, score_recording, stale_text
 from review_bot.governance.policy import ModelProvider, Policy, route_name
 from review_bot.settings import Settings
 
@@ -39,6 +40,7 @@ __all__ = [
     "SuiteResult",
     "check_coverage",
     "check_prompt_pins",
+    "live_command",
     "load_suites",
     "run_gate",
 ]
@@ -288,7 +290,8 @@ def check_coverage(suites: Sequence[Suite], policy: Policy) -> list[str]:
     allowed = [
         (entry.provider, entry.model, mode)
         for entry in policy.models
-        for mode in sorted(entry.modes, reverse=True)
+        for mode in MODES
+        if mode in entry.modes
     ] or [(_DEFAULT_PROVIDER, default_model, "diff")]
     by_key = {(suite.provider, suite.model, suite.mode): suite for suite in suites}
     problems = []
@@ -310,6 +313,24 @@ def check_coverage(suites: Sequence[Suite], policy: Policy) -> list[str]:
     return problems
 
 
+def live_command(suite: Suite, case_id: str) -> str:
+    """The ``live`` command that records the suite's case, with placeholders for its budget.
+
+    ``openai`` needs its token prices too. The command writes to the suite's provider's own
+    directory, so it never replaces another provider's recordings.
+    """
+    prices = (
+        " --price-input-usd-per-mtok I --price-output-usd-per-mtok O"
+        if suite.provider == "openai"
+        else ""
+    )
+    return (
+        "python -m review_bot.evals live --cases DIR --runs N --max-calls M --max-usd X "
+        f"--max-cost-usd Y --provider {suite.provider} --model {suite.model}{prices} --mode "
+        f"{suite.mode} --case {case_id}"
+    )
+
+
 async def _run_case(suite: Suite, loaded: LoadedCase, policy: Policy) -> CaseOutcome:
     """Score the case on its live recording by the suite's provider and model, under ``policy``.
 
@@ -318,10 +339,7 @@ async def _run_case(suite: Suite, loaded: LoadedCase, policy: Policy) -> CaseOut
     """
     case_id = loaded.case.id
     recording = read_live_recording(loaded, suite.mode, suite.provider)
-    advice = (
-        f"record it with python -m review_bot.evals live --provider {suite.provider} --model "
-        f"{suite.model} --mode {suite.mode} --case {case_id}"
-    )
+    advice = f"record it with {live_command(suite, case_id)}"
     if recording is None:
         directory = live_recording_dir(suite.mode, suite.provider)
         missing = f"its live recording {directory}recording.json is missing; {advice}"
@@ -331,13 +349,13 @@ async def _run_case(suite: Suite, loaded: LoadedCase, policy: Policy) -> CaseOut
         return CaseOutcome(case_id, is_fresh=False, problems=(other_model,))
     result = await score_recording(loaded, recording, mode=suite.mode, policy=policy)
     if result.score is None:
-        # Stale: ``problems`` names the fields that differ.
-        return CaseOutcome(case_id, is_fresh=False, problems=result.problems)
+        stale = f"its live recording is {stale_text(result.stale_fields)}; {advice}"
+        return CaseOutcome(case_id, is_fresh=False, problems=(stale,))
     misses = result.score.misses
     unaccepted = [miss for miss in misses if (case_id, miss.bug.id) not in suite.accepted_misses]
     problems = (
         *(f"{miss.problem}, and it isn't an accepted miss" for miss in unaccepted),
-        *result.score.problems_besides_misses,
+        *result.score.other_problems,
     )
     return CaseOutcome(
         case_id,

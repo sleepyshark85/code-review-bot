@@ -76,6 +76,7 @@ __all__ = [
     "replay_cases",
     "require_live",
     "score_recording",
+    "stale_text",
 ]
 
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
@@ -312,12 +313,8 @@ async def score_recording(
             today = _case_freshness(loaded, repo, domain_rules, policy)
             stale = [name for name, value in today.items() if getattr(recording, name) != value]
             if stale:
-                verb = "differs" if len(stale) == 1 else "differ"
-                problem = (
-                    f"the recording is stale: its {', '.join(stale)} {verb} from today's, so it "
-                    f"wasn't scored. {_refresh_advice(recording)}"
-                )
-                return CaseResult(case_id, recording, None, (problem,))
+                problem = f"the recording is {stale_text(stale)}. {_refresh_advice(recording)}"
+                return CaseResult(case_id, recording, None, (problem,), tuple(stale))
         # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
         context = (
             None
@@ -327,6 +324,12 @@ async def score_recording(
         review = _CaseReview(context=context, domain_rules=domain_rules, policy=policy)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
+
+
+def stale_text(stale_fields: Sequence[str]) -> str:
+    """Such as ``stale: its diff_sha256 differs from today's, so it wasn't scored``."""
+    verb = "differs" if len(stale_fields) == 1 else "differ"
+    return f"stale: its {', '.join(stale_fields)} {verb} from today's, so it wasn't scored"
 
 
 def build_case_repo(loaded: LoadedCase, work_dir: Path) -> FixtureRepo:

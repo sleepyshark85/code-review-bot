@@ -1,10 +1,13 @@
+import dataclasses
 import hashlib
 from collections.abc import Mapping
 
 import pytest
 
 from review_bot import prompt
+from review_bot.context import tool_args
 from review_bot.context.issues import IssueStatus, LinkedIssue
+from review_bot.evals.gate import check_prompt_pins
 from review_bot.findings import RuleId, Severity
 from review_bot.prompt import (
     CONTEXT_PROMPT_VERSION,
@@ -232,3 +235,18 @@ def test_prompt_fingerprints_change_with_the_framing_of_the_input(
     after = prompt_fingerprints()
 
     assert all(before[version] != after[version] for version in before)
+
+
+def test_prompt_fingerprints_change_with_a_tools_description(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = prompt_fingerprints()
+    read, *others = tool_args.TOOL_DEFINITIONS
+    changed = dataclasses.replace(read, description=read.description + " Changed.")
+    monkeypatch.setattr(tool_args, "TOOL_DEFINITIONS", (changed, *others))
+
+    after = prompt_fingerprints()
+
+    assert before[PROMPT_VERSION] == after[PROMPT_VERSION]
+    assert before[CONTEXT_PROMPT_VERSION] != after[CONTEXT_PROMPT_VERSION]
+    assert check_prompt_pins(prompt.PROMPT_FINGERPRINTS, after) != []

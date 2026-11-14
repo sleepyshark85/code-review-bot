@@ -157,7 +157,9 @@ class CaseScore:
 
     ``bugs`` are in case order and ``runs`` in run order. ``unmatched`` holds the findings that
     credit no bug of their source, after the anchor check; ``dropped`` the model's findings that
-    failed it. The case passes when ``problems`` is empty. ``evidence`` is what it was scored on.
+    failed it. ``other_problems`` are what fails the case besides its misses, such as too few
+    passing runs. The case passes when ``problems`` is empty. ``evidence`` is what it was scored
+    on.
     """
 
     case: EvalCase
@@ -165,7 +167,7 @@ class CaseScore:
     runs: tuple[RunScore, ...]
     unmatched: tuple[Credit, ...]
     dropped: tuple[Credit, ...]
-    problems: tuple[str, ...]
+    other_problems: tuple[str, ...]
     evidence: CaseEvidence
 
     def recall(self, source: Source) -> tuple[int, int] | None:
@@ -185,10 +187,9 @@ class CaseScore:
         return tuple(score for score in self.bugs if score.is_miss)
 
     @property
-    def problems_besides_misses(self) -> tuple[str, ...]:
-        """Its problems other than its misses, such as too few passing runs."""
-        miss_problems = {score.problem for score in self.misses}
-        return tuple(problem for problem in self.problems if problem not in miss_problems)
+    def problems(self) -> tuple[str, ...]:
+        """Every reason the case fails: each miss, then its other problems."""
+        return (*(score.problem for score in self.misses), *self.other_problems)
 
     @property
     def passing_runs(self) -> int:
@@ -206,13 +207,15 @@ class CaseResult:
     """A case's outcome: the recording it was scored on, its score, and what else fails it.
 
     ``score`` is None if the case wasn't scored, such as for a stale recording; ``problems``
-    then says why.
+    then says why. ``stale_fields`` are a stale recording's freshness fields that differ from
+    today's.
     """
 
     case_id: str
     recording: Recording | None
     score: CaseScore | None
     problems: tuple[str, ...] = ()
+    stale_fields: tuple[str, ...] = ()
 
     @property
     def all_problems(self) -> tuple[str, ...]:
@@ -253,19 +256,19 @@ def score_case(case: EvalCase, evidence: CaseEvidence) -> CaseScore:
         for number, run in enumerate(evidence.runs, start=1)
         for finding in run.dropped
     )
-    problems = [score.problem for score in bugs if score.is_miss]
+    other_problems = []
     rule_noise = [credit for credit in unmatched if credit.run is None]
     passing_runs = _count_passed(runs)
     if case.noise_budget is not None and rule_noise:
-        problems.append(
+        other_problems.append(
             f"rule findings that credit no bug: {len(rule_noise)}; a case with a noise budget "
             "needs 0"
         )
     if runs and passing_runs < case.min_passing_runs:
-        problems.append(
+        other_problems.append(
             f"{passing_runs} of {len(runs)} runs passed; the case needs {case.min_passing_runs}"
         )
-    return CaseScore(case, bugs, runs, unmatched, dropped, tuple(problems), evidence)
+    return CaseScore(case, bugs, runs, unmatched, dropped, tuple(other_problems), evidence)
 
 
 def _score_rule_bug(bug: Bug, rule_findings: tuple[Finding, ...]) -> BugScore:
