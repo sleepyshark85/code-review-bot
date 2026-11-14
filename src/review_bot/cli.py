@@ -46,26 +46,20 @@ from review_bot.governance.policy import (
     Policy,
     PolicyError,
     check_settings,
-    fallback_for,
     parse_policy,
-    review_mode,
 )
 from review_bot.providers.base import LLMProvider
-from review_bot.providers.mock import MockProvider
-from review_bot.providers.openai_compat import (
-    OpenAICompatibleProvider,
-    check_api_key,
-    token_prices,
+from review_bot.providers.setup import (
+    build_provider,
+    build_routed_provider,
+    check_provider_settings,
 )
-from review_bot.providers.openai_wire import is_loopback_url
-from review_bot.providers.router import Route, RoutingProvider
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import ReviewContext, run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import (
     Settings,
-    has_claude_credential,
     load_settings,
     take_github_token,
     take_openai_api_key,
@@ -76,11 +70,6 @@ __all__ = [
     "RaisingArgumentParser",
     "add_setting_arguments",
     "add_tool_cap_arguments",
-    "build_provider",
-    "build_routed_provider",
-    "can_fall_back",
-    "check_provider_settings",
-    "fallback_settings",
     "main",
     "parse_args",
     "read_policy",
@@ -136,11 +125,6 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 )
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
-
-_OPENAI_MODEL_MISSING: Final = (
-    "--provider openai needs --model (or REVIEW_BOT_MODEL), since the default model is "
-    "Claude's, so nothing was sent. Pass the model the endpoint serves."
-)
 
 _NOTHING_REVIEWED_WARNING: Final = (
     "review-bot: warning: nothing was reviewed: every changed file was skipped: "
@@ -311,131 +295,6 @@ def _open_context(settings: Settings) -> ReviewContext | None:
             f"{shown_repo}. Pass a branch, tag or SHA it holds."
         )
     return ReviewContext(repo=RepoRef(git=git, commit=commit))
-
-
-def build_provider(settings: Settings, *, openai_api_key: str | None = None) -> LLMProvider:
-    """Create the selected provider. Nothing starts until its ``review`` is called.
-
-    ``openai_api_key`` is the key the entry point took from ``OPENAI_API_KEY``; only the
-    ``openai`` provider uses it.
-
-    Raises:
-        ConfigError: For ``openai``, if there is no key and its base URL's host isn't loopback,
-            or if only one price is set, or a cost cap without both.
-    """
-    if settings.provider == "claude":
-        # Deferred so only a Claude run pays to load the SDK. If it can't be imported, the error
-        # reaches ``main``'s catch-all, like any other failure.
-        from review_bot.providers.claude_agent import ClaudeAgentProvider  # noqa: PLC0415 - see above
-
-        return ClaudeAgentProvider(settings)
-    if settings.provider == "openai":
-        return OpenAICompatibleProvider(
-            settings, base_url=settings.openai_base_url, api_key=openai_api_key
-        )
-    return MockProvider()
-
-
-def build_routed_provider(
-    settings: Settings, policy: Policy, *, openai_api_key: str | None, environ: Mapping[str, str]
-) -> LLMProvider:
-    """The settings' provider, routed to the policy's fallback if it has one for the review.
-
-    Without one (``fallback_settings``), it is ``build_provider``'s, as before. With one, each
-    route's provider is built as ``build_provider`` builds it, with the time left as its
-    deadline, except that a route without a credential (``_has_credential``) has none, so the
-    review skips it.
-    """
-    fallback = fallback_settings(settings, policy)
-    if fallback is None:
-        return build_provider(settings, openai_api_key=openai_api_key)
-    routes = [
-        _route(each, openai_api_key=openai_api_key, environ=environ)
-        for each in (settings, fallback)
-    ]
-    return RoutingProvider(routes, deadline_s=settings.deadline_s)
-
-
-def _route(settings: Settings, *, openai_api_key: str | None, environ: Mapping[str, str]) -> Route:
-    """The route to the provider ``settings`` select, with no provider if it has no credential."""
-    if not _has_credential(settings, openai_api_key=openai_api_key, environ=environ):
-        return Route(settings.provider, settings.model, None)
-
-    def make_provider(left_s: float) -> LLMProvider:
-        within = settings.model_copy(update={"deadline_s": left_s})
-        return build_provider(within, openai_api_key=openai_api_key)
-
-    return Route(settings.provider, settings.model, make_provider)
-
-
-def fallback_settings(settings: Settings, policy: Policy) -> Settings | None:
-    """The settings the policy's fallback reviews with: the run's, with its provider and model.
-
-    An ``openai`` fallback with a ``base_url`` is reached there. None if the policy has no
-    fallback for the review's mode, or it is the run's own model.
-    """
-    entry = fallback_for(policy, review_mode(settings))
-    if entry is None or (entry.provider, entry.model) == (settings.provider, settings.model):
-        return None
-    update = {"provider": entry.provider, "model": entry.model}
-    if entry.base_url is not None:
-        update["openai_base_url"] = entry.base_url
-    return settings.model_copy(update=update)
-
-
-def can_fall_back(
-    settings: Settings, policy: Policy, *, openai_api_key: str | None, environ: Mapping[str, str]
-) -> bool:
-    """Whether the review has a fallback (``fallback_settings``) with its credential."""
-    fallback = fallback_settings(settings, policy)
-    return fallback is not None and _has_credential(
-        fallback, openai_api_key=openai_api_key, environ=environ
-    )
-
-
-def _has_credential(
-    settings: Settings, *, openai_api_key: str | None, environ: Mapping[str, str]
-) -> bool:
-    """Whether the provider ``settings`` select can authenticate.
-
-    Claude needs ``ANTHROPIC_API_KEY`` only in CI (``has_claude_credential``); ``openai`` needs
-    its key unless its host is loopback; the mock needs nothing.
-    """
-    if settings.provider == "claude":
-        return has_claude_credential(environ)
-    if settings.provider == "openai":
-        return bool(openai_api_key) or is_loopback_url(settings.openai_base_url)
-    return True
-
-
-def check_provider_settings(
-    settings: Settings, policy: Policy, *, openai_api_key: str | None
-) -> None:
-    """Refuse, before anything is sent, settings the selected provider can't run with.
-
-    Called once ``settings`` are within ``policy``, so a cost cap from its ceiling counts. The
-    policy's fallback for the review (``fallback_settings``) is checked too, if it is
-    ``openai``: it needs both prices for a cost cap, and a key it can send if it has one.
-    Without a key it is only skipped, so a review the primary serves still runs.
-
-    Raises:
-        ConfigError: For ``openai``, if no model was given, since the default is Claude's; if
-            only one price is set, or a cost cap without both (``token_prices``); or if there
-            is no key and its base URL's host isn't loopback. For an ``openai`` fallback, if
-            its prices are missing so, or its key can't be sent in a header.
-    """
-    fallback = fallback_settings(settings, policy)
-    if fallback is not None and fallback.provider == "openai":
-        token_prices(fallback)
-        if openai_api_key:
-            check_api_key(fallback.openai_base_url, openai_api_key)
-    if settings.provider != "openai":
-        return
-    # Given by a flag or variable, whatever its value: the default names a Claude model.
-    if "model" not in settings.model_fields_set:
-        raise ConfigError(_OPENAI_MODEL_MISSING)
-    token_prices(settings)
-    check_api_key(settings.openai_base_url, openai_api_key)
 
 
 def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
@@ -650,7 +509,12 @@ def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     """
     if provider is None:
         selected_provider = build_routed_provider(
-            settings, policy, openai_api_key=openai_api_key, environ=os.environ
+            settings,
+            policy,
+            # Through this module's name, so a test can replace it here.
+            make_provider=lambda each: build_provider(each, openai_api_key=openai_api_key),
+            openai_api_key=openai_api_key,
+            environ=os.environ,
         )
     else:
         selected_provider = provider

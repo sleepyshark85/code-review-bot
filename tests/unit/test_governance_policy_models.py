@@ -106,7 +106,7 @@ def test_fallback_for_a_mode_the_fallback_doesnt_list_is_none() -> None:
     "settings",
     [
         Settings(provider="claude", model="claude-opus-5-5", context="repo"),
-        Settings(provider="openai", model="m1"),
+        Settings(provider="openai", model="m1", openai_base_url="https://llm.test/v1"),
         Settings(provider="mock", model="anything", context="repo"),
     ],
     ids=["listed-context", "listed-diff", "mock-exempt"],
@@ -119,9 +119,16 @@ def test_check_settings_allows_a_listed_model_in_a_listed_mode(settings: Setting
     ("settings", "asked"),
     [
         (Settings(provider="claude", model="other"), "--provider claude --model other in diff"),
-        (Settings(provider="openai", model="m1", context="repo"), "openai --model m1 in context"),
+        (
+            Settings(provider="openai", model="m1", context="repo"),
+            "openai --model m1 in context mode at https://api.openai.com/v1 isn't",
+        ),
+        (
+            Settings(provider="openai", model="m1", openai_base_url="https://other.test/v1"),
+            "openai --model m1 in diff mode at https://other.test/v1 isn't",
+        ),
     ],
-    ids=["unlisted-model", "unlisted-mode"],
+    ids=["unlisted-model", "unlisted-mode", "other-base-url"],
 )
 def test_check_settings_refuses_another_model_or_mode_naming_the_allowed_entries(
     settings: Settings, asked: str
@@ -132,7 +139,10 @@ def test_check_settings_refuses_another_model_or_mode_naming_the_allowed_entries
     message = str(raised.value)
     assert asked in message
     assert "policy `v` (p.toml)" in message
-    assert "It allows: claude:claude-opus-5-5 (diff, context), openai:m1 (diff)." in message
+    assert (
+        "It allows: claude:claude-opus-5-5 (diff, context), openai:m1 (diff) at "
+        "https://llm.test/v1." in message
+    )
 
 
 def test_check_settings_without_models_allows_any_model() -> None:

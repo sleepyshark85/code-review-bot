@@ -767,6 +767,76 @@ def test_p4_s7_ac5_mock_provider_without_injection_is_exempt(bot, sample_diff, r
     assert run.exit_code == FINDINGS_EXIT, run.stderr
 
 
+CAPPED_FALLBACK_POLICY = routing_policy(
+    (CLAUDE, ("diff",)), (OPENAI, ("diff",)), fallback=OPENAI, max_cost_usd="0.60"
+)
+
+
+def test_p4_s7_ac5_mock_is_neither_checked_nor_routed_under_a_capped_fallback(
+    bot, write_diff, router, monkeypatch
+):
+    """No price flags: an `openai` fallback would need them, but mock runs are never routed."""
+    monkeypatch.setenv(KEY_VARIABLE, KEY)
+    transport = fake(answer())
+    use_fake_transport(monkeypatch, transport)
+    provider = MockProvider(findings=[])
+    path = router.policy(CAPPED_FALLBACK_POLICY)
+
+    run = bot.review(write_diff(FINDING_DIFF), "--policy", str(path), provider=provider)
+
+    assert run.exit_code == 0, run.stderr
+    assert len(provider.requests) == 1
+    assert transport.sent == []
+
+
+def test_p4_s7_ac5_mock_without_injection_isnt_routed_under_a_capped_fallback(
+    bot, sample_diff, router, monkeypatch
+):
+    monkeypatch.setenv(KEY_VARIABLE, KEY)
+    transport = fake(answer())
+    use_fake_transport(monkeypatch, transport)
+    path = router.policy(CAPPED_FALLBACK_POLICY)
+
+    run = bot.review(sample_diff, "--policy", str(path))
+
+    assert run.exit_code == FINDINGS_EXIT, run.stderr  # the sample's rule findings
+    assert transport.sent == []
+
+
+ENTRY_BASE = "https://a.example.com/v1"
+
+
+@pytest.mark.parametrize(
+    "base_flags",
+    [("--openai-base-url", "https://b.example.com/v1"), ()],
+    ids=["other_base", "default_base"],
+)
+def test_p4_s7_ac5_openai_base_url_unlike_the_entrys_exits_2_before_the_diff(
+    router, tmp_path, base_flags
+):
+    policy = routing_policy((OPENAI, ("diff",)), base_url=ENTRY_BASE)
+    transport = fake(answer())
+
+    done = router.review(
+        policy, *base_flags, route=OPENAI, transport=transport,
+        diff_path=tmp_path / "missing.diff",
+    )  # fmt: skip
+
+    assert done.exit_code == USAGE_EXIT, done.stderr
+    assert OPENAI in done.stderr
+    assert transport.sent == []
+
+
+def test_p4_s7_ac5_openai_base_url_matching_the_entrys_runs(router):
+    policy = routing_policy((OPENAI, ("diff",)), base_url=ENTRY_BASE)
+    transport = fake(answer())
+
+    done = router.review(policy, "--openai-base-url", ENTRY_BASE, route=OPENAI, transport=transport)
+
+    assert done.exit_code == 0, done.stderr
+    assert transport.one.url == f"{ENTRY_BASE}/chat/completions"
+
+
 @pytest.mark.parametrize(
     "fallback", ["openai:m9", "claude:claude-sonnet-x"], ids=["unlisted_model", "unlisted_claude"]
 )
@@ -1154,6 +1224,19 @@ def test_p4_s7_ac8_openai_fallback_under_a_cap_needs_both_prices(router):
     assert "--price-" in done.stderr
     assert claude.calls == []
     assert transport.sent == []
+
+
+def test_p4_s7_ac8_missing_prices_message_names_the_fallback_route(router):
+    """The run's provider is Claude, so the message names the fallback, not `--provider openai`."""
+    policy = routing_policy(
+        (CLAUDE, ("diff",)), (OPENAI, ("diff",)), fallback=OPENAI, max_cost_usd="0.60"
+    )
+
+    done = router.review(policy, claude=claude_answers(), transport=fake(answer()))
+
+    assert done.exit_code == USAGE_EXIT, done.stderr
+    assert OPENAI in done.stderr
+    assert "--provider openai" not in done.stderr
 
 
 # --- Notes: a fallback without its key is skipped, not refused ------------------------------------

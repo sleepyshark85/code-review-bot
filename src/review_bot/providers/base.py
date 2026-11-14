@@ -20,7 +20,6 @@ __all__ = [
     "TokenUsage",
     "ToolDefinition",
     "ToolExecutor",
-    "route_name",
 ]
 
 
@@ -85,11 +84,6 @@ class DeniedTool:
 
     tool: str
     layer: DenialLayer
-
-
-def route_name(provider: str, model: str) -> str:
-    """How reports and the audit log name a route: ``<provider>:<model>``."""
-    return f"{provider}:{model}"
 
 
 # Why a route wasn't tried: it had no key, or the review's deadline had passed.

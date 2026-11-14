@@ -431,9 +431,14 @@ def _is_over_budget(review: PipelineResult, settings: Settings) -> bool:
     if token_cap is not None and review.usage.output_tokens > token_cap:
         return True
     cost_cap = settings.max_cost_usd
-    if cost_cap is None or (settings.context == "off" and review.policy.fallback is None):
+    if cost_cap is None:
         return False
-    costs = [review.cost_usd, *(attempt.cost_usd for attempt in review.route)]
+    if review.policy.fallback is not None:
+        costs = [attempt.cost_usd for attempt in review.route]
+    elif settings.context != "off":
+        costs = [review.cost_usd]
+    else:
+        return False
     return any(cost is not None and cost > cost_cap for cost in costs)
 
 

@@ -50,6 +50,7 @@ __all__ = [
     "fallback_for",
     "parse_policy",
     "review_mode",
+    "route_name",
 ]
 
 MAX_POLICY_BYTES: Final = 64 * 1024
@@ -87,6 +88,11 @@ type ModelProvider = Literal["claude", "openai"]
 type ReviewMode = Literal["diff", "context"]
 
 
+def route_name(provider: str, model: str) -> str:
+    """How policies, reports and the audit log name a model: ``<provider>:<model>``."""
+    return f"{provider}:{model}"
+
+
 @dataclass(frozen=True, slots=True)
 class ModelEntry:
     """A model the policy allows, and the modes it may review in.
@@ -102,8 +108,8 @@ class ModelEntry:
 
     @property
     def route(self) -> str:
-        """Its name in reports: ``<provider>:<model>``."""
-        return f"{self.provider}:{self.model}"
+        """Its name in reports (``route_name``)."""
+        return route_name(self.provider, self.model)
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +321,7 @@ class _Routing(BaseModel):
 
 
 def _no_repeated_models(entries: list[_ModelEntry]) -> list[_ModelEntry]:
-    _no_repeats([f"{entry.provider}:{entry.model}" for entry in entries])
+    _no_repeats([route_name(entry.provider, entry.model) for entry in entries])
     return entries
 
 
@@ -476,7 +482,7 @@ def check_settings(settings: "Settings", policy: Policy) -> "Settings":
     if mode == "context":
         check_context_allowed(policy)
     if policy.models and settings.provider != "mock":
-        _check_model_allowed(settings.provider, settings.model, mode, policy)
+        _check_model_allowed(settings, mode, policy)
     ceiling, cap = policy.max_cost_usd, settings.max_cost_usd
     if ceiling is None:
         return settings
@@ -506,25 +512,39 @@ def fallback_for(policy: Policy, mode: ReviewMode) -> ModelEntry | None:
     return fallback
 
 
-def _check_model_allowed(provider: str, model: str, mode: ReviewMode, policy: Policy) -> None:
-    """Check that ``policy`` lists ``provider`` and ``model`` for ``mode``.
+def _check_model_allowed(settings: "Settings", mode: ReviewMode, policy: Policy) -> None:
+    """Check that ``policy`` lists the settings' provider and model for ``mode``.
+
+    An entry with a ``base_url`` allows its model only at that URL, so an ``openai`` run must
+    use it as its ``openai_base_url``.
 
     Raises:
-        ConfigError: If it doesn't, naming each entry and its modes.
+        ConfigError: If no entry allows it, naming each entry, its modes and any URL.
     """
-    if any(
-        (entry.provider, entry.model) == (provider, model) and mode in entry.modes
-        for entry in policy.models
-    ):
+    if any(_allows(entry, settings, mode) for entry in policy.models):
         return
-    allowed = ", ".join(
-        f"{entry.route} ({', '.join(sorted(entry.modes, reverse=True))})" for entry in policy.models
-    )
+    allowed = ", ".join(_entry_text(entry) for entry in policy.models)
+    at = f" at {settings.openai_base_url}" if settings.provider == "openai" else ""
     raise ConfigError(
-        f"--provider {provider} --model {model} in {mode} mode isn't allowed by the policy "
-        f"`{policy.version}` ({policy.source}), so nothing was sent. It allows: {allowed}. "
-        "Pass one of them, in a mode it lists."
+        f"--provider {settings.provider} --model {settings.model} in {mode} mode{at} isn't "
+        f"allowed by the policy `{policy.version}` ({policy.source}), so nothing was sent. It "
+        f"allows: {allowed}. Pass one of them, in a mode it lists."
     )
+
+
+def _allows(entry: ModelEntry, settings: "Settings", mode: ReviewMode) -> bool:
+    return (
+        (entry.provider, entry.model) == (settings.provider, settings.model)
+        and mode in entry.modes
+        and entry.base_url in (None, settings.openai_base_url)
+    )
+
+
+def _entry_text(entry: ModelEntry) -> str:
+    """An entry as a message names it: its route, its modes, and its URL if it has one."""
+    modes = ", ".join(sorted(entry.modes, reverse=True))
+    at = "" if entry.base_url is None else f" at {entry.base_url}"
+    return f"{entry.route} ({modes}){at}"
 
 
 def check_context_allowed(policy: Policy) -> None:

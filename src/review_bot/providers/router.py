@@ -13,13 +13,13 @@ from dataclasses import dataclass
 from typing import Final
 
 from review_bot.errors import ErrorCategory, ProviderError
+from review_bot.governance.policy import route_name
 from review_bot.providers.base import (
     Attempt,
     DeniedTool,
     LLMProvider,
     ReviewRequest,
     ReviewResponse,
-    route_name,
 )
 
 # ``Attempt`` is defined beside ``ReviewResponse``, which holds it, and named here too, with the

@@ -33,6 +33,7 @@ from review_bot.governance.policy import (
     Policy,
     check_context_allowed,
     check_settings,
+    route_name,
 )
 from review_bot.governance.redaction import RedactionCounts, RedactionKind, add_counts, mask_diff
 from review_bot.prompt import (
@@ -48,7 +49,6 @@ from review_bot.providers.base import (
     ReviewRequest,
     ReviewResponse,
     TokenUsage,
-    route_name,
 )
 from review_bot.report import PipelineResult, attempt_json, redaction_json, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules

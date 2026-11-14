@@ -17,7 +17,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from diff_samples import FINDING_DIFF, FINDING_FIELDS, FINDING_LINE, MINIMAL_DIFF, section
 from git_samples import commit, git, init_repo
 
-from review_bot.cli import build_provider, main, parse_args
+from review_bot.cli import main, parse_args
 from review_bot.errors import ConfigError, ErrorCategory, GitError, InputError, ProviderError
 from review_bot.findings import Finding, Severity
 from review_bot.git import GitRepo
@@ -25,6 +25,7 @@ from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.base import ReviewRequest, ReviewResponse, TokenUsage
 from review_bot.providers.claude_agent import ClaudeAgentProvider
 from review_bot.providers.mock import MockProvider
+from review_bot.providers.setup import build_provider
 from review_bot.settings import Settings
 
 AWS_KEY = "AK" + "IA" + "ABCDEFGH" + "23456789"

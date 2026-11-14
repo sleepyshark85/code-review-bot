@@ -2,7 +2,7 @@
 
 - **Status:** Done
 - **Depends on:** P4-S1, P4-S2
-- **Touches:** `providers.router` (new), `providers.base`, `errors`, `governance.policy`, `cli`, `pr.cli`, `pr.runner`, `evals.cli`, `review`, `report`
+- **Touches:** `providers.router` (new), `providers.base`, `errors`, `governance.policy`, `cli`, `pr.cli`, `pr.runner`, `review`, `report`
 
 ## Value
 When Claude is down, a review is still done by the policy's fallback model, and the report says which models were tried and which one served. Only models the policy lists may review code at all ([ADR 0021](../../../adr/0021-route-on-availability-failures-then-rules-only.md)).
@@ -14,7 +14,7 @@ A run's **attempts** are written, in order, as one audit `agent`/`attempt` recor
 - **AC2:** Given a primary failing `transient` or `rate_limit`, then AC1 holds. Given `auth`, `refusal`, `invalid_output` or `permanent` (which includes every cost, turn or tool-call cap failure, with either provider), then no fallback is tried, and the run fails as today, with one attempt.
 - **AC3:** Given both routes failing `unavailable`, then the run fails with the last attempt's category and exit code, and its attempts are both routes.
 - **AC4:** Given a policy with no `[routing]`, or the built-in policy, then exactly one provider is called, and requests, findings and exit codes are as before. `route` holds the single attempt.
-- **AC5:** Given a policy listing models, then `--provider claude --model other`, or context mode when the matching entry lists only `diff`, exits 2 before the diff is read, naming the allowed entries. The mock provider is exempt. A fallback that isn't in `[[models]]` makes the policy invalid (exit 2).
+- **AC5:** Given a policy listing models, then `--provider claude --model other`, or context mode when the matching entry lists only `diff`, exits 2 before the diff is read, naming the allowed entries; so does an `openai` run whose `--openai-base-url` differs from the matching entry's `base_url`. The mock provider is exempt: it is never checked or routed. A fallback that isn't in `[[models]]` makes the policy invalid (exit 2).
 - **AC6:** Given context mode with a fallback that lists only `diff`, then no fallback is tried.
 - **AC7:** Given context mode and a primary that made 5 tool calls before failing `transient`, then the fallback shares the same executor: with `max_tool_calls` 12, it has 7 calls left, and the ledger holds all 12 in order.
 - **AC8:** Given `max_cost_usd` 0.60, then each attempt is capped at 0.60. Under a policy with a fallback, `shadow/v1` `over_budget` is true if any attempt's reported cost is over it, in diff and context mode alike; without a fallback it is judged as today (cost in context mode only, tokens in both).

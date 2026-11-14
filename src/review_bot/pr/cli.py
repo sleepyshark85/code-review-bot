@@ -19,6 +19,7 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
 
 import argparse
 import contextlib
+import dataclasses
 import os
 import sys
 import tempfile
@@ -35,10 +36,6 @@ from review_bot.cli import (
     RaisingArgumentParser,
     add_setting_arguments,
     add_tool_cap_arguments,
-    build_provider,
-    build_routed_provider,
-    can_fall_back,
-    check_provider_settings,
     record_failed_end,
     report_failure,
     run_review,
@@ -56,7 +53,7 @@ from review_bot.console import (
 )
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
-from review_bot.governance.policy import BUILTIN_POLICY, Policy
+from review_bot.governance.policy import Policy
 from review_bot.pr.compare import compare_runs
 from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
@@ -93,6 +90,12 @@ from review_bot.pr.shadow import (
 from review_bot.pr.units import ShadowFile
 from review_bot.price_flags import Prices, add_price_arguments, prices_from_flags
 from review_bot.providers.base import LLMProvider
+from review_bot.providers.setup import (
+    build_provider,
+    build_routed_provider,
+    can_fall_back,
+    check_provider_settings,
+)
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
 from review_bot.settings import (
@@ -221,7 +224,7 @@ def main(
 
     Args:
         argv: The arguments; None means the process's own.
-        provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
+        provider: The provider to use; None means ``build_provider`` makes it
             from the settings, and only if the run calls one.
         github: The GitHub client ``run --mode comment``, ``collect`` and ``baseline`` use,
             which also reads the linked issues of ``run`` and ``backfill`` with ``--context
@@ -277,9 +280,11 @@ def main(
             _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
         ):
             return _run_without_review(command, github, github_token)
-        # Backfill never routes (P4-S7 AC10), so only the others' fallback is checked.
-        routing = BUILTIN_POLICY if isinstance(command, _BackfillCommand) else command.policy
-        check_provider_settings(command.settings, routing, openai_api_key=openai_api_key)
+        policy = command.policy
+        if isinstance(command, _BackfillCommand):
+            # Backfill never routes (P4-S7 AC10), so its policy's fallback isn't checked.
+            policy = dataclasses.replace(policy, fallback=None)
+        check_provider_settings(command.settings, policy, openai_api_key=openai_api_key)
         # Before --out is created: a CI run refused here touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci(allow_dispatch=command.allow_dispatch)
@@ -1140,7 +1145,12 @@ def _routed_provider(
     if provider is not None:
         return provider
     return build_routed_provider(
-        settings, policy, openai_api_key=openai_api_key, environ=os.environ
+        settings,
+        policy,
+        # Through this module's name, so a test can replace it here.
+        make_provider=lambda each: build_provider(each, openai_api_key=openai_api_key),
+        openai_api_key=openai_api_key,
+        environ=os.environ,
     )
 
 
