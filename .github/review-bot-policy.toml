@@ -1,0 +1,12 @@
+version = "review-bot-ci-1"
+
+[tools]
+allowed = ["read", "grep", "glob"]
+
+[cost]
+max_cost_usd = "0.60"
+
+[[models]]
+provider = "claude"
+model = "claude-opus-5-5"
+modes = ["diff", "context"]

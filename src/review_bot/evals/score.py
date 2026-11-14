@@ -135,6 +135,21 @@ class BugScore:
         """Whether it was measured, and caught at least as often as needed."""
         return self.is_measured and self.caught >= self.needed
 
+    @property
+    def is_miss(self) -> bool:
+        """Whether it was measured, and caught less often than needed."""
+        return self.is_measured and not self.passed
+
+    @property
+    def problem(self) -> str:
+        """What its miss fails a case with, such as ``rule bug x wasn't caught``."""
+        if self.bug.source is Source.RULE:
+            return f"rule bug {self.bug.id} wasn't caught"
+        return (
+            f"ai bug {self.bug.id} was caught in {self.caught} of {self.out_of} runs; "
+            f"it needs {self.needed}"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CaseScore:
@@ -163,6 +178,17 @@ class CaseScore:
             return None
         scores = [score for score in self.bugs if score.bug.source is source]
         return sum(score.passed for score in scores), len(scores)
+
+    @property
+    def misses(self) -> tuple[BugScore, ...]:
+        """The bugs it missed (``BugScore.is_miss``), in case order."""
+        return tuple(score for score in self.bugs if score.is_miss)
+
+    @property
+    def problems_besides_misses(self) -> tuple[str, ...]:
+        """Its problems other than its misses, such as too few passing runs."""
+        miss_problems = {score.problem for score in self.misses}
+        return tuple(problem for problem in self.problems if problem not in miss_problems)
 
     @property
     def passing_runs(self) -> int:
@@ -227,7 +253,7 @@ def score_case(case: EvalCase, evidence: CaseEvidence) -> CaseScore:
         for number, run in enumerate(evidence.runs, start=1)
         for finding in run.dropped
     )
-    problems = [_bug_problem(score) for score in bugs if score.is_measured and not score.passed]
+    problems = [score.problem for score in bugs if score.is_miss]
     rule_noise = [credit for credit in unmatched if credit.run is None]
     passing_runs = _count_passed(runs)
     if case.noise_budget is not None and rule_noise:
@@ -335,15 +361,6 @@ def _count_passed(runs: Sequence[RunScore]) -> int:
 
 def _credits_any(bugs: Sequence[Bug], finding: Finding) -> bool:
     return any(matches_bug(bug, finding) for bug in bugs)
-
-
-def _bug_problem(score: BugScore) -> str:
-    if score.bug.source is Source.RULE:
-        return f"rule bug {score.bug.id} wasn't caught"
-    return (
-        f"ai bug {score.bug.id} was caught in {score.caught} of {score.out_of} runs; "
-        f"it needs {score.needed}"
-    )
 
 
 def _unmatched(case: EvalCase, evidence: CaseEvidence) -> tuple[Credit, ...]:

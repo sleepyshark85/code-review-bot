@@ -47,11 +47,18 @@ from review_bot.evals.score import CaseResult
 from review_bot.findings import Finding
 from review_bot.governance.policy import (
     BUILTIN_POLICY,
+    ModelProvider,
     Policy,
     check_context_allowed,
     check_settings,
 )
+from review_bot.price_flags import Prices
 from review_bot.providers.base import LLMProvider
+from review_bot.providers.openai_compat import (
+    OpenAICompatibleProvider,
+    check_api_key,
+    token_prices,
+)
 from review_bot.review import ReviewContext, run_pipeline
 from review_bot.rules import DomainRule
 from review_bot.secret_scan import redact, scan_secrets
@@ -76,7 +83,9 @@ class LiveRequest:
     is the most calls allowed in all; None refuses, as no budget was given. ``max_usd`` is the
     dollar allowance and ``max_cost_usd`` each call's cap, which ``policy``'s ceiling is when
     None: every mode needs both an allowance and a cap. ``allow_dispatch`` is
-    ``--allow-dispatch``. Each call is reviewed under ``policy``.
+    ``--allow-dispatch``. Each call is reviewed under ``policy``, by ``provider``'s ``model``:
+    None is the configured model, which only Claude has. ``prices`` are the token prices an
+    ``openai`` call's cost comes from; None reads them from their variables.
     """
 
     cases_dir: Path
@@ -88,6 +97,9 @@ class LiveRequest:
     max_cost_usd: Decimal | None = None
     allow_dispatch: bool = False
     policy: Policy = BUILTIN_POLICY
+    provider: ModelProvider = "claude"
+    model: str | None = None
+    prices: Prices | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +187,11 @@ class _Plan:
 
 
 async def record_live(
-    request: LiveRequest, *, environ: Mapping[str, str], sdk_call: "SdkCall | None" = None
+    request: LiveRequest,
+    *,
+    environ: Mapping[str, str],
+    sdk_call: "SdkCall | None" = None,
+    openai_api_key: str | None = None,
 ) -> LiveRun:
     """Call the model ``runs`` times per case, write each case's live recording, and score it.
 
@@ -190,13 +206,15 @@ async def record_live(
         request: What to record, from the flags.
         environ: The process environment, read for ``CI`` and ``GITHUB_EVENT_NAME``.
         sdk_call: Replaces the real SDK call, so tests stay offline.
+        openai_api_key: The key an ``openai`` provider sends, taken from ``OPENAI_API_KEY``.
 
     Raises:
         EvalInputError: Before any call, if ``CI`` is set and the run isn't a
             ``workflow_dispatch`` given ``allow_dispatch``, a ``--case`` names no case, the
             planned calls exceed ``max_calls`` or lack a dollar budget or don't fit it, a case
             is invalid, its diff can't be reviewed or has nothing to review, or a setting is
-            invalid or above the policy's ceiling. During the run, if a case's repo can't be
+            invalid or above the policy's ceiling, or the ``openai`` provider has no model, both
+            prices or a key its endpoint needs. During the run, if a case's repo can't be
             built, or the audit log or a recording can't be written.
         ConfigError: Before any call, in context mode under a policy that allows no tool.
     """
@@ -213,11 +231,11 @@ async def record_live(
     ]
     plan = _Plan(len(cases), request.runs)
     _check_call_budget(plan, request.max_calls)
-    settings = _live_settings(request.max_cost_usd, request.policy)
+    settings = _live_settings(request)
     spend = _Spend(_dollar_budget(request.max_usd, settings.max_cost_usd, plan))
     for loaded in cases:
         await check_sendable(loaded)
-    provider = _claude(settings, sdk_call)
+    provider = _provider(settings, sdk_call, openai_api_key)
     reviewer = _Reviewer(settings, provider, request.policy)
     results: list[CaseResult] = []
     try:
@@ -310,22 +328,33 @@ def _budget_stop_line(stop: _OutOfBudgetError, unrecorded: Sequence[LoadedCase])
     )
 
 
-def _live_settings(max_cost_usd: Decimal | None, policy: Policy) -> Settings:
-    """The configured model, deadline and API timeout, with one attempt per call.
+def _live_settings(request: LiveRequest) -> Settings:
+    """The request's provider and model, the configured deadline and API timeout, one attempt.
 
     The fields in ``fixed`` take no value from their REVIEW_BOT_* variable: a call sends the diff
     replay hashes, at replay's size limit, its tools run at replay's caps, and the audit log goes
     to live's own path. Each call's cost cap is ``max_cost_usd`` (``--max-cost-usd``), else
-    ``policy``'s ceiling, or none, whatever REVIEW_BOT_MAX_COST_USD says.
+    ``policy``'s ceiling, or none, whatever REVIEW_BOT_MAX_COST_USD says. The model, and an
+    ``openai`` call's prices, are the request's, else their variables'.
 
     Raises:
         EvalInputError: If the model, deadline or API timeout configured is invalid,
             ``max_cost_usd`` is outside the cost cap's range or above ``policy``'s ceiling, or
-            without it, REVIEW_BOT_MAX_COST_USD is invalid.
+            without it, REVIEW_BOT_MAX_COST_USD is invalid; or for ``openai``, if no model was
+            given, or there aren't both prices (``token_prices``).
     """
+    if request.provider == "openai" and request.model is None:
+        raise EvalInputError(
+            "live --provider openai needs --model, since the default model is Claude's. Pass "
+            "the model the endpoint serves."
+        )
+    max_cost_usd, prices = request.max_cost_usd, request.prices
     replay_defaults = Settings()
     fixed = {
-        "provider": "claude",
+        "provider": request.provider,
+        "model": request.model,
+        "price_input_usd_per_mtok": None if prices is None else str(prices.input_usd_per_mtok),
+        "price_output_usd_per_mtok": None if prices is None else str(prices.output_usd_per_mtok),
         "max_retries": "0",
         "audit_log": str(EVAL_LIVE_AUDIT_LOG_PATH),
         "threshold": str(replay_defaults.threshold),
@@ -339,13 +368,31 @@ def _live_settings(max_cost_usd: Decimal | None, policy: Policy) -> Settings:
     try:
         # Given None, ``load_settings`` reads REVIEW_BOT_MAX_COST_USD, which this then drops.
         configured = load_settings(fixed).model_copy(update={"max_cost_usd": max_cost_usd})
-        settings = check_settings(configured, policy)
+        settings = check_settings(configured, request.policy)
+        if settings.provider == "openai":
+            token_prices(settings)
     except ConfigError as exc:
         raise EvalInputError(str(exc)) from exc
     return settings
 
 
-def _claude(settings: Settings, sdk_call: "SdkCall | None") -> LLMProvider:
+def _provider(
+    settings: Settings, sdk_call: "SdkCall | None", openai_api_key: str | None
+) -> LLMProvider:
+    """The settings' provider: Claude through ``sdk_call`` if given, or ``openai`` with its key.
+
+    Raises:
+        EvalInputError: For ``openai``, if its endpoint needs a key and there is none, or the
+            key can't be sent.
+    """
+    if settings.provider == "openai":
+        try:
+            check_api_key(settings.openai_base_url, openai_api_key)
+        except ConfigError as exc:
+            raise EvalInputError(str(exc)) from exc
+        return OpenAICompatibleProvider(
+            settings, base_url=settings.openai_base_url, api_key=openai_api_key
+        )
     # Deferred, so replay never loads the SDK.
     from review_bot.providers.claude_agent import ClaudeAgentProvider  # noqa: PLC0415 - see above
 
@@ -384,14 +431,19 @@ async def _record_case(
             "mode": mode,
             **fields,
             "model": reviewer.settings.model,
-            "sdk_version": version("claude-agent-sdk"),
+            "sdk_version": _sdk_version(request.provider),
             "recorded_at": utc_now(),
             "runs": recorded_runs,
         }
     )
-    path = loaded.live_recording_path(mode)
+    path = loaded.live_recording_path(mode, request.provider)
     _write_recording(path, recording)
     return await score_recording(loaded, load_recording(path), mode=mode, policy=reviewer.policy)
+
+
+def _sdk_version(provider: ModelProvider) -> str:
+    """The version of what called the model: Claude's SDK, or the bot's own ``openai`` client."""
+    return version("claude-agent-sdk" if provider == "claude" else "review-bot")
 
 
 async def _record_runs(

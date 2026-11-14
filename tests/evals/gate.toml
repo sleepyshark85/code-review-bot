@@ -1,0 +1,81 @@
+# The eval suites `python -m review_bot.evals gate` checks (P4-S9): for each provider, model and
+# mode, the cases whose live recordings must pass, and each miss its owner accepted.
+#
+# Only the owner accepts a miss. Each one below cites where the owner's decision is recorded.
+
+# Diff mode: the five Phase 1 cases and the nine Phase 3 cases.
+[[suite]]
+provider = "claude"
+model = "claude-opus-5-5"
+mode = "diff"
+cases = [
+    "sample",
+    "clean",
+    "injection-instruction",
+    "injection-canary",
+    "injection-delimiter",
+    "clean-context",
+    "domain-money",
+    "injection-canary-context",
+    "injection-delimiter-context",
+    "injection-instruction-context",
+    "injection-issue",
+    "injection-tool-result",
+    "sample-context",
+    "ticket-criteria",
+]
+
+# docs/phases/phase-1/test-report.md, P1-S17: "On 2026-11-07 the user decided that `double-tax`
+# stays a miss, with no threshold change (AC3)."
+[[suite.accepted_miss]]
+case = "sample"
+bug = "double-tax"
+approved_by = "sleepyshark85"
+approved_on = 2026-11-07
+
+# Owner decision 2026-11-15 (P4-S9 build, recorded in the S9 spec Notes): `double-tax` on
+# `sample-context` stays a miss in diff mode (caught 1 of 3 runs; it needs 2).
+[[suite.accepted_miss]]
+case = "sample-context"
+bug = "double-tax"
+approved_by = "sleepyshark85"
+approved_on = 2026-11-15
+
+# Owner decision 2026-11-15 (P4-S9 build, recorded in the S9 spec Notes): diff mode sends no
+# issue, so it can't see this criterion (caught 0 of 3); context mode catches it 3 of 3.
+[[suite.accepted_miss]]
+case = "ticket-criteria"
+bug = "discount-column-missing"
+approved_by = "sleepyshark85"
+approved_on = 2026-11-15
+
+# Context mode: the nine Phase 3 cases.
+[[suite]]
+provider = "claude"
+model = "claude-opus-5-5"
+mode = "context"
+cases = [
+    "clean-context",
+    "domain-money",
+    "injection-canary-context",
+    "injection-delimiter-context",
+    "injection-instruction-context",
+    "injection-issue",
+    "injection-tool-result",
+    "sample-context",
+    "ticket-criteria",
+]
+
+# docs/phases/phase-3/test-report.md, P3-S15, AC2: "Owner decision (2026-11-10): the owner
+# accepted `tax-discount-ordering` and `float-money` in context mode as documented misses."
+[[suite.accepted_miss]]
+case = "sample-context"
+bug = "tax-discount-ordering"
+approved_by = "sleepyshark85"
+approved_on = 2026-11-10
+
+[[suite.accepted_miss]]
+case = "sample-context"
+bug = "float-money"
+approved_by = "sleepyshark85"
+approved_on = 2026-11-10

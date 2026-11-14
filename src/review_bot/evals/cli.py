@@ -1,4 +1,4 @@
-"""Command line for the evals: ``python -m review_bot.evals replay|live|compare ...``.
+"""Command line for the evals: ``python -m review_bot.evals replay|live|compare|gate ...``.
 
 Its exit codes are its own (Phase 1 design, Exit codes): 0 pass, 1 fail, 2 usage.
 """
@@ -16,6 +16,8 @@ from review_bot.errors import ConfigError
 from review_bot.evals.compare import compare_cases
 from review_bot.evals.compare_render import render_compare_json, render_compare_text
 from review_bot.evals.formats import EvalInputError
+from review_bot.evals.gate import run_gate
+from review_bot.evals.gate_render import render_gate_json, render_gate_text
 from review_bot.evals.live import LiveRequest, LiveRun, record_live
 from review_bot.evals.render import render_live, render_replay
 from review_bot.evals.replay import replay_both_modes, replay_cases, require_live
@@ -51,9 +53,10 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None) -> int:
-    """Replay, record or compare every case under ``--cases``; return 0 pass, 1 fail, 2 usage.
+    """Replay, record, compare or gate the cases under ``--cases``; return 0 pass, 1 fail, 2 usage.
 
     ``compare`` passes when every case with a ``repo`` or a context recording is paired.
+    ``gate`` passes when the prompt pins and every suite in ``--suites`` do (``evals.gate``).
     ``live`` records only the cases ``--case`` names, if given, and fails if its dollar budget
     stopped it before every case was recorded.
 
@@ -65,7 +68,7 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
     keep_library_logs_off_stderr()
     # Before any provider is built, so the Claude CLI never inherits them.
     take_github_token()
-    take_openai_api_key()
+    openai_api_key = take_openai_api_key()
     try:
         args = _parse_args(argv)
         policy = (
@@ -73,7 +76,7 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
             if args.command == "compare"
             else read_policy_option(args.policy, os.environ)
         )
-        output, exit_code = asyncio.run(_run(args, policy, sdk_call))
+        output, exit_code = asyncio.run(_run(args, policy, sdk_call, openai_api_key))
     except (EvalInputError, ConfigError) as exc:
         # Paths come from the command line and case files; redact them like the review's errors.
         write_diagnostic(f"review-bot evals: error: {redact(str(exc))}")
@@ -87,19 +90,32 @@ def main(argv: Sequence[str] | None = None, *, sdk_call: "SdkCall | None" = None
 
 
 async def _run(
-    args: argparse.Namespace, policy: Policy, sdk_call: "SdkCall | None"
+    args: argparse.Namespace,
+    policy: Policy,
+    sdk_call: "SdkCall | None",
+    openai_api_key: str | None,
 ) -> tuple[str, int]:
-    """The command's report and exit code; ``live`` and ``replay`` review under ``policy``."""
+    """The command's report and exit code; all but ``compare`` review under ``policy``."""
     if args.command == "compare":
         return await _compare(args)
+    if args.command == "gate":
+        return await _gate(args, policy)
     if args.command == "live":
-        run = await _record(args, policy, sdk_call)
+        run = await _record(args, policy, sdk_call, openai_api_key)
         return render_live(run), _PASS if run.passed else _FAIL
     return await _replay(args, policy)
 
 
+async def _gate(args: argparse.Namespace, policy: Policy) -> tuple[str, int]:
+    result = await run_gate(args.cases, args.suites, policy)
+    render = render_gate_json if args.format == "json" else render_gate_text
+    return render(result), _PASS if result.passed else _FAIL
+
+
 async def _replay(args: argparse.Namespace, policy: Policy) -> tuple[str, int]:
-    results = await replay_cases(args.cases, args.recording, mode=args.mode, policy=policy)
+    results = await replay_cases(
+        args.cases, args.recording, mode=args.mode, policy=policy, provider=args.provider
+    )
     if args.require_live:
         default_model = Settings().model
         results = [require_live(result, default_model, mode=args.mode) for result in results]
@@ -117,7 +133,12 @@ def _exit_code(results: Sequence[CaseResult]) -> int:
     return _PASS if all(result.passed for result in results) else _FAIL
 
 
-async def _record(args: argparse.Namespace, policy: Policy, sdk_call: "SdkCall | None") -> LiveRun:
+async def _record(
+    args: argparse.Namespace,
+    policy: Policy,
+    sdk_call: "SdkCall | None",
+    openai_api_key: str | None,
+) -> LiveRun:
     request = LiveRequest(
         args.cases,
         runs=args.runs,
@@ -128,8 +149,13 @@ async def _record(args: argparse.Namespace, policy: Policy, sdk_call: "SdkCall |
         max_cost_usd=args.max_cost_usd,
         allow_dispatch=args.allow_dispatch,
         policy=policy,
+        provider=args.provider,
+        model=args.model,
+        prices=prices_from_flags(args.price_input_usd_per_mtok, args.price_output_usd_per_mtok),
     )
-    return await record_live(request, environ=os.environ, sdk_call=sdk_call)
+    return await record_live(
+        request, environ=os.environ, sdk_call=sdk_call, openai_api_key=openai_api_key
+    )
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -157,6 +183,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="fail unless every case has a live recording of the default model",
     )
+    _add_provider_argument(replay, "whose live recordings to replay")
     _add_policy_argument(replay)
     live = commands.add_parser(
         "live",
@@ -198,15 +225,43 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="in CI, run only if started by workflow_dispatch; any other CI run still refuses",
     )
+    _add_provider_argument(live, "the provider to call")
+    live.add_argument(
+        "--model",
+        help="the model to call (default: REVIEW_BOT_MODEL, else Claude's default); required "
+        "for --provider openai",
+    )
+    add_price_arguments(live)
     _add_policy_argument(live)
     _add_compare_command(commands)
+    _add_gate_command(commands)
     args = parser.parse_args(argv)
-    if args.command == "replay" and args.recording is not None and args.require_live:
+    if args.command == "replay":
+        _check_replay_flags(args)
+    return args
+
+
+def _check_replay_flags(args: argparse.Namespace) -> None:
+    if args.recording is not None and args.require_live:
         raise EvalInputError(
             "--recording and --require-live can't be combined: a synthetic recording is never "
             "live evidence. Leave one out."
         )
-    return args
+    if args.require_live and args.provider != "claude":
+        raise EvalInputError(
+            "--require-live checks for a recording of the default model, Claude's, so it can't "
+            f"be combined with --provider {args.provider}. Leave it out, or check that "
+            "provider's suite with python -m review_bot.evals gate."
+        )
+
+
+def _add_provider_argument(parser: argparse.ArgumentParser, purpose: str) -> None:
+    parser.add_argument(
+        "--provider",
+        choices=("claude", "openai"),
+        default="claude",
+        help=f"{purpose} (default: claude)",
+    )
 
 
 def _add_policy_argument(parser: argparse.ArgumentParser) -> None:
@@ -232,5 +287,21 @@ def _add_compare_command(commands: "argparse._SubParsersAction[_ArgumentParser]"
     compare.add_argument("--cases", type=Path, required=True, help="the eval cases directory")
     add_price_arguments(compare)
     compare.add_argument(
+        "--format", choices=("text", "json"), default="text", help="text (default) or json"
+    )
+
+
+def _add_gate_command(commands: "argparse._SubParsersAction[_ArgumentParser]") -> None:
+    gate = commands.add_parser(
+        "gate",
+        help="check the prompt pins, and each model the policy allows on its eval suite, offline",
+        allow_abbrev=False,
+    )
+    gate.add_argument("--cases", type=Path, required=True, help="the eval cases directory")
+    gate.add_argument(
+        "--suites", type=Path, required=True, help="the suites file, such as tests/evals/gate.toml"
+    )
+    _add_policy_argument(gate)
+    gate.add_argument(
         "--format", choices=("text", "json"), default="text", help="text (default) or json"
     )

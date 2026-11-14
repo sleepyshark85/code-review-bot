@@ -482,3 +482,75 @@ From this slice's file alone, after review round 1: `providers/router.py` 95% (l
 - **A tool-call cap failure** is covered for Claude's and the second provider's turn caps, and for the cost cap. A message asking for more calls than the cap fails `invalid_output` (P4-S6 Limits), which AC2's `invalid_output` cases cover.
 - **Routing from the second provider to Claude** isn't tested. AC1's direction and two second-provider models cover the router.
 - **The fallback's live runs** are S14's.
+
+## P4-S9: Gate prompt versions and models on evals
+
+Spec: [p4-s9-prompt-eval-gate.md](slices/p4-s9-prompt-eval-gate.md). Tests: [`tests/evals/test_p4_s9_prompt_eval_gate.py`](../../../tests/evals/test_p4_s9_prompt_eval_gate.py) (66 cases, for AC1 to AC7 and the Limits) and [`tests/integration/test_p4_s9_ci_eval_gate.py`](../../../tests/integration/test_p4_s9_ci_eval_gate.py) (10 cases, for AC8 and AC9). The tester also created [`tests/evals/gate.toml`](../../../tests/evals/gate.toml) from the developer's draft, and added the owner's two accepted misses of 2026-11-15 to it.
+
+The tests were written from the spec, design.md ("Versioned prompts and the eval gate") and ADR 0007 before the code existed. Every run goes through `review_bot.evals.main` in process. `live --provider openai` sends through P4-S2's scripted `HttpTransport`, and Claude's `live` goes through a fake `sdk_call`. Nothing calls a model.
+
+**Status: every criterion passes (76 of 76).** The first run had two failures with one cause, closed by the owner's decision of 2026-11-15 (see Failures).
+
+### Gate
+
+A partial run in small groups, since the full suite runs out of memory on this machine: the two S9 files and `tests/evals/test_p1_s16_eval_live_command.py`. `ruff format --check` and `ruff check` are clean on the changed tests. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **AC1** changes the text by patching `prompt._SYSTEM_PROMPT` or `prompt._CONTEXT_SYSTEM_PROMPT`. Both are private, but patching them is the only way to change "the text" without editing `src/`. A second test changes the pin in `PROMPT_FINGERPRINTS` instead.
+- **"Naming the suite, the case and the reason"** (AC3) means that one output block holds all three. A block is a line at column 0 and the indented lines under it.
+- **AC7's counts:** a case whose only misses are accepted counts as passed (for example, `passed 9` with `accepted misses 2` in context mode).
+- **The owner decisions, checked:** `sample`/`double-tax` in diff mode (P1 test report, P1-S17, 2026-11-07), and `sample-context`'s `tax-discount-ordering` and `float-money` in context mode (P3 test report, P3-S15 AC2, 2026-11-10). `gate.toml` holds these three, plus the two diff-mode misses the owner accepted on 2026-11-15 (Failures).
+
+### Criteria
+
+Test names drop the `test_p4_s9_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_fingerprints_pin_the_diff_and_the_current_context_version`. `ac1_unchanged_prompts_pass_the_fingerprint_check`. `ac1_diff_prompt_text_changed_without_a_new_version_exits_1_naming_it`. `ac1_one_character_change_is_enough`. `ac1_changed_pin_for_the_current_version_exits_1_naming_it`. `ac1_context_prompt_text_changed_names_the_context_version`. `ac1_a_text_change_fails_even_with_an_empty_suite_list` | pass (7) |
+| AC2 | `ac2_committed_diff_suite_holds_the_phase_1_cases_and_the_accepted_miss`. `ac2_every_accepted_miss_has_an_approver_and_a_date`. `ac2_the_specs_one_suite_passes_on_the_committed_recordings` (the file exactly as AC2 gives it: exit 0). `ac2_gate_on_the_committed_suites_and_recordings_exits_0` | pass (4) |
+| AC3 | `ac3_missing_live_recording_exits_1_naming_suite_case_and_reason`. `ac3_synthetic_recording_alone_is_not_live_evidence`. `ac3_stale_recording_exits_1_naming_the_stale_field` ×3. `ac3_stale_prompt_version_is_named`. `ac3_two_stale_fields_are_both_named`. `ac3_another_models_recording_exits_1_naming_the_case`. `ac3_a_miss_that_isnt_accepted_exits_1_naming_the_bug`. `ac3_a_miss_accepted_for_another_bug_still_fails`. `ac3_a_new_miss_beside_the_accepted_one_still_fails`. `ac3_every_failure_is_reported_not_only_the_first` | pass (12) |
+| AC4 | `ac4_policy_model_with_no_suite_exits_1` ("no suite for openai:m1 in diff mode"). `ac4_policy_mode_with_no_suite_exits_1`. `ac4_suite_lacking_the_default_suites_cases_exits_1_naming_them`. `ac4_without_a_policy_the_default_model_needs_a_diff_suite`. `ac4_policy_with_only_the_default_model_in_diff_mode_passes`. `ac4_invalid_policy_exits_2` | pass (6) |
+| AC5 | `ac5_openai_live_diff_recording_goes_to_live_openai_with_model_m1`. `ac5_openai_live_context_recording_goes_to_live_openai_context`. `ac5_replay_with_provider_openai_scores_its_recordings`. `ac5_claude_replay_ignores_the_openai_recordings`. `ac5_claude_live_recording_path_is_unchanged`. `ac5_openai_recordings_by_m1_pass_the_gate_for_an_openai_suite` (end to end: exit 0) | pass (6) |
+| AC6 | An unknown key at the top level, in a suite and in an accepted miss. A missing suite field ×4 and a missing accepted-miss field ×3. An accepted miss with no `approved_by`. An unknown case ID in a suite and in an accepted miss. A field of the wrong type ×3. `ac6_invalid_suites_never_read_a_recording` | pass (17) |
+| Limits | A file over 64 KB (exit 2) and one just under (read). A malformed file ×4: not TOML, not UTF-8, empty, and `suite` not an array of tables. A missing file. A duplicate suite. A case ID holding a path | pass (10) |
+| AC7 | `ac7_text_has_one_line_per_suite_and_a_final_verdict`. `ac7_text_has_a_line_for_each_committed_suite`. `ac7_failed_run_says_so_in_its_final_verdict`. `ac7_json_is_eval_gate_v1_with_each_suite`. `ac7_json_on_a_failed_run_still_exits_1` | pass (5) |
+| AC8 | `ac8_gate_job_runs_evals_gate_with_the_repository_policy`. `ac8_policy_has_only_version_tools_cost_and_models`. `ac8_policy_allows_the_three_tools`. `ac8_policy_cost_ceiling_is_ci_context_cap`. `ac8_policy_has_one_model_entry_the_default_claude_model`. `ac8_bot_parses_the_policy_as_stated`. `ac8_ci_command_passes_offline_on_the_committed_files` | pass (7) |
+| AC9 | `ac9_every_mode_the_policy_lists_has_a_suite`. `ac9_context_in_the_policy_comes_with_a_claude_context_suite`. `ac9_p3_s15_has_merged_so_context_and_its_suite_are_both_in` | pass (3) |
+
+### Failures
+
+None open.
+
+**Closed by the owner's decision: two diff-mode misses on the Phase 3 cases had no recorded acceptance.** On the first run, the gate exited 1 on the committed files, so CI's new step would have failed too:
+
+```
+uv run python -m review_bot.evals gate --cases tests/evals/cases --suites tests/evals/gate.toml --policy .github/review-bot-policy.toml
+suite claude:claude-opus-5-5 diff: cases 14, fresh 14, passed 12, accepted misses 1, fail
+    case sample-context: ai bug double-tax was caught in 1 of 3 runs; it needs 2, and it isn't an accepted miss
+    case ticket-criteria: ai bug discount-column-missing was caught in 0 of 3 runs; it needs 2, and it isn't an accepted miss
+suite claude:claude-opus-5-5 context: cases 9, fresh 9, passed 9, accepted misses 2, pass
+verdict: fail
+```
+
+P3-S15's suite treated both misses as accepted in diff mode, but no owner decision was recorded for either. On 2026-11-15 the owner accepted both, as the main session relayed: `sample-context`/`double-tax` (1 of 3, needs 2) and `ticket-criteria`/`discount-column-missing` (0 of 3: diff mode sends no issue, and context mode catches it 3 of 3). The decision is recorded in the S9 spec's Notes. `gate.toml` now lists both, each with `approved_by = "sleepyshark85"` and `approved_on = 2026-11-15`. The same command now prints `passed 14, accepted misses 3, pass` for the diff suite and `verdict: pass`, with exit 0, and both tests pass. No assertion was changed.
+
+**Fixed in the tests, after the developer's notes:**
+
+- `ac3_a_new_miss_beside_the_accepted_one_still_fails` borrowed findings that verification drops. It now empties the runs of `injection-canary` instead.
+- `ac5_openai_recordings_by_m1_pass_the_gate_for_an_openai_suite` now keeps Claude's recording and asserts exit 0.
+- `limits_gate_toml_just_under_64_kb_is_read` now writes bytes, because `write_text` adds `\r` before each newline on Windows.
+
+### Earlier suites changed
+
+- **`test_p1_s16_eval_live_command.py`**, `ac6_replay_with_a_live_flag_exits_2_without_a_call`: AC5 gives `replay` a `--provider` flag. The `provider-flag` case is replaced by `model-flag` (`--model`) and `spend-flag` (`--max-usd`), and both still exit 2. A new case, `ac6_replay_with_provider_claude_makes_no_call`, checks that `replay` accepts `--provider` and calls nothing.
+
+### Coverage
+
+From the two S9 files: `evals/gate.py` 96% (lines 213-214, 238, 247 and 268 aren't covered) and `evals/cli.py` 89%. `evals/gate_render.py` and `prompt.py` are fully covered.
+
+### Gaps
+
+- **The second half of AC8** (review runs under the policy report the same findings, and `caps` shows the ceiling) needs S10's wiring, so S10 tests it.
+- **The second provider's live suite** is S14's. AC4 and AC5 use recordings made here over the fake transport.

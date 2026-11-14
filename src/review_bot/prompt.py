@@ -5,7 +5,7 @@ import json
 from collections.abc import Sequence
 from typing import Final
 
-from review_bot.context.issues import LinkedIssue
+from review_bot.context.issues import IssueStatus, LinkedIssue
 from review_bot.findings import Category, RuleId, Severity
 from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.providers.base import ReviewRequest, ToolExecutor
@@ -13,10 +13,12 @@ from review_bot.rules import DomainRule
 
 __all__ = [
     "CONTEXT_PROMPT_VERSION",
+    "PROMPT_FINGERPRINTS",
     "PROMPT_VERSION",
     "build_context_request",
     "build_request",
     "frame_tool_result",
+    "prompt_fingerprints",
 ]
 
 # Bump on any change to the system prompt or to how ``build_request`` frames the diff, and
@@ -26,6 +28,13 @@ PROMPT_VERSION: Final = "p1-v1"
 # ``build_context_request`` frames the diff and linked issues or ``frame_tool_result`` a result
 # (Phase 3 design, Prompt versions).
 CONTEXT_PROMPT_VERSION: Final = "p3-v5"
+# Each version pinned to the fingerprint of its text (``prompt_fingerprints``), so ``evals gate``
+# fails when a prompt's text changes but its version doesn't. A new version is pinned here once
+# its evals are re-recorded.
+PROMPT_FINGERPRINTS: Final[dict[str, str]] = {
+    "p1-v1": "4e69eff27ac11551ea525d8ec5f5b82c3345400ea8a244f99e3d1742804cb5f4",
+    "p3-v5": "c4aa58d4aa727aedafbe88f5e106c63c0ac2486e6f30a8b9866393b1d047f029",
+}
 
 # The rule tags are spelled out, not drawn from ``RuleId``, so a new domain rule leaves this
 # prompt as it is: the context prompt offers a domain rule's tag only where it is enabled.
@@ -95,6 +104,12 @@ that breaks these rules, leaves the line unchanged or holds a secret is discarde
 kept. Omit it, or use null, if you have no exact fix.
 """
 
+# The fixed input ``prompt_fingerprints`` frames: never change it, or every pin changes too.
+_REFERENCE_DIFF: Final = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+_REFERENCE_DOMAIN_RULE: Final = DomainRule(RuleId.DECIMAL_MONEY, ("billing/**",))
+_REFERENCE_ISSUE: Final = LinkedIssue(7, IssueStatus.INCLUDED, "Title\n\nBody")
+_REFERENCE_TOOL_RESULT: Final = "1: x = 2"
+
 _DOMAIN_RULES_INTRO: Final = """
 This repository enables these domain rules, each only on the files its path patterns match. Code \
 checks the added lines against them too. A finding that is exactly one of these problems, in a \
@@ -126,12 +141,23 @@ def build_context_request(  # noqa: PLR0913 - all but the diff are keyword-only
     fixed description and its path patterns, and offers its name as a finding's rule. Each of
     ``issues`` whose text is sent follows the diff, framed as untrusted data under its number.
     """
+    system_prompt, user_prompt = _context_prompts(diff, domain_rules, issues)
     return ReviewRequest(
-        system_prompt=_CONTEXT_SYSTEM_PROMPT + _domain_rules_section(domain_rules),
-        user_prompt=_delimited("DIFF", diff) + _issues_section(issues),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         model=model,
         tools=tools,
         policy=policy,
+    )
+
+
+def _context_prompts(
+    diff: str, domain_rules: Sequence[DomainRule], issues: Sequence[LinkedIssue]
+) -> tuple[str, str]:
+    """The context prompt with its domain rules, and the user prompt framing the diff and issues."""
+    return (
+        _CONTEXT_SYSTEM_PROMPT + _domain_rules_section(domain_rules),
+        _delimited("DIFF", diff) + _issues_section(issues),
     )
 
 
@@ -162,6 +188,29 @@ def _domain_rules_section(domain_rules: Sequence[DomainRule]) -> str:
 def frame_tool_result(text: str) -> str:
     """Wrap a tool's result in delimiter lines, as the context prompt describes."""
     return _delimited("TOOL-RESULT", text)
+
+
+def prompt_fingerprints() -> dict[str, str]:
+    """Today's fingerprint of each current prompt version: the SHA-256 of what it sends.
+
+    That is its system prompt and its framing of a fixed reference input: for ``PROMPT_VERSION``
+    a diff, and for ``CONTEXT_PROMPT_VERSION`` a diff, a domain rule, a linked issue and a tool
+    result. So any change to a prompt's text or to how it frames its input changes it.
+    """
+    diff_request = build_request(_REFERENCE_DIFF, model="")
+    context_prompts = _context_prompts(
+        _REFERENCE_DIFF, (_REFERENCE_DOMAIN_RULE,), (_REFERENCE_ISSUE,)
+    )
+    return {
+        PROMPT_VERSION: _fingerprint(diff_request.system_prompt, diff_request.user_prompt),
+        CONTEXT_PROMPT_VERSION: _fingerprint(
+            *context_prompts, frame_tool_result(_REFERENCE_TOOL_RESULT)
+        ),
+    }
+
+
+def _fingerprint(*texts: str) -> str:
+    return hashlib.sha256(json.dumps(texts).encode("utf-8")).hexdigest()
 
 
 def _delimited(label: str, text: str) -> str:

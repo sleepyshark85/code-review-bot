@@ -65,13 +65,16 @@ Every run is traced in JSONL (`run_id=` on stderr): stage decisions, never diff 
 python -m review_bot.evals replay --cases tests/evals/cases [--mode context]
 python -m review_bot.evals compare --cases tests/evals/cases
 python -m review_bot.evals live --cases tests/evals/cases --runs 5 --max-calls 25 --max-usd X --max-cost-usd Y
+python -m review_bot.evals gate --cases tests/evals/cases --suites tests/evals/gate.toml [--policy PATH] [--format json]
 ```
 
-`replay` scores recordings offline (planted bugs, noise, prompt injections). `compare` sets diff against context mode, offline. `live` **(live)** records fresh responses.
+`replay` scores recordings offline (planted bugs, noise, prompt injections). `compare` sets diff against context mode, offline. `live` **(live)** records fresh responses. `live --provider openai --model M` (with the price flags under a cap) records to `live-openai/` (`live-openai-context/`), and `replay --provider openai` scores those.
+
+`gate` exits `1` if a prompt's text changed without a new `PROMPT_VERSION`, or if a suite in `gate.toml` (`[[suite]]` provider, model, mode, cases; `[[suite.accepted_miss]]` with `approved_by` and `approved_on`) has a missing, stale or other-model recording, or a miss nobody accepted. With `--policy`, every listed model and mode needs a suite with at least the default model's cases. It exits `2` for an invalid `gate.toml`. CI runs it on every PR with `.github/review-bot-policy.toml`. `--format json` writes `eval-gate/v1`.
 
 `live` refuses before any call if the plan exceeds `--max-calls` or `--max-usd`, a per-call cap is missing, `CI` is set (unless `--allow-dispatch` in a `workflow_dispatch`), or a diff holds a secret. Recordings never hold text the tools read.
 
-Specs: [replay](phases/phase-1/slices/p1-s14-eval-sample.md), [injection](phases/phase-1/slices/p1-s15-eval-clean-injection.md), [live](phases/phase-1/slices/p1-s16-eval-live-command.md), [context cases](phases/phase-3/slices/p3-s5-context-eval-cases.md), [live context](phases/phase-3/slices/p3-s6-live-context-evals.md), [compare](phases/phase-3/slices/p3-s7-compare-eval-modes.md).
+Specs: [replay](phases/phase-1/slices/p1-s14-eval-sample.md), [injection](phases/phase-1/slices/p1-s15-eval-clean-injection.md), [live](phases/phase-1/slices/p1-s16-eval-live-command.md), [context cases](phases/phase-3/slices/p3-s5-context-eval-cases.md), [live context](phases/phase-3/slices/p3-s6-live-context-evals.md), [compare](phases/phase-3/slices/p3-s7-compare-eval-modes.md), [gate](phases/phase-4/slices/p4-s9-prompt-eval-gate.md).
 
 ## Pull requests
 
