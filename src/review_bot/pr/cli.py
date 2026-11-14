@@ -1306,8 +1306,8 @@ def _backfill_counts(progress: _BackfillProgress, *, entries: int, already: int)
     """Two lines of ``name=N`` pairs: the totals, then each outcome and each reason given.
 
     With a dollar budget, the totals add the spend, and ``stopped=budget`` if it stopped the
-    backfill. Every outcome a backfill can end with is shown, so not ``degraded``
-    (``backfill_pull_request``), and so is ``too_large``: it is how many the
+    backfill. Every outcome a backfill can end with is shown (not ``degraded``, which
+    ``backfill_pull_request`` never reports), and so is ``too_large``: how many the
     reviewable-bytes cap left out (Phase 2 design, PR supply). Outcome, skip reason and error
     category names never coincide.
     """

@@ -339,6 +339,18 @@ def test_p4_s8_ac1_without_a_fallback_the_lone_unavailable_route_degrades(
     assert run.exit_code == UNAVAILABLE_EXIT
 
 
+def test_p4_s8_ac1_fallback_skipped_for_no_key_still_degrades(pr):
+    """The primary fails `unavailable`, and the fallback has no key, so it is skipped."""
+    push_jobs(pr)
+    claude, transport = every_route_unavailable()
+
+    run = pr.routed(claude=claude, transport=transport, mode="shadow", key=False)
+
+    assert (run.shadow["outcome"], run.shadow["reason"]) == ("degraded", "unavailable"), run.stderr
+    assert run.exit_code == UNAVAILABLE_EXIT
+    assert transport.sent == []
+
+
 @pytest.mark.parametrize(
     ("claude_category", "reply", "last"),
     [

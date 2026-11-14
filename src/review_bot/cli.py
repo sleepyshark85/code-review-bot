@@ -476,7 +476,6 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     output = _render_report(result, settings, audit.run_id, triage)
     dropped_count = len(result.verification.dropped)
     summary = _summarise(result, settings, audit.run_id)
-    exit_code = 1 if _shown(result, triage) else 0
 
     write_output(output)
     if result.degraded is not None:
@@ -491,9 +490,10 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     write_diagnostic(summary)
     if result.degraded is not None:
         # The provider's code, so a degraded run still shows as failed (ADR 0021).
-        exit_code = report_failure(result.degraded)
-        record_failed_end(audit, exit_code, result.degraded)
-        return exit_code
+        failure_exit_code = report_failure(result.degraded)
+        record_failed_end(audit, failure_exit_code, result.degraded)
+        return failure_exit_code
+    exit_code = 1 if _shown(result, triage) else 0
     # After stdout, so a failure here exits 17 with the report already delivered.
     audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": None})
     return exit_code
