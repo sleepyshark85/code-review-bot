@@ -13,6 +13,7 @@ from openai_samples import API_KEY, FakeTransport, completion, transport
 from review_bot import cli
 from review_bot.errors import ConfigError
 from review_bot.evals import cli as evals_cli
+from review_bot.governance.policy import BUILTIN_POLICY
 from review_bot.pr import cli as pr_cli
 from review_bot.providers import openai_compat
 from review_bot.providers.openai_compat import OpenAICompatibleProvider
@@ -224,12 +225,14 @@ def test_main_under_a_policy_cost_ceiling_with_openai_exits_2_before_any_request
 def test_check_provider_settings_lets_another_provider_keep_its_cost_cap() -> None:
     settings = Settings(provider="claude", max_cost_usd=Decimal("0.50"))
 
-    cli.check_provider_settings(settings, openai_api_key=None)
+    cli.check_provider_settings(settings, BUILTIN_POLICY, openai_api_key=None)
 
 
 def test_check_provider_settings_refuses_openai_without_a_key_for_a_remote_host() -> None:
     with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
-        cli.check_provider_settings(Settings(provider="openai", model="m1"), openai_api_key=None)
+        cli.check_provider_settings(
+            Settings(provider="openai", model="m1"), BUILTIN_POLICY, openai_api_key=None
+        )
 
 
 def test_build_provider_with_openai_selected_returns_the_openai_provider() -> None:
@@ -365,7 +368,9 @@ def test_pr_with_openai_and_no_model_exits_2_naming_model(
 
 def test_check_provider_settings_refuses_openai_without_a_model() -> None:
     with pytest.raises(ConfigError, match="--model"):
-        cli.check_provider_settings(Settings(provider="openai"), openai_api_key=API_KEY)
+        cli.check_provider_settings(
+            Settings(provider="openai"), BUILTIN_POLICY, openai_api_key=API_KEY
+        )
 
 
 def test_check_provider_settings_keeps_a_given_model_through_a_policy_ceiling() -> None:
@@ -373,7 +378,7 @@ def test_check_provider_settings_keeps_a_given_model_through_a_policy_ceiling() 
     capped = settings.model_copy(update={"max_cost_usd": Decimal("0.60")})
 
     with pytest.raises(ConfigError, match="--max-cost-usd"):
-        cli.check_provider_settings(capped, openai_api_key=API_KEY)
+        cli.check_provider_settings(capped, BUILTIN_POLICY, openai_api_key=API_KEY)
 
 
 def test_main_with_a_key_ending_in_a_newline_exits_2_naming_the_variable(

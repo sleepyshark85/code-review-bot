@@ -18,6 +18,7 @@ __all__ = [
     "GITHUB_TOKEN_VARIABLE",
     "OPENAI_API_KEY_VARIABLE",
     "Settings",
+    "has_claude_credential",
     "in_ci",
     "live_run_refused",
     "load_settings",
@@ -32,6 +33,7 @@ _EVENT_NAME_VARIABLE: Final = "GITHUB_EVENT_NAME"
 _MANUAL_DISPATCH: Final = "workflow_dispatch"
 GITHUB_TOKEN_VARIABLE: Final = "GITHUB_TOKEN"  # noqa: S105 - the variable's name, not a token
 OPENAI_API_KEY_VARIABLE: Final = "OPENAI_API_KEY"
+_ANTHROPIC_API_KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
 # Fields only a flag sets, so an environment can't turn on prompting (Phase 1 design, Settings).
 _FLAG_ONLY_FIELDS: Final = frozenset({"triage"})
 
@@ -93,6 +95,14 @@ class Settings(BaseModel):
 def in_ci(environ: Mapping[str, str]) -> bool:
     """Whether ``environ`` is a CI run's: ``CI`` is set, whatever its value."""
     return _CI_VARIABLE in environ
+
+
+def has_claude_credential(environ: Mapping[str, str]) -> bool:
+    """Whether Claude can be called in ``environ``: in CI only with ``ANTHROPIC_API_KEY`` set.
+
+    Outside CI, the Claude CLI may use the person's own login (ADR 0012).
+    """
+    return not in_ci(environ) or bool(environ.get(_ANTHROPIC_API_KEY_VARIABLE))
 
 
 def live_run_refused(environ: Mapping[str, str], *, allow_dispatch: bool) -> bool:

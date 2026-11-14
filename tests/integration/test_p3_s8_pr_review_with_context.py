@@ -528,7 +528,10 @@ def assert_phase_2_run(run: PrRun, provider: ContextProvider) -> None:
     report = run.report
     assert report["prompt_version"] == PHASE_1_PROMPT_VERSION
     assert report["policy"]["version"] == BUILTIN_POLICY_VERSION
-    for key in set(report) - PHASE_2_REPORT_KEYS - {"policy"}:
+    # P4-S7 AC4: `route` is never empty; it holds the single attempt that served the review.
+    [attempt] = report["route"]
+    assert attempt["category"] is None, attempt
+    for key in set(report) - PHASE_2_REPORT_KEYS - {"policy", "route"}:
         # `mode` is report/v1's own since P3-S1: `diff` whenever there are no tools.
         expected: tuple[Any, ...] = ("diff",) if key == "mode" else (None, [], {})
         assert report[key] in expected, (key, report[key])

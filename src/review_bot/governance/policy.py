@@ -1,4 +1,4 @@
-"""The policy file, ``policy/v1``: the tools, cost ceiling, masking and gate classes allowed.
+"""The policy file, ``policy/v1``: the tools, cost ceiling, masking, models and gate classes.
 
 Pure: the command line reads the file and passes its bytes in (ADR 0018). Each slice adds the
 section it enforces, so any key this module doesn't know is invalid. Without a file, a run uses
@@ -11,9 +11,17 @@ import tomllib
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainValidator, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainValidator,
+    ValidationError,
+    model_validator,
+)
 from pydantic_core import ErrorDetails
 
 from review_bot.context.ledger import ToolName
@@ -31,12 +39,17 @@ __all__ = [
     "BUILTIN_POLICY",
     "BUILTIN_POLICY_TEXT",
     "MAX_POLICY_BYTES",
+    "ModelEntry",
+    "ModelProvider",
     "Policy",
     "PolicyError",
+    "ReviewMode",
     "allows_tool",
     "check_context_allowed",
     "check_settings",
+    "fallback_for",
     "parse_policy",
+    "review_mode",
 ]
 
 MAX_POLICY_BYTES: Final = 64 * 1024
@@ -53,9 +66,12 @@ _MAX_COST_USD: Final = Decimal(1000)
 # Bounds a key or value named in a message, since either can be as long as the file.
 _MAX_SHOWN_CHARS: Final = 100
 _KNOWN_KEYS: Final = (
-    "version, [tools] allowed, [cost] max_cost_usd, [redaction] kinds and [[gate.classes]] "
-    "rule, min_severity, min_confidence, approved_by and approved_on"
+    "version, [tools] allowed, [cost] max_cost_usd, [redaction] kinds, [[models]] provider, "
+    "model, modes and base_url, [routing] fallback, and [[gate.classes]] rule, min_severity, "
+    "min_confidence, approved_by and approved_on"
 )
+# As ``Settings.model`` allows, so every listed model can be asked for.
+_MODEL: Final = re.compile(r"[\w.:/@\[\]][\w.:/@\[\]-]*")
 _GATE_SEVERITIES: Final = (Severity.HIGH, Severity.CRITICAL)
 _DEFAULT_MIN_SEVERITY: Final = Severity.CRITICAL
 _MIN_CONFIDENCE_RANGE: Final = (0.5, 1.0)
@@ -64,6 +80,30 @@ _DEFAULT_MIN_CONFIDENCE: Final = 0.9
 
 class PolicyError(ConfigError):
     """The policy file can't be read or is invalid; the message names the file and the problem."""
+
+
+# The real providers a policy can list; the mock sends nothing out, so it needs no entry.
+type ModelProvider = Literal["claude", "openai"]
+type ReviewMode = Literal["diff", "context"]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEntry:
+    """A model the policy allows, and the modes it may review in.
+
+    ``base_url`` is the endpoint an ``openai`` entry is reached at when it is the fallback;
+    None means the run's own ``openai_base_url``.
+    """
+
+    provider: ModelProvider
+    model: str
+    modes: frozenset[ReviewMode]
+    base_url: str | None = None
+
+    @property
+    def route(self) -> str:
+        """Its name in reports: ``<provider>:<model>``."""
+        return f"{self.provider}:{self.model}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +116,9 @@ class Policy:
     ceiling on every model call's cost cap, or None for no ceiling. ``redaction`` are the kinds
     of personal data masked in everything a request sends; none masks nothing.
     ``gate_classes`` are the finding classes a repository may gate a merge on; none gates
-    nothing.
+    nothing. ``models`` are the models a review may use, primary first; none allows any model.
+    ``fallback`` is the entry of ``models`` tried when the primary is unavailable (ADR 0021),
+    or None for no fallback.
     """
 
     version: str
@@ -86,6 +128,8 @@ class Policy:
     max_cost_usd: Decimal | None
     redaction: frozenset[RedactionKind] = frozenset()
     gate_classes: tuple[GateClass, ...] = ()
+    models: tuple[ModelEntry, ...] = ()
+    fallback: ModelEntry | None = None
 
 
 BUILTIN_POLICY: Final = Policy(
@@ -172,6 +216,39 @@ def _no_repeats[T](items: list[T]) -> list[T]:
     return items
 
 
+def _model_provider(value: object) -> ModelProvider:
+    if value == "claude" or value == "openai":  # noqa: PLR1714 - narrows to the Literal
+        return value
+    raise ValueError("it must be claude or openai")
+
+
+def _model(value: object) -> str:
+    if not isinstance(value, str) or not _MODEL.fullmatch(value):
+        raise ValueError("it must be a model name, such as claude-opus-5-5")
+    return value
+
+
+def _mode(value: object) -> ReviewMode:
+    if value == "diff" or value == "context":  # noqa: PLR1714 - narrows to the Literal
+        return value
+    raise ValueError("each mode must be diff or context")
+
+
+def _non_empty[T](items: list[T]) -> list[T]:
+    if not items:
+        raise ValueError("it must list at least one")
+    return items
+
+
+def _base_url(value: object) -> str:
+    # Deferred: ``openai_wire`` imports ``providers.base``, which imports this module.
+    from review_bot.providers.openai_wire import check_base_url  # noqa: PLC0415 - see above
+
+    if not isinstance(value, str):
+        raise ValueError("it must be a string")  # noqa: TRY004 - pydantic reports a ValueError
+    return check_base_url(value)
+
+
 def _usd(value: object) -> Decimal:
     if not isinstance(value, str) or not _DECIMAL.fullmatch(value):
         raise ValueError('it must be a decimal string, such as "0.60"')
@@ -202,6 +279,44 @@ class _Redaction(BaseModel):
         list[Annotated[RedactionKind, PlainValidator(_redaction_kind)]],
         AfterValidator(_no_repeats),
     ] = Field(default_factory=list)
+
+
+class _ModelEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: Annotated[ModelProvider, PlainValidator(_model_provider)]
+    model: Annotated[str, PlainValidator(_model)]
+    modes: Annotated[
+        list[Annotated[ReviewMode, PlainValidator(_mode)]],
+        AfterValidator(_no_repeats),
+        AfterValidator(_non_empty),
+    ]
+    base_url: Annotated[str, PlainValidator(_base_url)] | None = None
+
+    @model_validator(mode="after")
+    def _base_url_only_for_openai(self) -> "_ModelEntry":
+        if self.base_url is not None and self.provider != "openai":
+            raise ValueError("only an openai model has a base_url")
+        return self
+
+
+class _Fallback(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: Annotated[ModelProvider, PlainValidator(_model_provider)]
+    model: Annotated[str, PlainValidator(_model)]
+    base_url: Annotated[str, PlainValidator(_base_url)] | None = None
+
+
+class _Routing(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fallback: _Fallback | None = None
+
+
+def _no_repeated_models(entries: list[_ModelEntry]) -> list[_ModelEntry]:
+    _no_repeats([f"{entry.provider}:{entry.model}" for entry in entries])
+    return entries
 
 
 class _GateClassEntry(BaseModel):
@@ -239,6 +354,10 @@ class _PolicyFile(BaseModel):
     tools: _Tools = _Tools()
     cost: _Cost = _Cost()
     redaction: _Redaction = _Redaction()
+    models: Annotated[list[_ModelEntry], AfterValidator(_no_repeated_models)] = Field(
+        default_factory=list
+    )
+    routing: _Routing = _Routing()
     gate: _Gate = _Gate()
 
 
@@ -259,7 +378,12 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
             twice, or has a gate class that isn't a class (``class_name_problem``), names one
             class twice, has a ``min_severity`` other than ``high`` or ``critical``, a
             ``min_confidence`` outside 0.5 to 1.0, no ``approved_by`` or no ``approved_on``
-            date. The message names ``source`` and the key or the problem.
+            date. Or if a ``[[models]]`` entry has a provider other than ``claude`` and
+            ``openai``, a model name ``Settings.model`` refuses, no modes or one other than
+            ``diff`` and ``context``, or a ``base_url`` that isn't allowed or isn't an
+            ``openai`` one; lists one provider and model twice; or ``[routing] fallback`` isn't
+            an entry with the same provider, model and ``base_url``. The message names
+            ``source`` and the key or the problem.
     """
     if len(data) > MAX_POLICY_BYTES:
         raise _invalid(source, f"it is over the limit of {MAX_POLICY_BYTES} bytes")
@@ -276,6 +400,10 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
         parsed = _PolicyFile.model_validate(document)
     except ValidationError as exc:
         raise _invalid(source, _problem(exc.errors()[0])) from exc
+    models = tuple(
+        ModelEntry(entry.provider, entry.model, frozenset(entry.modes), entry.base_url)
+        for entry in parsed.models
+    )
     return Policy(
         version=parsed.version,
         sha256=hashlib.sha256(data).hexdigest(),
@@ -293,7 +421,33 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
             )
             for entry in parsed.gate.classes
         ),
+        models=models,
+        fallback=_listed_fallback(parsed.routing.fallback, models, source),
     )
+
+
+def _listed_fallback(
+    fallback: _Fallback | None, models: tuple[ModelEntry, ...], source: str
+) -> ModelEntry | None:
+    """The ``models`` entry that ``fallback`` names, or None without one.
+
+    Raises:
+        PolicyError: If no entry has its provider, model and ``base_url``.
+    """
+    if fallback is None:
+        return None
+    named = (fallback.provider, fallback.model, fallback.base_url)
+    entry = next(
+        (entry for entry in models if (entry.provider, entry.model, entry.base_url) == named),
+        None,
+    )
+    if entry is None:
+        raise _invalid(
+            source,
+            f"the [routing] fallback {fallback.provider}:{_shown(fallback.model)} isn't a "
+            "[[models]] entry with the same provider, model and base_url. List it there too",
+        )
+    return entry
 
 
 def allows_tool(allowed: frozenset[ToolName], name: str) -> bool:
@@ -306,17 +460,23 @@ def allows_tool(allowed: frozenset[ToolName], name: str) -> bool:
 
 
 def check_settings(settings: "Settings", policy: Policy) -> "Settings":
-    """``settings`` within ``policy``: each call's cost cap is at most its ceiling.
+    """``settings`` within ``policy``: an allowed model, and a cost cap within its ceiling.
 
-    With no cap set, the ceiling is the cap. Context mode, from ``context`` or ``context_repo``,
-    needs a tool the policy allows (``check_context_allowed``).
+    With no cap set, the ceiling is the cap. Context mode (``review_mode``) needs a tool the
+    policy allows (``check_context_allowed``). A policy listing models allows only their
+    providers and models, each in its modes; the mock provider sends nothing out, so it needs
+    no entry.
 
     Raises:
-        ConfigError: If the cap is above the ceiling, naming both and the policy, or context
-            mode is asked for and the policy allows no tool.
+        ConfigError: If the provider and model aren't an entry listing the review's mode,
+            naming the entries; if the cap is above the ceiling, naming both and the policy;
+            or if context mode is asked for and the policy allows no tool.
     """
-    if settings.context == "repo" or settings.context_repo is not None:
+    mode = review_mode(settings)
+    if mode == "context":
         check_context_allowed(policy)
+    if policy.models and settings.provider != "mock":
+        _check_model_allowed(settings.provider, settings.model, mode, policy)
     ceiling, cap = policy.max_cost_usd, settings.max_cost_usd
     if ceiling is None:
         return settings
@@ -329,6 +489,42 @@ def check_settings(settings: "Settings", policy: Policy) -> "Settings":
             f"at most {ceiling}, or leave it out to use the ceiling."
         )
     return settings
+
+
+def review_mode(settings: "Settings") -> ReviewMode:
+    """``context`` if ``settings`` give the model a repository to read, else ``diff``."""
+    if settings.context == "repo" or settings.context_repo is not None:
+        return "context"
+    return "diff"
+
+
+def fallback_for(policy: Policy, mode: ReviewMode) -> ModelEntry | None:
+    """The fallback a review in ``mode`` may route to: the policy's, if it lists ``mode``."""
+    fallback = policy.fallback
+    if fallback is None or mode not in fallback.modes:
+        return None
+    return fallback
+
+
+def _check_model_allowed(provider: str, model: str, mode: ReviewMode, policy: Policy) -> None:
+    """Check that ``policy`` lists ``provider`` and ``model`` for ``mode``.
+
+    Raises:
+        ConfigError: If it doesn't, naming each entry and its modes.
+    """
+    if any(
+        (entry.provider, entry.model) == (provider, model) and mode in entry.modes
+        for entry in policy.models
+    ):
+        return
+    allowed = ", ".join(
+        f"{entry.route} ({', '.join(sorted(entry.modes, reverse=True))})" for entry in policy.models
+    )
+    raise ConfigError(
+        f"--provider {provider} --model {model} in {mode} mode isn't allowed by the policy "
+        f"`{policy.version}` ({policy.source}), so nothing was sent. It allows: {allowed}. "
+        "Pass one of them, in a mode it lists."
+    )
 
 
 def check_context_allowed(policy: Policy) -> None:

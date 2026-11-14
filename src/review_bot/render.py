@@ -13,6 +13,7 @@ from review_bot.report import (
     PipelineResult,
     TriageDecision,
     TriagedFinding,
+    attempt_json,
     not_rejected,
     path_fields,
     redaction_json,
@@ -137,6 +138,7 @@ def report_document(
         "context": _context_json(result),
         "policy": policy_json(result.policy),
         "redaction": redaction_json(result.redaction),
+        "route": [attempt_json(attempt) for attempt in result.route],
     }
 
 

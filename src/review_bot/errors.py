@@ -8,7 +8,7 @@ from review_bot.secret_scan import SecretHit
 
 if TYPE_CHECKING:
     # Only for its type: ``providers.base`` imports ``findings``, which imports this module.
-    from review_bot.providers.base import DeniedTool
+    from review_bot.providers.base import Attempt, DeniedTool
 
 __all__ = [
     "AuditError",
@@ -150,7 +150,8 @@ class ProviderError(ReviewBotError):
     may turn them into output (ADR 0004). The message is shown to the user, so they never go in
     it. ``cap`` names the review's cap the call hit, if that is why it failed (ADR 0015).
     ``denied_tools`` are the tools the provider's runtime denied before the call failed, so
-    they are recorded even then.
+    they are recorded even then. ``attempts`` are the routes a ``RoutingProvider`` tried, in
+    order, the last one failing with this error; empty if the review wasn't routed.
     """
 
     def __init__(
@@ -167,3 +168,4 @@ class ProviderError(ReviewBotError):
         self.diagnostics = tuple(diagnostics)
         self.cap = cap
         self.denied_tools: tuple[DeniedTool, ...] = ()
+        self.attempts: tuple[Attempt, ...] = ()

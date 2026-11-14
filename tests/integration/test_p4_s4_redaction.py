@@ -965,7 +965,9 @@ def test_p4_s4_ac6_report_redaction_is_appended_after_policy(review, write_diff,
     done = review.run(write_diff(one_line_diff(AC1_LINE)), "--policy", str(policy_for("email")))
 
     keys = list(done.report)
-    assert keys[-2:] == ["policy", "redaction"], keys
+    at = keys.index("policy")
+    # Later slices append after it: P4-S7's `route`.
+    assert keys[at : at + 2] == ["policy", "redaction"], keys
 
 
 def test_p4_s4_ac6_counts_every_kind(review, write_diff, policy_for):

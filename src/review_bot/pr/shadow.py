@@ -247,7 +247,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     is ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; an
     invalid repository config is ``failed``, ``invalid_config``; and a provider error is
     ``failed`` with its category. A review is over budget when it reports more output tokens
-    than ``max_output_tokens``, or in context mode a cost over ``max_cost_usd``.
+    than ``max_output_tokens``, or a cost over ``max_cost_usd`` (``_is_over_budget``).
 
     ``settings`` are those the review ran with, the repository's threshold applied, ``policy``
     the policy file the run ran under (the built-in policy if not given), and ``config`` the
@@ -421,17 +421,20 @@ def _caps(settings: Settings, policy: Policy) -> dict[str, int | float | str | N
 
 
 def _is_over_budget(review: PipelineResult, settings: Settings) -> bool:
-    """Whether the review reported more output tokens, or in context mode cost more, than its cap.
+    """Whether the review reported more output tokens, or cost more, than its cap.
 
-    Diff mode is judged on tokens only, as in Phase 2, so its reports don't change.
+    Cost is judged in context mode, and in any mode under a policy with a fallback, where any
+    attempt's reported cost over the cap counts (P4-S7 AC8). Otherwise diff mode is judged on
+    tokens only, as in Phase 2, so its reports don't change.
     """
     token_cap = settings.max_output_tokens
     if token_cap is not None and review.usage.output_tokens > token_cap:
         return True
-    cost_cap, cost = settings.max_cost_usd, review.cost_usd
-    if settings.context == "off" or cost_cap is None or cost is None:
+    cost_cap = settings.max_cost_usd
+    if cost_cap is None or (settings.context == "off" and review.policy.fallback is None):
         return False
-    return cost > cost_cap
+    costs = [review.cost_usd, *(attempt.cost_usd for attempt in review.route)]
+    return any(cost is not None and cost > cost_cap for cost in costs)
 
 
 def _not_reviewed(error: ReportedError) -> tuple[Outcome, _Reason, str]:  # noqa: PLR0911 - one return per error type

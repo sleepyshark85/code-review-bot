@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Awaitable, Coroutine, Mapping, Sequence
 from pathlib import Path
@@ -45,7 +46,9 @@ from review_bot.governance.policy import (
     Policy,
     PolicyError,
     check_settings,
+    fallback_for,
     parse_policy,
+    review_mode,
 )
 from review_bot.providers.base import LLMProvider
 from review_bot.providers.mock import MockProvider
@@ -54,12 +57,15 @@ from review_bot.providers.openai_compat import (
     check_api_key,
     token_prices,
 )
+from review_bot.providers.openai_wire import is_loopback_url
+from review_bot.providers.router import Route, RoutingProvider
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
 from review_bot.review import ReviewContext, run_pipeline
 from review_bot.secret_scan import redact
 from review_bot.settings import (
     Settings,
+    has_claude_credential,
     load_settings,
     take_github_token,
     take_openai_api_key,
@@ -71,7 +77,10 @@ __all__ = [
     "add_setting_arguments",
     "add_tool_cap_arguments",
     "build_provider",
+    "build_routed_provider",
+    "can_fall_back",
     "check_provider_settings",
+    "fallback_settings",
     "main",
     "parse_args",
     "read_policy",
@@ -327,16 +336,99 @@ def build_provider(settings: Settings, *, openai_api_key: str | None = None) -> 
     return MockProvider()
 
 
-def check_provider_settings(settings: Settings, *, openai_api_key: str | None) -> None:
+def build_routed_provider(
+    settings: Settings, policy: Policy, *, openai_api_key: str | None, environ: Mapping[str, str]
+) -> LLMProvider:
+    """The settings' provider, routed to the policy's fallback if it has one for the review.
+
+    Without one (``fallback_settings``), it is ``build_provider``'s, as before. With one, each
+    route's provider is built as ``build_provider`` builds it, with the time left as its
+    deadline, except that a route without a credential (``_has_credential``) has none, so the
+    review skips it.
+    """
+    fallback = fallback_settings(settings, policy)
+    if fallback is None:
+        return build_provider(settings, openai_api_key=openai_api_key)
+    routes = [
+        _route(each, openai_api_key=openai_api_key, environ=environ)
+        for each in (settings, fallback)
+    ]
+    return RoutingProvider(routes, deadline_s=settings.deadline_s)
+
+
+def _route(settings: Settings, *, openai_api_key: str | None, environ: Mapping[str, str]) -> Route:
+    """The route to the provider ``settings`` select, with no provider if it has no credential."""
+    if not _has_credential(settings, openai_api_key=openai_api_key, environ=environ):
+        return Route(settings.provider, settings.model, None)
+
+    def make_provider(left_s: float) -> LLMProvider:
+        within = settings.model_copy(update={"deadline_s": left_s})
+        return build_provider(within, openai_api_key=openai_api_key)
+
+    return Route(settings.provider, settings.model, make_provider)
+
+
+def fallback_settings(settings: Settings, policy: Policy) -> Settings | None:
+    """The settings the policy's fallback reviews with: the run's, with its provider and model.
+
+    An ``openai`` fallback with a ``base_url`` is reached there. None if the policy has no
+    fallback for the review's mode, or it is the run's own model.
+    """
+    entry = fallback_for(policy, review_mode(settings))
+    if entry is None or (entry.provider, entry.model) == (settings.provider, settings.model):
+        return None
+    update = {"provider": entry.provider, "model": entry.model}
+    if entry.base_url is not None:
+        update["openai_base_url"] = entry.base_url
+    return settings.model_copy(update=update)
+
+
+def can_fall_back(
+    settings: Settings, policy: Policy, *, openai_api_key: str | None, environ: Mapping[str, str]
+) -> bool:
+    """Whether the review has a fallback (``fallback_settings``) with its credential."""
+    fallback = fallback_settings(settings, policy)
+    return fallback is not None and _has_credential(
+        fallback, openai_api_key=openai_api_key, environ=environ
+    )
+
+
+def _has_credential(
+    settings: Settings, *, openai_api_key: str | None, environ: Mapping[str, str]
+) -> bool:
+    """Whether the provider ``settings`` select can authenticate.
+
+    Claude needs ``ANTHROPIC_API_KEY`` only in CI (``has_claude_credential``); ``openai`` needs
+    its key unless its host is loopback; the mock needs nothing.
+    """
+    if settings.provider == "claude":
+        return has_claude_credential(environ)
+    if settings.provider == "openai":
+        return bool(openai_api_key) or is_loopback_url(settings.openai_base_url)
+    return True
+
+
+def check_provider_settings(
+    settings: Settings, policy: Policy, *, openai_api_key: str | None
+) -> None:
     """Refuse, before anything is sent, settings the selected provider can't run with.
 
-    Called once ``settings`` are within the policy, so a cost cap from its ceiling counts.
+    Called once ``settings`` are within ``policy``, so a cost cap from its ceiling counts. The
+    policy's fallback for the review (``fallback_settings``) is checked too, if it is
+    ``openai``: it needs both prices for a cost cap, and a key it can send if it has one.
+    Without a key it is only skipped, so a review the primary serves still runs.
 
     Raises:
         ConfigError: For ``openai``, if no model was given, since the default is Claude's; if
             only one price is set, or a cost cap without both (``token_prices``); or if there
-            is no key and its base URL's host isn't loopback.
+            is no key and its base URL's host isn't loopback. For an ``openai`` fallback, if
+            its prices are missing so, or its key can't be sent in a header.
     """
+    fallback = fallback_settings(settings, policy)
+    if fallback is not None and fallback.provider == "openai":
+        token_prices(fallback)
+        if openai_api_key:
+            check_api_key(fallback.openai_base_url, openai_api_key)
     if settings.provider != "openai":
         return
     # Given by a flag or variable, whatever its value: the default names a Claude model.
@@ -365,7 +457,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
         settings, policy = settings_within_policy(settings)
-        check_provider_settings(settings, openai_api_key=openai_api_key)
+        check_provider_settings(settings, policy, openai_api_key=openai_api_key)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Before the audit log, like any other bad argument: no provider is called.
@@ -548,16 +640,20 @@ def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
 
     ``policy`` is the policy the review is under, which ``settings`` are within. ``context`` is
-    the commit the model's tools read; None reviews in diff mode. ``openai_api_key`` is passed
-    to ``build_provider`` when there is no ``provider``.
+    the commit the model's tools read; None reviews in diff mode. With no ``provider``, the
+    settings' own is routed to the policy's fallback, if any (``build_routed_provider``), with
+    ``openai_api_key``.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
             becomes one too, so it can't set the exit code itself.
     """
-    selected_provider = (
-        build_provider(settings, openai_api_key=openai_api_key) if provider is None else provider
-    )
+    if provider is None:
+        selected_provider = build_routed_provider(
+            settings, policy, openai_api_key=openai_api_key, environ=os.environ
+        )
+    else:
+        selected_provider = provider
     review = run_pipeline(
         diff_path, settings, selected_provider, audit, context=context, policy=policy
     )

@@ -4,8 +4,10 @@ from typing import Any
 
 import pytest
 from diff_samples import section
+from openai_samples import API_KEY, completion, transport
 
 from review_bot.pr.cli import main
+from review_bot.providers import openai_compat
 from review_bot.providers.mock import MockProvider
 
 DIFF = section("app.py", "+value = 1\n")
@@ -87,3 +89,55 @@ def test_shadow_with_a_missing_policy_file_exits_2_naming_it(
     assert exit_code == 2
     assert provider.requests == []
     assert "absent.toml can't be used: it doesn't exist" in capsys.readouterr().err
+
+
+ROUTED = """version = "routed"
+[[models]]
+provider = "claude"
+model = "claude-opus-5-5"
+modes = ["diff", "context"]
+[[models]]
+provider = "openai"
+model = "m1"
+modes = ["diff"]
+[routing]
+fallback = { provider = "openai", model = "m1" }
+"""
+
+
+def test_shadow_in_ci_without_claudes_key_is_served_by_the_fallback_and_reports_the_route(
+    tmp_path: Path, audit_log_in_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+    fake = transport(completion())
+    monkeypatch.setattr(openai_compat, "UrllibTransport", lambda: fake)
+    diff = write(tmp_path / "change.diff", DIFF)
+    policy = write(tmp_path / "policy.toml", ROUTED)
+
+    exit_code = main(["shadow", str(diff), "--out", str(tmp_path / "out"), "--policy", str(policy)])
+
+    assert exit_code == 0
+    assert [sent.body["model"] for sent in fake.sent] == ["m1"]
+    assert shadow_json(tmp_path)["report"]["route"] == [
+        {"route": "claude:claude-opus-5-5", "skipped": "no_credential"},
+        {"route": "openai:m1", "category": None, "cost_usd": None},
+    ]
+
+
+def test_shadow_with_a_model_the_policy_doesnt_list_exits_2_naming_the_entries(
+    tmp_path: Path, audit_log_in_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    policy = write(tmp_path / "policy.toml", ROUTED)
+    provider = MockProvider()
+
+    exit_code = shadow(
+        tmp_path, "--policy", str(policy), "--provider", "claude", "--model", "x", provider=provider
+    )
+
+    assert exit_code == 2
+    assert "It allows: claude:claude-opus-5-5 (diff, context), openai:m1 (diff)." in (
+        capsys.readouterr().err
+    )
+    assert provider.requests == []

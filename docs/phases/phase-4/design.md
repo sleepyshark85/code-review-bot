@@ -127,12 +127,13 @@ def decide_gate(
 @dataclass(frozen=True, slots=True)
 class Attempt:
     route: str  # "<provider>:<model>"
-    category: ErrorCategory | None  # None: this attempt served the review
+    category: ErrorCategory | None  # None: this attempt served the review, or was skipped
     cost_usd: Decimal | None
+    skipped: Literal["no_credential", "deadline"] | None = None  # why it wasn't tried
 
 
 class RoutingProvider:  # an LLMProvider
-    def __init__(self, routes: Sequence[Route]) -> None: ...
+    def __init__(self, routes: Sequence[Route], *, deadline_s: float) -> None: ...
 
 
 # providers/openai_compat.py (S2)

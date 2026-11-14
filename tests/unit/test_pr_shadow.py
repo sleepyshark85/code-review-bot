@@ -27,7 +27,7 @@ from review_bot.errors import (
 )
 from review_bot.findings import Category, EvidenceSpan, Finding, ReviewedFinding, Severity, Source
 from review_bot.fingerprint import anchor_for
-from review_bot.governance.policy import BUILTIN_POLICY, Policy
+from review_bot.governance.policy import BUILTIN_POLICY, ModelEntry, Policy
 from review_bot.pr.config import DEFAULT_REPO_CONFIG, RepoConfig
 from review_bot.pr.event import PullRequestRef
 from review_bot.pr.github import BotComment
@@ -43,7 +43,7 @@ from review_bot.pr.shadow import (
     render_shadow_markdown,
 )
 from review_bot.prompt import PROMPT_VERSION
-from review_bot.providers.base import TokenUsage
+from review_bot.providers.base import Attempt, TokenUsage
 from review_bot.render import report_document
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import SecretHit, SecretKind
@@ -862,6 +862,30 @@ def test_build_shadow_report_in_context_mode_is_over_budget_past_the_cost_cap(
 
     assert document["over_budget"] is over_budget
     assert document["report"]["usage"]["cost_usd"] == cost_usd
+
+
+FALLBACK = ModelEntry("openai", "m1", frozenset({"diff"}))
+ROUTED_POLICY = dataclasses.replace(BUILTIN_POLICY, models=(FALLBACK,), fallback=FALLBACK)
+
+
+@pytest.mark.parametrize(
+    ("costs", "over_budget"),
+    [(("0.61",), True), (("0.60",), False), ((None, "0.10"), False), (("0.61", None), True)],
+    ids=["served-over", "served-at-the-cap", "routed-within", "an-attempt-over"],
+)
+def test_build_shadow_report_under_a_fallback_is_over_budget_if_any_attempt_cost_more(
+    costs: tuple[str | None, ...], *, over_budget: bool
+) -> None:
+    route = tuple(
+        Attempt(f"r:{index}", None, None if cost is None else Decimal(cost))
+        for index, cost in enumerate(costs)
+    )
+    review = dataclasses.replace(
+        costing(costs[-1], context_commit=None), policy=ROUTED_POLICY, route=route
+    )
+    settings = Settings(provider="mock", max_cost_usd=Decimal("0.60"))
+
+    assert build_with(settings, review, ROUTED_POLICY)["over_budget"] is over_budget
 
 
 def test_render_shadow_json_repeats_the_reviews_context_at_the_top() -> None:

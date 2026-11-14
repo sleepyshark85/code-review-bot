@@ -36,6 +36,8 @@ from review_bot.cli import (
     add_setting_arguments,
     add_tool_cap_arguments,
     build_provider,
+    build_routed_provider,
+    can_fall_back,
     check_provider_settings,
     record_failed_end,
     report_failure,
@@ -54,7 +56,7 @@ from review_bot.console import (
 )
 from review_bot.errors import ConfigError, GitHubError, ProviderError, RepoConfigError
 from review_bot.git import GIT_TIMEOUT_S, GitRepo
-from review_bot.governance.policy import Policy
+from review_bot.governance.policy import BUILTIN_POLICY, Policy
 from review_bot.pr.compare import compare_runs
 from review_bot.pr.compare_report import render_compare_json, render_compare_text
 from review_bot.pr.config import DEFAULT_REPO_CONFIG
@@ -275,7 +277,9 @@ def main(
             _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
         ):
             return _run_without_review(command, github, github_token)
-        check_provider_settings(command.settings, openai_api_key=openai_api_key)
+        # Backfill never routes (P4-S7 AC10), so only the others' fallback is checked.
+        routing = BUILTIN_POLICY if isinstance(command, _BackfillCommand) else command.policy
+        check_provider_settings(command.settings, routing, openai_api_key=openai_api_key)
         # Before --out is created: a CI run refused here touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci(allow_dispatch=command.allow_dispatch)
@@ -1043,20 +1047,23 @@ def _run(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         GitHubError: If the bot's summary or comments can't be read; nothing is posted.
     """
     pr = read_event(command.event_path)
-    settings = command.settings
+    settings, policy = command.settings, command.policy
     run = run_pull_request(
         pr,
         mode=command.mode,
         git=GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S),
-        make_provider=lambda: _provider(settings, provider, openai_api_key),
+        make_provider=lambda: _routed_provider(settings, policy, provider, openai_api_key),
         github=None if make_github is None else make_github(pr.repo),
         issue_reader=None if make_issue_reader is None else make_issue_reader(pr.repo),
         settings=settings,
-        policy=command.policy,
+        policy=policy,
         audit=audit,
         environ=os.environ,
         clock=utc_now,
         gating_on=command.gating_on,
+        can_fall_back=can_fall_back(
+            settings, policy, openai_api_key=openai_api_key, environ=os.environ
+        ),
     )
     if uses_own_claude(settings, provider):
         run = then_discard_unraisable(run)
@@ -1117,10 +1124,24 @@ def _backfill(
 def _provider(
     settings: Settings, provider: LLMProvider | None, openai_api_key: str | None
 ) -> LLMProvider:
-    """``provider`` if given, else the settings' own (``build_provider``)."""
+    """``provider`` if given, else the settings' own (``build_provider``), which never routes."""
     if provider is not None:
         return provider
     return build_provider(settings, openai_api_key=openai_api_key)
+
+
+def _routed_provider(
+    settings: Settings, policy: Policy, provider: LLMProvider | None, openai_api_key: str | None
+) -> LLMProvider:
+    """``provider`` if given, else the settings' own, routed as ``policy`` says.
+
+    As ``build_routed_provider`` builds it, under this process's environment.
+    """
+    if provider is not None:
+        return provider
+    return build_routed_provider(
+        settings, policy, openai_api_key=openai_api_key, environ=os.environ
+    )
 
 
 def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:

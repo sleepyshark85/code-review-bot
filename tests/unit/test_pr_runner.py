@@ -71,7 +71,7 @@ class Runner:
         self.repo = repo
         self.audit = audit
 
-    def __call__(
+    def __call__(  # noqa: PLR0913 - keyword-only options of one run
         self,
         pr: PullRequestRef,
         *,
@@ -79,6 +79,7 @@ class Runner:
         settings: Settings = MOCK,
         environ: Mapping[str, str] | None = None,
         github: FakeGitHubClient | None = None,
+        can_fall_back: bool = False,
     ) -> ShadowReport:
         return asyncio.run(
             run_pull_request(
@@ -93,6 +94,7 @@ class Runner:
                 audit=self.audit,
                 environ={} if environ is None else environ,
                 clock=lambda: NOW,
+                can_fall_back=can_fall_back,
             )
         )
 
@@ -173,6 +175,19 @@ def test_run_pull_request_refuses_claude_in_ci_without_a_key(
     shadow = run(unknown_commits(pr_for(repo)), factory=factory, settings=CLAUDE, environ=environ)
 
     assert_refused(shadow, run, factory, Reason.NO_CREDENTIAL)
+
+
+def test_run_pull_request_in_ci_without_claudes_key_goes_to_a_fallback_with_its_key(
+    repo: Path, run: Runner
+) -> None:
+    factory = CountingFactory(MockProvider(findings=[]))
+
+    shadow = run(
+        pr_for(repo), factory=factory, settings=CLAUDE, environ={"CI": "true"}, can_fall_back=True
+    )
+
+    assert shadow.outcome is Outcome.REVIEWED
+    assert factory.calls == 1
 
 
 @pytest.mark.parametrize(
