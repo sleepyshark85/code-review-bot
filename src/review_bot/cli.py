@@ -302,7 +302,8 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
 
     Args:
         argv: The arguments; None means the process's own.
-        provider: The provider to use; None means ``build_provider`` picks it from the settings.
+        provider: The provider to use; None means it is built from the settings
+            and routed by the policy (``build_routed_provider``).
 
     Returns:
         The exit code from the table in ``docs/phases/phase-0/design.md``, with the codes
