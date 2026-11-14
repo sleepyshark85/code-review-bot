@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Awaitable, Coroutine, Mapping, Sequence
 from pathlib import Path
@@ -48,11 +49,10 @@ from review_bot.governance.policy import (
     parse_policy,
 )
 from review_bot.providers.base import LLMProvider
-from review_bot.providers.mock import MockProvider
-from review_bot.providers.openai_compat import (
-    OpenAICompatibleProvider,
-    check_api_key,
-    token_prices,
+from review_bot.providers.setup import (
+    build_provider,
+    build_routed_provider,
+    check_provider_settings,
 )
 from review_bot.render import render_findings, render_json, render_markdown
 from review_bot.report import PipelineResult, not_rejected
@@ -70,8 +70,6 @@ __all__ = [
     "RaisingArgumentParser",
     "add_setting_arguments",
     "add_tool_cap_arguments",
-    "build_provider",
-    "check_provider_settings",
     "main",
     "parse_args",
     "read_policy",
@@ -127,11 +125,6 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 )
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
-
-_OPENAI_MODEL_MISSING: Final = (
-    "--provider openai needs --model (or REVIEW_BOT_MODEL), since the default model is "
-    "Claude's, so nothing was sent. Pass the model the endpoint serves."
-)
 
 _NOTHING_REVIEWED_WARNING: Final = (
     "review-bot: warning: nothing was reviewed: every changed file was skipped: "
@@ -304,54 +297,13 @@ def _open_context(settings: Settings) -> ReviewContext | None:
     return ReviewContext(repo=RepoRef(git=git, commit=commit))
 
 
-def build_provider(settings: Settings, *, openai_api_key: str | None = None) -> LLMProvider:
-    """Create the selected provider. Nothing starts until its ``review`` is called.
-
-    ``openai_api_key`` is the key the entry point took from ``OPENAI_API_KEY``; only the
-    ``openai`` provider uses it.
-
-    Raises:
-        ConfigError: For ``openai``, if there is no key and its base URL's host isn't loopback,
-            or if only one price is set, or a cost cap without both.
-    """
-    if settings.provider == "claude":
-        # Deferred so only a Claude run pays to load the SDK. If it can't be imported, the error
-        # reaches ``main``'s catch-all, like any other failure.
-        from review_bot.providers.claude_agent import ClaudeAgentProvider  # noqa: PLC0415 - see above
-
-        return ClaudeAgentProvider(settings)
-    if settings.provider == "openai":
-        return OpenAICompatibleProvider(
-            settings, base_url=settings.openai_base_url, api_key=openai_api_key
-        )
-    return MockProvider()
-
-
-def check_provider_settings(settings: Settings, *, openai_api_key: str | None) -> None:
-    """Refuse, before anything is sent, settings the selected provider can't run with.
-
-    Called once ``settings`` are within the policy, so a cost cap from its ceiling counts.
-
-    Raises:
-        ConfigError: For ``openai``, if no model was given, since the default is Claude's; if
-            only one price is set, or a cost cap without both (``token_prices``); or if there
-            is no key and its base URL's host isn't loopback.
-    """
-    if settings.provider != "openai":
-        return
-    # Given by a flag or variable, whatever its value: the default names a Claude model.
-    if "model" not in settings.model_fields_set:
-        raise ConfigError(_OPENAI_MODEL_MISSING)
-    token_prices(settings)
-    check_api_key(settings.openai_base_url, openai_api_key)
-
-
 def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = None) -> int:
     """Run one review and return the process exit code.
 
     Args:
         argv: The arguments; None means the process's own.
-        provider: The provider to use; None means ``build_provider`` picks it from the settings.
+        provider: The provider to use; None means it is built from the settings
+            and routed by the policy (``build_routed_provider``).
 
     Returns:
         The exit code from the table in ``docs/phases/phase-0/design.md``, with the codes
@@ -365,7 +317,7 @@ def main(argv: Sequence[str] | None = None, *, provider: LLMProvider | None = No
         # A usage error or ``--help`` records nothing, because the log's path isn't known yet.
         diff_path, settings = parse_args(sys.argv[1:] if argv is None else argv)
         settings, policy = settings_within_policy(settings)
-        check_provider_settings(settings, openai_api_key=openai_api_key)
+        check_provider_settings(settings, policy, openai_api_key=openai_api_key)
         # Before anything else runs, so triage can never wait on input nobody will give.
         _require_terminal_for_triage(settings)
         # Before the audit log, like any other bad argument: no provider is called.
@@ -548,16 +500,25 @@ def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     """Run ``run_pipeline`` in the one event loop, with ``provider`` or the settings' own.
 
     ``policy`` is the policy the review is under, which ``settings`` are within. ``context`` is
-    the commit the model's tools read; None reviews in diff mode. ``openai_api_key`` is passed
-    to ``build_provider`` when there is no ``provider``.
+    the commit the model's tools read; None reviews in diff mode. With no ``provider``, the
+    settings' own is routed to the policy's fallback, if any (``build_routed_provider``), with
+    ``openai_api_key``.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
             becomes one too, so it can't set the exit code itself.
     """
-    selected_provider = (
-        build_provider(settings, openai_api_key=openai_api_key) if provider is None else provider
-    )
+    if provider is None:
+        selected_provider = build_routed_provider(
+            settings,
+            policy,
+            # Through this module's name, so a test can replace it here.
+            make_provider=lambda each: build_provider(each, openai_api_key=openai_api_key),
+            openai_api_key=openai_api_key,
+            environ=os.environ,
+        )
+    else:
+        selected_provider = provider
     review = run_pipeline(
         diff_path, settings, selected_provider, audit, context=context, policy=policy
     )

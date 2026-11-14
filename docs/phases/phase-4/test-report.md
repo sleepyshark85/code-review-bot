@@ -411,3 +411,74 @@ Measured after AC6a and before reviewer round 1's Limits change, from this slice
 - **One price without a cap** isn't tested: AC7 covers only a cap without both prices.
 - **`pr backfill` with `--provider openai`** isn't tested, as in S2: live commands measure one model.
 - **Live context evals for this provider** are out of scope (Q13).
+
+## P4-S7: Fall back to a second model when the first is unavailable
+
+Spec: [p4-s7-fallback-routing.md](slices/p4-s7-fallback-routing.md). Tests: [`tests/integration/test_p4_s7_fallback_routing.py`](../../../tests/integration/test_p4_s7_fallback_routing.py), 95 cases for AC1 to AC11 and the spec's Notes.
+
+The tests were written from the spec's criteria, design.md ("Second provider and routing", "Policy as code", Interfaces) and ADR 0021, while the developer built the slice and before their code was read. Every command builds its own providers from the policy: nothing injects a provider for a routed run. Each route is a fake at the outside boundary. Claude's SDK `query`, as `providers.claude_agent` calls it, is replaced by a scripted `FakeSdk`, so `ClaudeAgentProvider` maps its failures as it really would. The second provider sends through P4-S2's scripted `HttpTransport`. The harness was first checked against `main` (`360b71c`): Claude's failure categories and exit codes came out as expected, and only S7's behaviour was missing.
+
+**Status: every criterion passes (95 of 95).** The run was on the developer's uncommitted working tree (base `360b71c`). The first run found an AC11 bug (see Failures), which the developer has since fixed. The designer then clarified the spec: the shape of attempts, AC11's skipped `deadline` attempt, AC8 in diff mode under a fallback, and the Notes. The cases were aligned with it and rerun. After reviewer round 1, AC5 changed again: an `openai` run's base URL must match its entry's, and the mock provider is never checked or routed. Six cases were added for it. They failed before the developer's round-1 fix (`providers/setup.py`) and pass with it.
+
+### Gate
+
+A partial run in small groups, since the full suite runs out of memory on this machine. After the first round: this slice's file, each file of `tests/integration` on its own, `tests/conformance` and `tests/evals`. After the spec's clarification: this slice's file and the four earlier files changed below. After review round 1: this slice's file. `ruff format --check`, `ruff check` and `mypy` are clean on the tree. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **Attempts**, as the clarified spec has them: one `agent`/`attempt` audit record each, and `report/v1` `route` when a report is written, so a failed run's attempts are checked in the audit. A tried attempt is exactly `{route, category, cost_usd}`, and a skipped one exactly `{route, skipped}`.
+- **"Naming the allowed entries"** (AC5) is each entry's route name, `<provider>:<model>`.
+- **AC7 and AC8** route between two models of the second provider, `openai:m1` and `openai:m2`, so one script plays both attempts and each POST's `model` names the route. Everywhere else, the tests use AC1's own example: Claude, then `openai:m1`.
+- **AC8's `over_budget`** is checked under a fallback in both modes, and without a fallback in diff mode, where it is judged as today (on tokens only).
+- **AC11's times** are scaled down: a 6 s deadline with the primary failing at 4 s, and 1.5 s where no time is left.
+
+### Criteria
+
+Test names drop the `test_p4_s7_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_fallback_gets_the_same_request_once` (the system and user prompts Claude got, one POST). `ac1_report_route_names_both_attempts_in_order` (exactly `{"route": "claude:claude-opus-5-5", "category": "unavailable", "cost_usd": null}`, then `openai:m1` with `cost_usd` $0.0007575). `ac1_route_is_appended_after_the_earlier_report_keys`. `ac1_findings_are_the_fallbacks`. `ac1_fallback_with_no_findings_exits_0`. `ac1_audit_has_one_attempt_record_per_attempt_in_order` (each with exactly AC1's keys). `ac1_fallback_posts_to_its_entrys_base_url`. `ac1_fallback_key_reaches_no_output` | pass (8) |
+| AC2 | `ac2_routable_failure_hands_over_to_the_fallback` ×5 (`unavailable`; `transient` from 503, from 529 and from a connection error; `rate_limit`). `ac2_other_failures_never_reach_the_fallback` ×4 and `ac2_other_failures_fail_as_without_a_fallback` ×4 (`auth`, `refusal`, `invalid_output`, `permanent`: the same exit code and error line as under the built-in policy). `ac2_cost_cap_failure_never_reaches_the_fallback`. `ac2_turn_cap_failure_in_context_mode_never_reaches_the_fallback` (the fallback lists context). `ac2_openai_primary_cost_cap_never_reaches_the_fallback`. `ac2_openai_primary_turn_cap_never_reaches_the_fallback` | pass (17) |
+| AC3 | `ac3_both_unavailable_fails_unavailable_listing_both`. `ac3_run_fails_with_the_last_attempts_category_and_exit_code` ×4 (`unavailable` then `transient`, `transient` then `unavailable`, `unavailable` then `auth`, both `rate_limit`). `ac3_fallback_is_tried_once_never_back_to_the_primary` | pass (6) |
+| AC4 | `ac4_unavailable_primary_without_routing_calls_nothing_else` ×2 and `ac4_route_holds_the_single_attempt` ×2 (the built-in policy, and a policy with `[[models]]` but no `[routing]`). `ac4_request_findings_and_exit_code_are_as_without_a_policy`. `ac4_openai_primary_under_the_builtin_policy_records_one_attempt`. `ac4_injected_mock_provider_records_one_attempt` | pass (7) |
+| AC5 | `ac5_unlisted_claude_model_exits_2_before_the_diff_naming_the_entries` (the diff path doesn't exist, so reading it would exit 3). `ac5_unlisted_openai_model_exits_2_before_the_diff`. `ac5_listed_model_of_another_provider_doesnt_match` (`claude:m1`). `ac5_context_mode_on_a_diff_only_entry_exits_2_before_the_diff`. `ac5_listed_model_runs`. `ac5_mock_provider_is_exempt`, injected and not. `ac5_fallback_not_in_models_makes_the_policy_invalid` ×2. `ac5_fallback_with_another_base_url_isnt_the_entry` (Notes). `ac5_fallback_without_any_models_makes_the_policy_invalid`. `ac5_malformed_models_entry_makes_the_policy_invalid` ×5 (an unknown key, an unknown mode, no model, no provider, `modes` not a list). `ac5_pr_shadow_refuses_an_unlisted_model_before_any_call`. After review round 1: `ac5_openai_base_url_unlike_the_entrys_exits_2_before_the_diff` ×2 (another `--openai-base-url`, and the default when the entry sets its own; both name `openai:m1`). `ac5_openai_base_url_matching_the_entrys_runs`. `ac5_mock_is_neither_checked_nor_routed_under_a_capped_fallback` (a $0.60 ceiling, an `openai` fallback and no price flags: exit 0, no POST). `ac5_mock_without_injection_isnt_routed_under_a_capped_fallback` | pass (22) |
+| AC6 | `ac6_context_mode_never_falls_back_to_a_diff_only_model`. Controls: `ac6_the_same_policy_falls_back_in_diff_mode`, `ac6_context_mode_falls_back_to_a_model_listing_context` | pass (3) |
+| AC7 | `ac7_fallback_has_the_calls_left_and_the_ledger_holds_all_12` (5 `read` calls by `m1`, then 7 `glob` calls by `m2`, all `ok` and in order in the `context`/`tool_call` records). `ac7_fallbacks_eighth_call_is_refused_at_the_call_limit`. `ac7_fallback_starts_a_fresh_conversation` (its first POST carries the primary's first messages and tools, not the primary's tool turns). `ac7_primary_calls_are_recorded_even_when_every_route_fails` | pass (4) |
+| AC8 | `ac8_both_attempts_are_capped_at_the_ceiling` (Claude's `max_budget_usd` is 0.60). `ac8_fallback_gets_a_whole_cap_not_what_the_primary_left` ($0.50 each against $0.60). `ac8_fallback_over_its_own_cap_still_fails_on_the_cap`. `ac8_over_budget_when_the_fallbacks_cost_is_over_the_cap` (a $0.70 final answer). `ac8_not_over_budget_when_only_the_attempts_together_are_over` ($1.00 in all, with no attempt over). `ac8_shadow_caps_hold_the_per_attempt_cap`. Diff mode under a fallback, with `pr shadow`, Claude `unavailable` and `openai:m1` serving: `ac8_diff_mode_over_budget_when_the_fallbacks_cost_is_over_the_cap` ($0.70) and `ac8_diff_mode_not_over_budget_when_the_fallback_is_within_the_cap` ($0.50). `ac8_diff_mode_without_a_fallback_is_judged_as_today` ($0.70, not over budget). `ac8_openai_fallback_under_a_cap_needs_both_prices` (Notes: exit 2, nothing called). `ac8_missing_prices_message_names_the_fallback_route` (names `openai:m1`, not `--provider openai`, for a Claude run) | pass (11) |
+| Notes | `notes_fallback_without_its_key_leaves_the_primary_serving`. `notes_fallback_without_its_key_is_skipped_no_credential` (attempts: Claude `unavailable`, then exactly `{"route": "openai:m1", "skipped": "no_credential"}`) | pass (2) |
+| AC9 | `ac9_no_claude_key_in_ci_goes_straight_to_the_fallback`. `ac9_audit_records_the_skipped_primary_then_the_fallback` (exactly `{"route": "claude:claude-opus-5-5", "skipped": "no_credential"}`, then the tried attempt). `ac9_report_route_holds_both_attempts`. `ac9_neither_key_in_ci_is_skipped_no_credential`. `ac9_no_claude_key_and_no_fallback_is_skipped_as_today`. `ac9_claude_key_in_ci_uses_the_primary` | pass (6) |
+| AC10 | `ac10_evals_live_calls_only_the_primary` and `ac10_backfill_calls_only_the_primary` (the primary is `unavailable` on every call, and no POST is sent). `ac10_evals_live_budget_is_planned_calls_times_one_cap` and `ac10_backfill_budget_is_planned_calls_times_one_cap` (2 calls × $0.10 within `--max-usd 0.20`). `ac10_backfill_reports_record_one_attempt_each` | pass (5) |
+| AC11 | `ac11_fallback_runs_with_only_the_time_left` (the fallback's POST times out within the 2 s left). `ac11_whole_review_fails_transient_at_the_deadline` (a fallback that never answers, over the fake transport). `ac11_real_transport_fallback_ends_at_the_reviews_deadline` (the real `UrllibTransport` and a loopback server that answers after 9 s). `ac11_no_time_left_skips_the_fallback_as_deadline` (fails with the primary's `transient`; attempts are Claude's, then exactly `{"route": "openai:m1", "skipped": "deadline"}`) | pass (4) |
+
+### Failures
+
+None open.
+
+**Fixed during testing: AC11, the fallback kept a whole deadline of its own.** The review as a whole was bounded by the time left, but the fallback provider still got the full `deadline_s`, so its POST's timeout was the whole deadline. Over the fake transport, the outer bound cancels the await, so the review still ends on time. Over the real `UrllibTransport`, the request runs in a thread that can't be cancelled, and `asyncio.run` waits for that thread, so the run ends only when the fallback's own deadline does. Reproduction, with a 6 s deadline and Claude failing `transient` at 4 s:
+
+- `ac11_fallback_runs_with_only_the_time_left`: the fallback's POST has `timeout_s=6.0`, when only 2 s are left.
+- `ac11_real_transport_fallback_ends_at_the_reviews_deadline`, with a server on 127.0.0.1 that answers after 9 s: the run fails `transient` after 10.09 s (4 s plus a fresh 6 s), not at 6 s. At the spec's sizes, a review would end at 200 s + 240 s = 440 s, not 240 s.
+
+The developer's fix gives each route's provider the seconds left (the spec's Notes), and both cases now pass.
+
+### Earlier suites changed
+
+Each keeps its intent. `report/v1` gains `route`, appended after `redaction`.
+
+- **`tests/fixtures/p1_s10/sample_report.golden.json`** gains `route`: `[{"route": "mock:claude-opus-5-5", "category": null, "cost_usd": null}]`.
+- **`test_p1_s10_json_output.py`**: `REPORT_KEYS` gains `route`, and the appended-only check covers the last five keys.
+- **`test_p3_s8_pr_review_with_context.py`**, `assert_phase_2_run` (also used by P3-S14): `route` is never empty, so the check is now that it holds one attempt that served the review, as `policy` is checked, instead of being null or empty.
+- **`test_p4_s4_redaction.py`**, `ac6_report_redaction_is_appended_after_policy`: `redaction` must directly follow `policy`, but no longer has to be last.
+
+Every other file of `tests/integration`, `tests/conformance` and `tests/evals` (731 passed, 3 skipped) passes unchanged.
+
+### Coverage
+
+From this slice's file alone, after review round 1: `providers/router.py` 95% (lines 70 and 129) and `providers/setup.py` 94% (lines 120, 150 and 175); those lines are left to the developer's unit tests. From the first round: `errors.py` 91%. `governance/policy.py` is 77% from this file, since it doesn't exercise the policy's other sections.
+
+### Gaps
+
+- **A tool-call cap failure** is covered for Claude's and the second provider's turn caps, and for the cost cap. A message asking for more calls than the cap fails `invalid_output` (P4-S6 Limits), which AC2's `invalid_output` cases cover.
+- **Routing from the second provider to Claude** isn't tested. AC1's direction and two second-provider models cover the router.
+- **The fallback's live runs** are S14's.

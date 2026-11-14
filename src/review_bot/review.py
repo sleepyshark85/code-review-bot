@@ -4,6 +4,7 @@ Each stage's decision is recorded in the audit log.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import os
 import time
@@ -32,6 +33,7 @@ from review_bot.governance.policy import (
     Policy,
     check_context_allowed,
     check_settings,
+    route_name,
 )
 from review_bot.governance.redaction import RedactionCounts, RedactionKind, add_counts, mask_diff
 from review_bot.prompt import (
@@ -41,13 +43,14 @@ from review_bot.prompt import (
     build_request,
 )
 from review_bot.providers.base import (
+    Attempt,
     DeniedTool,
     LLMProvider,
     ReviewRequest,
     ReviewResponse,
     TokenUsage,
 )
-from review_bot.report import PipelineResult, redaction_json, section_path
+from review_bot.report import PipelineResult, attempt_json, redaction_json, section_path
 from review_bot.rules import DomainRule, RuleResult, run_rules
 from review_bot.secret_scan import SecretHit, redact, scan_secrets
 from review_bot.settings import Settings
@@ -237,8 +240,9 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
             issues=issues,
         )
         _record_issues(issues, audit)
+    route = route_name(settings.provider, settings.model)
     try:
-        response = await _call_provider(provider, request, diff, audit)
+        response = await _call_provider(provider, request, diff, audit, route=route)
     finally:
         # Every call is recorded, even when the review then fails.
         ledger = () if tools is None else tools.ledger
@@ -276,6 +280,7 @@ async def review_diff(  # noqa: PLR0913 - name, exclude, context, domain_rules a
         ledger=ledger,
         cost_usd=response.cost_usd,
         redaction=redaction,
+        route=response.attempts,
     )
 
 
@@ -310,24 +315,33 @@ def tool_caps(settings: Settings) -> ToolCaps:
 
 
 async def _call_provider(
-    provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog
+    provider: LLMProvider, request: ReviewRequest, diff: str, audit: AuditLog, *, route: str
 ) -> ReviewResponse:
     """Send ``request``, record the call and the tools offered or denied, write and record warnings.
 
+    Each attempt is recorded too. A provider that doesn't route made one, on ``route``, which
+    the response's ``attempts`` then hold.
+
     Raises:
-        ProviderError: If the provider fails; its denials and scrubbed diagnostics are recorded
-            first.
+        ProviderError: If the provider fails; its attempts, denials and scrubbed diagnostics
+            are recorded first.
         AuditError: If a record can't be written.
     """
     started = time.perf_counter()
     try:
         response = await provider.review(request)
     except ProviderError as exc:
+        _record_attempts(exc.attempts or (Attempt(route, exc.category, None),), audit)
         _record_denials(exc.denied_tools, request.policy, audit)
         diagnostics = _scrubbed(exc.diagnostics, diff)
         failure = {"category": exc.category, "cap": exc.cap, "diagnostics": diagnostics}
         audit.record(Stage.AGENT, "failed", failure)
         raise
+    if not response.attempts:
+        response = dataclasses.replace(
+            response, attempts=(Attempt(route, None, response.cost_usd),)
+        )
+    _record_attempts(response.attempts, audit)
     audit.record(
         Stage.AGENT,
         "called",
@@ -345,6 +359,12 @@ async def _call_provider(
         write_diagnostic(warning)
         audit.record(Stage.AGENT, "warning", {"text": "\n".join(_scrubbed([warning], diff))})
     return response
+
+
+def _record_attempts(attempts: Iterable[Attempt], audit: AuditLog) -> None:
+    """Record each route the review tried or skipped, in order."""
+    for attempt in attempts:
+        audit.record(Stage.AGENT, "attempt", attempt_json(attempt))
 
 
 def _record_denials(denied_tools: Iterable[DeniedTool], policy: Policy, audit: AuditLog) -> None:

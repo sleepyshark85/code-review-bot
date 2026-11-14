@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal, Protocol
 
+from review_bot.errors import ErrorCategory
 from review_bot.findings import Finding
 from review_bot.governance.policy import BUILTIN_POLICY, Policy
 
 __all__ = [
+    "Attempt",
+    "AttemptSkip",
     "DenialLayer",
     "DeniedTool",
     "LLMProvider",
@@ -83,6 +86,25 @@ class DeniedTool:
     layer: DenialLayer
 
 
+# Why a route wasn't tried: it had no key, or the review's deadline had passed.
+type AttemptSkip = Literal["no_credential", "deadline"]
+
+
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """One route of a review, as tried or skipped (ADR 0021).
+
+    ``route`` is ``<provider>:<model>``. ``category`` is why it failed, or None if it served
+    the review or was skipped. ``cost_usd`` is what it cost as its provider reported it, known
+    only for the route that served. ``skipped`` says why it wasn't tried, or is None if it was.
+    """
+
+    route: str
+    category: ErrorCategory | None
+    cost_usd: Decimal | None
+    skipped: AttemptSkip | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewResponse:
     """A provider's validated answer.
@@ -91,7 +113,9 @@ class ReviewResponse:
     write to no stream themselves (ADR 0004). ``cost_usd`` is the call's cost as the provider
     reports it, None if unknown. ``offered_tools`` are the tools the provider's runtime said the
     model was offered, for the audit log; None if it said nothing. ``denied_tools`` are the
-    tools it asked to use and was denied, in order, for the audit log.
+    tools it asked to use and was denied, in order, for the audit log. ``attempts`` are the
+    routes a ``RoutingProvider`` tried, in order, the last one serving; empty if the review
+    wasn't routed.
     """
 
     findings: tuple[Finding, ...]
@@ -100,6 +124,7 @@ class ReviewResponse:
     cost_usd: Decimal | None = None
     offered_tools: tuple[str, ...] | None = None
     denied_tools: tuple[DeniedTool, ...] = ()
+    attempts: tuple[Attempt, ...] = ()
 
 
 class LLMProvider(Protocol):

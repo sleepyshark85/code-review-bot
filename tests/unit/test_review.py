@@ -32,6 +32,7 @@ from review_bot.governance.policy import Policy
 from review_bot.governance.redaction import RedactionKind
 from review_bot.prompt import CONTEXT_PROMPT_VERSION, PROMPT_VERSION
 from review_bot.providers.base import (
+    Attempt,
     DeniedTool,
     LLMProvider,
     ReviewRequest,
@@ -137,7 +138,13 @@ def test_run_pipeline_records_each_stage_of_a_review_in_order(tmp_path: Path) ->
 
     run(write_diff(tmp_path, MINIMAL_DIFF), log, MockProvider(findings=[]))
 
-    assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.called"]
+    assert events(log) == [
+        "run.start",
+        "parse.parsed",
+        "static.rules",
+        "agent.attempt",
+        "agent.called",
+    ]
     called = data_of(log, "agent.called")
     assert called["input_tokens"] == called["output_tokens"] == 0
     assert called["duration_s"] >= 0
@@ -212,13 +219,103 @@ def test_run_pipeline_with_a_provider_error_records_its_category(tmp_path: Path)
     with pytest.raises(ProviderError):
         run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
 
-    assert events(log) == ["run.start", "parse.parsed", "static.rules", "agent.failed"]
+    assert events(log) == [
+        "run.start",
+        "parse.parsed",
+        "static.rules",
+        "agent.attempt",
+        "agent.failed",
+    ]
     assert data_of(log, "agent.failed") == {
         "category": "rate_limit",
         "cap": None,
         "diagnostics": [],
     }
     assert "SENTINEL" not in log.read_text(encoding="ascii")
+
+
+def test_run_pipeline_with_a_provider_that_doesnt_route_has_one_attempt_on_its_route(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, ReportingProvider())
+
+    assert result.route == (Attempt("mock:claude-opus-5-5", None, Decimal("0.1234")),)
+    assert data_of(log, "agent.attempt") == {
+        "route": "mock:claude-opus-5-5",
+        "category": None,
+        "cost_usd": "0.1234",
+    }
+
+
+def test_run_pipeline_with_a_failure_that_wasnt_routed_records_one_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    provider = MockProvider(error=ProviderError(ErrorCategory.UNAVAILABLE, "Down."))
+
+    with pytest.raises(ProviderError):
+        run(write_diff(tmp_path, MINIMAL_DIFF), log, provider)
+
+    assert data_of(log, "agent.attempt") == {
+        "route": "mock:claude-opus-5-5",
+        "category": "unavailable",
+        "cost_usd": None,
+    }
+
+
+ROUTED = (
+    Attempt("claude:claude-opus-5-5", None, None, skipped="no_credential"),
+    Attempt("openai:m1", ErrorCategory.TRANSIENT, None),
+)
+
+
+class RoutedProvider:
+    """Answers or fails as a routing provider would, after the attempts in ``ROUTED``."""
+
+    def __init__(self, *, fails: bool) -> None:
+        self.fails = fails
+
+    async def review(self, _request: ReviewRequest) -> ReviewResponse:
+        if self.fails:
+            error = ProviderError(ErrorCategory.TRANSIENT, "Down.")
+            error.attempts = ROUTED
+            raise error
+        served = Attempt("openai:m2", None, Decimal("0.2"))
+        return ReviewResponse(findings=(), usage=TokenUsage(0, 0), attempts=(*ROUTED, served))
+
+
+def attempts_recorded(log: Path) -> list[object]:
+    return [record["data"] for record in read_records(log) if record["event"] == "attempt"]
+
+
+def test_run_pipeline_records_each_routed_attempt_in_order_and_returns_them(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    result = run(write_diff(tmp_path, MINIMAL_DIFF), log, RoutedProvider(fails=False))
+
+    assert [attempt.route for attempt in result.route] == [
+        "claude:claude-opus-5-5",
+        "openai:m1",
+        "openai:m2",
+    ]
+    assert attempts_recorded(log) == [
+        {"route": "claude:claude-opus-5-5", "skipped": "no_credential"},
+        {"route": "openai:m1", "category": "transient", "cost_usd": None},
+        {"route": "openai:m2", "category": None, "cost_usd": "0.2"},
+    ]
+
+
+def test_run_pipeline_records_each_routed_attempt_of_a_failed_review(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+
+    with pytest.raises(ProviderError):
+        run(write_diff(tmp_path, MINIMAL_DIFF), log, RoutedProvider(fails=True))
+
+    assert len(attempts_recorded(log)) == len(ROUTED)
 
 
 def test_run_pipeline_with_a_cap_error_records_the_cap(tmp_path: Path) -> None:
@@ -390,6 +487,7 @@ def test_run_pipeline_with_provider_warnings_writes_and_records_each_in_order(
         "run.start",
         "parse.parsed",
         "static.rules",
+        "agent.attempt",
         "agent.called",
         "agent.warning",
         "agent.warning",

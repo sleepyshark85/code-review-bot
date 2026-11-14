@@ -6,7 +6,13 @@ import pytest
 
 from review_bot.errors import ConfigError
 from review_bot.findings import Severity
-from review_bot.settings import Settings, in_ci, live_run_refused, load_settings
+from review_bot.settings import (
+    Settings,
+    has_claude_credential,
+    in_ci,
+    live_run_refused,
+    load_settings,
+)
 
 
 def test_load_settings_with_nothing_set_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -314,3 +320,19 @@ def test_live_run_refused_never_outside_ci_whatever_the_flag(
     environ: dict[str, str], *, allow_dispatch: bool
 ) -> None:
     assert live_run_refused(environ, allow_dispatch=allow_dispatch) is False
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, True),
+        ({"CI": "true", "ANTHROPIC_API_KEY": "key"}, True),
+        ({"CI": "true"}, False),
+        ({"CI": "true", "ANTHROPIC_API_KEY": ""}, False),
+    ],
+    ids=["local-login", "ci-with-key", "ci-without-key", "ci-empty-key"],
+)
+def test_has_claude_credential_needs_its_key_only_in_ci(
+    environ: dict[str, str], *, expected: bool
+) -> None:
+    assert has_claude_credential(environ) is expected

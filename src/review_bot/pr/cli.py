@@ -19,6 +19,7 @@ with outcome ``reviewed``, ``blocked_secret`` or ``skipped`` exits 0. An invalid
 
 import argparse
 import contextlib
+import dataclasses
 import os
 import sys
 import tempfile
@@ -35,8 +36,6 @@ from review_bot.cli import (
     RaisingArgumentParser,
     add_setting_arguments,
     add_tool_cap_arguments,
-    build_provider,
-    check_provider_settings,
     record_failed_end,
     report_failure,
     run_review,
@@ -91,6 +90,12 @@ from review_bot.pr.shadow import (
 from review_bot.pr.units import ShadowFile
 from review_bot.price_flags import Prices, add_price_arguments, prices_from_flags
 from review_bot.providers.base import LLMProvider
+from review_bot.providers.setup import (
+    build_provider,
+    build_routed_provider,
+    can_fall_back,
+    check_provider_settings,
+)
 from review_bot.report import PipelineResult
 from review_bot.secret_scan import redact
 from review_bot.settings import (
@@ -219,7 +224,7 @@ def main(
 
     Args:
         argv: The arguments; None means the process's own.
-        provider: The provider to use; None means ``review_bot.cli.build_provider`` makes it
+        provider: The provider to use; None means ``build_provider`` makes it
             from the settings, and only if the run calls one.
         github: The GitHub client ``run --mode comment``, ``collect`` and ``baseline`` use,
             which also reads the linked issues of ``run`` and ``backfill`` with ``--context
@@ -275,7 +280,11 @@ def main(
             _LabelCommand | _CollectCommand | _BaselineCommand | _MetricsCommand | _CompareCommand,
         ):
             return _run_without_review(command, github, github_token)
-        check_provider_settings(command.settings, openai_api_key=openai_api_key)
+        policy = command.policy
+        if isinstance(command, _BackfillCommand):
+            # Backfill never routes (P4-S7 AC10), so its policy's fallback isn't checked.
+            policy = dataclasses.replace(policy, fallback=None)
+        check_provider_settings(command.settings, policy, openai_api_key=openai_api_key)
         # Before --out is created: a CI run refused here touches nothing.
         if isinstance(command, _BackfillCommand):
             _refuse_backfill_in_ci(allow_dispatch=command.allow_dispatch)
@@ -1043,20 +1052,23 @@ def _run(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         GitHubError: If the bot's summary or comments can't be read; nothing is posted.
     """
     pr = read_event(command.event_path)
-    settings = command.settings
+    settings, policy = command.settings, command.policy
     run = run_pull_request(
         pr,
         mode=command.mode,
         git=GitRepo(command.repo_dir, timeout_s=GIT_TIMEOUT_S),
-        make_provider=lambda: _provider(settings, provider, openai_api_key),
+        make_provider=lambda: _routed_provider(settings, policy, provider, openai_api_key),
         github=None if make_github is None else make_github(pr.repo),
         issue_reader=None if make_issue_reader is None else make_issue_reader(pr.repo),
         settings=settings,
-        policy=command.policy,
+        policy=policy,
         audit=audit,
         environ=os.environ,
         clock=utc_now,
         gating_on=command.gating_on,
+        can_fall_back=can_fall_back(
+            settings, policy, openai_api_key=openai_api_key, environ=os.environ
+        ),
     )
     if uses_own_claude(settings, provider):
         run = then_discard_unraisable(run)
@@ -1117,10 +1129,29 @@ def _backfill(
 def _provider(
     settings: Settings, provider: LLMProvider | None, openai_api_key: str | None
 ) -> LLMProvider:
-    """``provider`` if given, else the settings' own (``build_provider``)."""
+    """``provider`` if given, else the settings' own (``build_provider``), which never routes."""
     if provider is not None:
         return provider
     return build_provider(settings, openai_api_key=openai_api_key)
+
+
+def _routed_provider(
+    settings: Settings, policy: Policy, provider: LLMProvider | None, openai_api_key: str | None
+) -> LLMProvider:
+    """``provider`` if given, else the settings' own, routed as ``policy`` says.
+
+    As ``build_routed_provider`` builds it, under this process's environment.
+    """
+    if provider is not None:
+        return provider
+    return build_routed_provider(
+        settings,
+        policy,
+        # Through this module's name, so a test can replace it here.
+        make_provider=lambda each: build_provider(each, openai_api_key=openai_api_key),
+        openai_api_key=openai_api_key,
+        environ=os.environ,
+    )
 
 
 def _dollar_budget(command: _BackfillCommand, *, planned: int) -> DollarBudget | None:

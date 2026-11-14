@@ -16,7 +16,7 @@ from review_bot.findings import ReviewedFinding
 from review_bot.governance.policy import Policy
 from review_bot.governance.redaction import RedactionCounts
 from review_bot.path_quoting import c_quoted, has_lone_surrogate
-from review_bot.providers.base import TokenUsage
+from review_bot.providers.base import Attempt, TokenUsage
 from review_bot.threshold import Decision
 from review_bot.verify import VerifyResult
 
@@ -24,6 +24,7 @@ __all__ = [
     "PipelineResult",
     "TriageDecision",
     "TriagedFinding",
+    "attempt_json",
     "not_rejected",
     "path_fields",
     "redaction_json",
@@ -46,7 +47,8 @@ class PipelineResult:
     call, in order. ``cost_usd`` is the call's cost as the provider reported it, or None.
     ``policy`` is the policy the review ran under. ``redaction`` counts the personal data masked
     in what was sent, by source (``diff``, ``tools``, ``issues``), leaving out any source with
-    none.
+    none. ``route`` holds each model the review tried or skipped, in order, the last one
+    serving; it is empty if the model wasn't called.
     """
 
     verification: VerifyResult
@@ -62,6 +64,7 @@ class PipelineResult:
     ledger: tuple[ToolCall, ...] = ()
     cost_usd: Decimal | None = None
     redaction: Mapping[str, RedactionCounts] = field(default_factory=dict)
+    route: tuple[Attempt, ...] = ()
 
 
 class TriageDecision(StrEnum):
@@ -96,6 +99,18 @@ def redaction_json(redaction: Mapping[str, RedactionCounts]) -> dict[str, dict[s
         source: {str(kind): count for kind, count in counts.items()}
         for source, counts in redaction.items()
     }
+
+
+def attempt_json(attempt: Attempt) -> dict[str, str | None]:
+    """One attempt, as ``report/v1``'s ``route`` and the ``agent``/``attempt`` record write it.
+
+    A skipped route is its name and why it was skipped; a tried one its name, its failure's
+    category, or null if it served, and its cost as a decimal string, or null.
+    """
+    if attempt.skipped is not None:
+        return {"route": attempt.route, "skipped": attempt.skipped}
+    cost_usd = None if attempt.cost_usd is None else str(attempt.cost_usd)
+    return {"route": attempt.route, "category": attempt.category, "cost_usd": cost_usd}
 
 
 def section_path(file: FileDiff) -> str:

@@ -8,6 +8,7 @@ from markdown_it.token import Token
 
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.diff_parser import FileDiff, ParsedDiff, SkipReason
+from review_bot.errors import ErrorCategory
 from review_bot.findings import (
     Category,
     EvidenceSpan,
@@ -20,7 +21,7 @@ from review_bot.findings import (
 from review_bot.governance.policy import BUILTIN_POLICY
 from review_bot.governance.redaction import RedactionKind
 from review_bot.prompt import PROMPT_VERSION
-from review_bot.providers.base import TokenUsage
+from review_bot.providers.base import Attempt, TokenUsage
 from review_bot.render import (
     escape_markdown,
     escape_unprintable,
@@ -189,6 +190,7 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
             "source": "builtin",
         },
         "redaction": {},
+        "route": [],
     }
     assert list(json.loads(render(result))) == [
         "schema",
@@ -205,6 +207,24 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "context",
         "policy",
         "redaction",
+        "route",
+    ]
+
+
+def test_render_json_writes_each_attempt_of_the_route_in_order() -> None:
+    result = dataclasses.replace(
+        pipeline_result(),
+        route=(
+            Attempt("claude:claude-opus-5-5", ErrorCategory.UNAVAILABLE, None),
+            Attempt("openai:m1", None, Decimal("0.0123")),
+            Attempt("openai:m2", None, None, skipped="deadline"),
+        ),
+    )
+
+    assert json.loads(render(result))["route"] == [
+        {"route": "claude:claude-opus-5-5", "category": "unavailable", "cost_usd": None},
+        {"route": "openai:m1", "category": None, "cost_usd": "0.0123"},
+        {"route": "openai:m2", "skipped": "deadline"},
     ]
 
 

@@ -85,14 +85,12 @@ from review_bot.pr.shadow import (
 from review_bot.providers.base import LLMProvider
 from review_bot.report import PipelineResult
 from review_bot.review import ReviewContext, review_diff
-from review_bot.settings import Settings, in_ci
+from review_bot.settings import Settings, has_claude_credential
 
 __all__ = ["backfill_pull_request", "record_gate", "run_pull_request"]
 
 # The ``pull_request`` actions that change what a review would see.
 _REVIEWED_ACTIONS: Final = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
-# In CI, no key means no review (ADR 0012).
-_KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
 # All of a run's new comments go in one review, so it notifies once (Phase 2 design, Volume).
 _POSTED_ACTIONS: Final = frozenset({Action.CREATE, Action.MOVE})
 
@@ -111,19 +109,21 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     environ: Mapping[str, str],
     clock: Callable[[], datetime],
     gating_on: bool = False,
+    can_fall_back: bool = False,
 ) -> ShadowReport:
     """Review ``pr``'s own changes, from its merge base to its head, and report the run.
 
     A fork, an action that changes nothing to review, a Claude run in CI with no
-    ``ANTHROPIC_API_KEY``, or in comment mode a draft, is refused: neither git, the provider nor
-    GitHub runs, and the report is ``skipped`` with that reason. Otherwise the repository's
-    policy is read from the base commit's ``.review-bot.toml`` (``_repo_config``): if it is
-    invalid, the report is ``failed``, ``invalid_config``, with no provider call. Otherwise the
-    provider is made, and called at most once. With ``settings.context`` ``repo``, the model's
-    tools read the head commit through git objects, never a checkout, and the issues the pull
-    request closes are read with ``issue_reader`` (``_LinkedIssues``), only once the review will
-    call the model. A run that plans comments reads the base commit's CODEOWNERS too
-    (``_code_owners``), to name the owners of each finding.
+    ``ANTHROPIC_API_KEY`` and no fallback to go to, or in comment mode a draft, is refused:
+    neither git, the provider nor GitHub runs, and the report is ``skipped`` with that reason.
+    Otherwise the repository's policy is read from the base commit's ``.review-bot.toml``
+    (``_repo_config``): if it is invalid, the report is ``failed``, ``invalid_config``, with no
+    provider call. Otherwise the provider is made, and called at most once. With
+    ``settings.context`` ``repo``, the model's tools read the head commit through git objects,
+    never a checkout, and the issues the pull request closes are read with ``issue_reader``
+    (``_LinkedIssues``), only once the review will call the model. A run that plans comments
+    reads the base commit's CODEOWNERS too (``_code_owners``), to name the owners of each
+    finding.
 
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
     when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
@@ -151,6 +151,8 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         environ: The environment, read for ``CI`` and ``ANTHROPIC_API_KEY``.
         clock: Returns the current time, timezone-aware.
         gating_on: Whether ``REVIEW_BOT_GATE`` is ``on``, as the workflow says gating is.
+        can_fall_back: Whether the policy's fallback serves the review's mode and has its
+            credential, so that ``make_provider`` routes a Claude run without its key to it.
 
     Raises:
         ValueError: If ``github`` is given in shadow mode, or missing in comment mode.
@@ -162,7 +164,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         raise ValueError("A pull request run has a GitHub client exactly in comment mode.")
     return await _run(
         pr,
-        _refusal(pr, mode, settings, environ),
+        _refusal(pr, mode, settings, environ, can_fall_back=can_fall_back),
         Origin.EVENT,
         mode=mode,
         git=git,
@@ -458,7 +460,12 @@ class _Review:
 
 
 def _refusal(
-    pr: PullRequestRef, mode: Mode, settings: Settings, environ: Mapping[str, str]
+    pr: PullRequestRef,
+    mode: Mode,
+    settings: Settings,
+    environ: Mapping[str, str],
+    *,
+    can_fall_back: bool,
 ) -> Reason | None:
     """Why the run must not go ahead, or None if it may."""
     if pr.is_fork:
@@ -466,7 +473,8 @@ def _refusal(
     if pr.action not in _REVIEWED_ACTIONS:
         return Reason.ACTION
     # Outside CI, the Claude CLI may use the person's own login, as ``review-bot`` does.
-    if settings.provider == "claude" and in_ci(environ) and not environ.get(_KEY_VARIABLE):
+    # A Claude run without its key goes to a fallback that has one (P4-S7 AC9).
+    if settings.provider == "claude" and not has_claude_credential(environ) and not can_fall_back:
         return Reason.NO_CREDENTIAL
     # Shadow mode reviews drafts too, for more data (Phase 2 design, Q10).
     if mode is Mode.COMMENT and pr.is_draft:
