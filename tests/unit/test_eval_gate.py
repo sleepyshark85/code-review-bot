@@ -353,9 +353,13 @@ def test_run_gate_advises_recording_a_stale_openai_recording_with_openai(
 
 @pytest.mark.parametrize("provider", ["claude", "openai"])
 def test_live_command_as_printed_parses_with_every_required_flag(
-    provider: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    provider: Any,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every flag parses: the run gets as far as reading --cases, which doesn't exist."""
+    monkeypatch.delenv("CI", raising=False)  # live refuses in CI before reading --cases
     argv = live_command(Suite(provider, "m1", "context", ("calc",)), "calc").split()[3:]
     absent = str(tmp_path / "absent")
     filled = {"DIR": absent, "N": "1", "M": "1", "X": "1", "Y": "0.10", "I": "1", "O": "1"}
