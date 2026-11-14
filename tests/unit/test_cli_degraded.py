@@ -48,7 +48,7 @@ def test_a_degraded_review_prints_the_rule_findings_says_why_and_exits_with_the_
     out, err = capsys.readouterr()
     assert exit_code == UNAVAILABLE_EXIT
     assert out.startswith(f"{CALC_FILE}:4 [medium/")
-    assert "review-bot: warning: degraded: no model was available" in err
+    assert "review-bot: warning: degraded: no model was available, so only the rules ran." in err
     assert "review-bot: error: unavailable: Claude is down." in err
     assert data_of(audit_log_in_tmp_path, "run.end") == {
         "exit_code": UNAVAILABLE_EXIT,

@@ -127,7 +127,7 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
 
 _DEGRADED_WARNING: Final = (
-    "review-bot: warning: degraded: no model was available, so only the built-in rules ran. "
+    "review-bot: warning: degraded: no model was available, so only the rules ran. "
     "The error below says why."
 )
 

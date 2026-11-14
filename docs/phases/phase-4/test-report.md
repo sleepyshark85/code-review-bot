@@ -498,7 +498,7 @@ A partial run in small groups, since the full suite runs out of memory on this m
 ### Seams and readings (assumed)
 
 - **"The rules' findings"** (AC1, AC2, AC5) are what a reviewed run of the same diff reports when the model finds nothing: the same `report/v1` findings, the same comments planned and posted, the same text output.
-- **"The summary starts"** (AC2) is read literally: the summary's text begins with "Degraded: no model was available, so only the built-in rules ran."
+- **"The summary starts"** (AC2) is read literally: the summary's text begins with "Degraded: no model was available, so only the rules ran."
 - **"The merge gate sees this head as not reviewed"** (AC2) is checked through the marker's `reviewed=`, which isn't the head; `pr gate` is S10's.
 - **AC6's findings** enter precision through `accept` shadow labels on the degraded report's would-be comments, written as `pr label` writes them (P3-S13's way). The degraded report is given usage and slow times no degraded run has, so any of it reaching latency, tokens or cost would show.
 - **AC7's "`agent` stage has `degraded` with the last category"** is one `agent` record that is a `degraded` event, or carries a `degraded` key, and whose `category` is the last attempt's.

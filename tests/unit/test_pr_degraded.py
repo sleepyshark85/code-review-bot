@@ -27,7 +27,7 @@ from review_bot.settings import Settings
 from review_bot.threshold import Decision
 from review_bot.verify import VerifyResult
 
-DEGRADED_LINE = "Degraded: no model was available, so only the built-in rules ran."
+DEGRADED_LINE = "Degraded: no model was available, so only the rules ran."
 STARTED = datetime(2026, 11, 14, 10, 0, tzinfo=UTC)
 DIFF = parse_diff(section("a.py", "+first\n+second\n"))
 DOWN = ProviderError(ErrorCategory.UNAVAILABLE, "Down.")

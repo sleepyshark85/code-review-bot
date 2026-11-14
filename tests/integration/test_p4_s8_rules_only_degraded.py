@@ -92,7 +92,7 @@ pytestmark = pytest.mark.integration
 
 UNAVAILABLE_EXIT = EXIT_CODES[ErrorCategory.UNAVAILABLE]
 RULES_ONLY = "rules_only"
-DEGRADED_HEADLINE = "Degraded: no model was available, so only the built-in rules ran."
+DEGRADED_HEADLINE = "Degraded: no model was available, so only the rules ran."
 SWALLOWED = "swallowed-exception"
 JOBS = "src/jobs.py"
 JOBS_V1 = ["def run(job):", "    try:", "        job()", "    except Exception:", "        pass"]

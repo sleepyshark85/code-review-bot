@@ -70,7 +70,7 @@ _REACTION_REQUEST: Final = (
     "Is this right and worth acting on? React with a thumbs-up if so, or a thumbs-down if not."
 )
 _NEW_PARAGRAPH: Final = "\n\n"
-_DEGRADED: Final = "Degraded: no model was available, so only the built-in rules ran."
+_DEGRADED: Final = "Degraded: no model was available, so only the rules ran."
 # What ``comment_body`` writes on its first and last lines, read back exactly.
 _SEVERITY_HEADING: Final = re.compile(rf"\*\*({'|'.join(Severity)})\*\* ")
 _CONFIDENCE_SHOWN: Final = re.compile(r", confidence ([01]\.[0-9]{2})\)$")
