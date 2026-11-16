@@ -2,7 +2,16 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 complete: shadow precision 42/42 (Wilson 95% 91.6–100%), with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC by the owner ([evidence](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2)); the bot now comments on PRs · Phase 3 closed (0.4.0) as an owner-accepted exception: on 9 eval cases the precision gain is inconclusive (49.1% against 33.8%, intervals overlap), the recall clause isn't met, and the labelled-PR comparison wasn't run ([evidence](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3)) · Phase 4 in progress · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-12
+**Status** (last updated 2026-11-16; owner [@sleepyshark85](https://github.com/sleepyshark85)):
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 Stabilise | Done (0.1.0) | [test report](docs/phases/phase-0/test-report.md) |
+| 1 Trustworthy core | Done (0.2.0), with one accepted eval miss (`double-tax`) | [test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result) |
+| 2 Integrated | Done (0.3.0). Shadow precision on real PRs was 42/42 (Wilson 95% 91.6–100%). The owner waived the 3-week window. The bot now comments on PRs | [test report](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2) |
+| 3 Context-aware | Done (0.4.0), as an owner-accepted exception. The recall clause isn't met, and the labelled-PR comparison wasn't run. Eval precision (33.8% diff, 49.1% context) counts valid findings the answer key lacks as wrong, so it understates the bot | [test report](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3), [eval plan §1.3](docs/eval-plan.md#13-precision-on-eval-cases) |
+| 4 Governed | In progress: 9 of 16 slices merged, all off by default (policy file, second provider, tool policy, redaction, gate decisions, model fallback, rules-only reviews, eval gate in CI). Next is the required merge check (S10). Closing needs the owner's security sign-off and a quarter of SLO data | [slices](docs/phases/phase-4/design.md) |
+| 5 Catalogue | Not started. Evals are planned for it | [eval plan](docs/eval-plan.md) |
 
 ## Usage
 
@@ -28,7 +37,7 @@ From a clone (`uv sync`, then prefix each with `uv run`), which may include unre
 | `python -m review_bot DIFF --context-repo DIR` | Lets the model read the repository through three read-only tools |
 | `python -m review_bot.pr shadow\|run` | Writes the review a pull request would get, or posts it (`--mode comment`) |
 | `python -m review_bot.pr label\|collect\|metrics\|compare\|baseline` | Judges findings, gathers reactions, and measures precision, cost and value |
-| `python -m review_bot.evals replay\|compare` | Scores recorded model runs offline |
+| `python -m review_bot.evals replay\|compare\|gate` | Scores recorded model runs offline; `gate` fails CI when a prompt or an allowed model has no fresh, passing evals |
 | `python -m review_bot.evals live`, `python -m review_bot.pr backfill` | Live runs that spend real tokens, each capped; CI runs them through the `Live` workflow |
 
 A diff holding a possible secret is never sent (exit `16`). The diff and tool results are treated as untrusted data. Every run is traced by default in `.review-bot/audit.jsonl`, which never holds diff lines or secret values. Every same-repo PR on this repository gets a shadow review that posts nothing, unless the `REVIEW_BOT_MODE` variable says otherwise.
@@ -45,7 +54,7 @@ A diff holding a possible secret is never sent (exit `16`). The diff and tool re
 | [1 Trustworthy core](docs/phases/phase-1/design.md) | Findings that can be trusted, triaged and measured | Planted bugs caught, noise budget, injection eval, valid anchors | suggest |
 | [2 Integrated](docs/phases/phase-2/design.md) | Real PRs without noise | Weeks of shadow mode with precision measured, baseline, owner | observe → comment |
 | [3 Context-aware](docs/phases/phase-3/design.md) | Fewer guesses, deeper findings | Precision and recall beat Phase 2; cost within budget | comment |
-| 4 Governed | Safe at organisation scale | Security sign-off; SLOs met for a quarter | gate |
+| [4 Governed](docs/phases/phase-4/design.md) | Safe at organisation scale | Security sign-off; SLOs met for a quarter | gate |
 | 5 Catalogue | More agents on one platform | Own evals and acceptance target per agent | act |
 
 **Full plan:** [docs/roadmap.md](docs/roadmap.md): the inherited tool, the north star and targets, who owns what, each phase's scope and seams, and the risks.
