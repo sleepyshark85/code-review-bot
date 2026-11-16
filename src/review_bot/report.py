@@ -12,6 +12,7 @@ from typing import Final
 
 from review_bot.context.ledger import ToolCall
 from review_bot.diff_parser import FileDiff, ParsedDiff
+from review_bot.errors import ProviderError
 from review_bot.findings import ReviewedFinding
 from review_bot.governance.policy import Policy
 from review_bot.governance.redaction import RedactionCounts
@@ -48,7 +49,10 @@ class PipelineResult:
     ``policy`` is the policy the review ran under. ``redaction`` counts the personal data masked
     in what was sent, by source (``diff``, ``tools``, ``issues``), leaving out any source with
     none. ``route`` holds each model the review tried or skipped, in order, the last one
-    serving; it is empty if the model wasn't called.
+    serving unless the review degraded; it is empty if the model wasn't called. ``degraded``
+    is the provider's failure when the review reports only the rules' findings instead
+    (``rules_only``): the model was called, so ``model_called`` is True, but none served, so
+    there are no model findings and usage is zero.
     """
 
     verification: VerifyResult
@@ -65,6 +69,7 @@ class PipelineResult:
     cost_usd: Decimal | None = None
     redaction: Mapping[str, RedactionCounts] = field(default_factory=dict)
     route: tuple[Attempt, ...] = ()
+    degraded: ProviderError | None = None
 
 
 class TriageDecision(StrEnum):

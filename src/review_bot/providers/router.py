@@ -24,7 +24,7 @@ from review_bot.providers.base import (
 
 # ``Attempt`` is defined beside ``ReviewResponse``, which holds it, and named here too, with the
 # router that makes it (Phase 4 design, Interfaces).
-__all__ = ["Attempt", "Route", "RoutingProvider"]
+__all__ = ["Attempt", "Route", "RoutingProvider", "is_routable"]
 
 _ROUTABLE: Final = frozenset(
     {ErrorCategory.UNAVAILABLE, ErrorCategory.TRANSIENT, ErrorCategory.RATE_LIMIT}
@@ -122,11 +122,19 @@ class RoutingProvider:
                 )
             attempts.append(Attempt(route.name, failure.category, None))
             denied.extend(failure.denied_tools)
-            # A cap was the review's own limit, so another route would only spend it again.
-            if failure.category not in _ROUTABLE or failure.cap is not None:
+            if not is_routable(failure):
                 break
         if failure is None:
             failure = ProviderError(ErrorCategory.AUTH, _NO_CREDENTIAL_MESSAGE)
         failure.attempts = tuple(attempts)
         failure.denied_tools = tuple(denied)
         raise failure
+
+
+def is_routable(error: ProviderError) -> bool:
+    """Whether ``error`` says the model was unavailable, so another route, or the rules, may serve.
+
+    Only ``unavailable``, ``transient`` and ``rate_limit`` are, and only with no cap: a cap was
+    the review's own limit, so another route would only spend it again (ADR 0021).
+    """
+    return error.category in _ROUTABLE and error.cap is None

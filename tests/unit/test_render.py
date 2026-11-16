@@ -8,7 +8,7 @@ from markdown_it.token import Token
 
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.diff_parser import FileDiff, ParsedDiff, SkipReason
-from review_bot.errors import ErrorCategory
+from review_bot.errors import ErrorCategory, ProviderError
 from review_bot.findings import (
     Category,
     EvidenceSpan,
@@ -191,6 +191,7 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         },
         "redaction": {},
         "route": [],
+        "degraded": None,
     }
     assert list(json.loads(render(result))) == [
         "schema",
@@ -208,7 +209,15 @@ def test_render_json_writes_every_report_field_in_a_fixed_order() -> None:
         "policy",
         "redaction",
         "route",
+        "degraded",
     ]
+
+
+def test_render_json_marks_a_degraded_review_rules_only() -> None:
+    failure = ProviderError(ErrorCategory.UNAVAILABLE, "Down.")
+    result = dataclasses.replace(pipeline_result(), degraded=failure)
+
+    assert json.loads(render(result))["degraded"] == "rules_only"
 
 
 def test_render_json_writes_each_attempt_of_the_route_in_order() -> None:

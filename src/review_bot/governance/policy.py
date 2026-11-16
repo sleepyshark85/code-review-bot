@@ -19,6 +19,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainValidator,
+    StrictBool,
     ValidationError,
     model_validator,
 )
@@ -68,8 +69,8 @@ _MAX_COST_USD: Final = Decimal(1000)
 _MAX_SHOWN_CHARS: Final = 100
 _KNOWN_KEYS: Final = (
     "version, [tools] allowed, [cost] max_cost_usd, [redaction] kinds, [[models]] provider, "
-    "model, modes and base_url, [routing] fallback, and [[gate.classes]] rule, min_severity, "
-    "min_confidence, approved_by and approved_on"
+    "model, modes and base_url, [routing] fallback and degrade_to_rules, and [[gate.classes]] "
+    "rule, min_severity, min_confidence, approved_by and approved_on"
 )
 # As ``Settings.model`` allows, so every listed model can be asked for.
 _MODEL: Final = re.compile(r"[\w.:/@\[\]][\w.:/@\[\]-]*")
@@ -124,7 +125,8 @@ class Policy:
     ``gate_classes`` are the finding classes a repository may gate a merge on; none gates
     nothing. ``models`` are the models a review may use, primary first; none allows any model.
     ``fallback`` is the entry of ``models`` tried when the primary is unavailable (ADR 0021),
-    or None for no fallback.
+    or None for no fallback. ``degrade_to_rules`` says whether a review every route failed
+    with a routable category reports the rules' findings instead, as ``degraded``.
     """
 
     version: str
@@ -136,6 +138,7 @@ class Policy:
     gate_classes: tuple[GateClass, ...] = ()
     models: tuple[ModelEntry, ...] = ()
     fallback: ModelEntry | None = None
+    degrade_to_rules: bool = False
 
 
 BUILTIN_POLICY: Final = Policy(
@@ -318,6 +321,7 @@ class _Routing(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     fallback: _Fallback | None = None
+    degrade_to_rules: StrictBool = False
 
 
 def _no_repeated_models(entries: list[_ModelEntry]) -> list[_ModelEntry]:
@@ -388,7 +392,8 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
             ``openai``, a model name ``Settings.model`` refuses, no modes or one other than
             ``diff`` and ``context``, or a ``base_url`` that isn't allowed or isn't an
             ``openai`` one; lists one provider and model twice; or ``[routing] fallback`` isn't
-            an entry with the same provider, model and ``base_url``. The message names
+            an entry with the same provider, model and ``base_url``, or ``degrade_to_rules``
+            isn't a boolean. The message names
             ``source`` and the key or the problem.
     """
     if len(data) > MAX_POLICY_BYTES:
@@ -429,6 +434,7 @@ def parse_policy(data: bytes, *, source: str) -> Policy:
         ),
         models=models,
         fallback=_listed_fallback(parsed.routing.fallback, models, source),
+        degrade_to_rules=parsed.routing.degrade_to_rules,
     )
 
 

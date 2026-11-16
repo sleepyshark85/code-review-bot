@@ -83,6 +83,8 @@ REPORT_KEYS = (
     "redaction",
     # Appended by P4-S7 (AC1, AC4): each attempt, one for a run that didn't fall back.
     "route",
+    # Appended by P4-S8 (Interfaces): null, or "rules_only" when every model was down.
+    "degraded",
 )
 COUNT_KEYS = ("reported", "below_threshold", "dropped", "deduped", "rejected", "undecided")
 FINDING_KEYS = frozenset(
@@ -154,9 +156,7 @@ def report(run: Any) -> dict[str, Any]:
     assert isinstance(document, dict), "the document isn't a JSON object"
     assert set(document) == set(REPORT_KEYS), sorted(document)
     # Report keys are appended only (Phase 3 design, "Report keys, appended only").
-    assert tuple(document)[-5:] == ("mode", "context", "policy", "redaction", "route"), tuple(
-        document
-    )
+    assert tuple(document)[-6:] == REPORT_KEYS[-6:], tuple(document)
     assert document["schema"] == SCHEMA
     assert isinstance(document["run_id"], str)
     assert document["run_id"]
