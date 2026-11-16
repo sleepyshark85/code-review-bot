@@ -2,7 +2,16 @@
 
 An automated PR reviewer for RightShip, and the first agent on a shared agent platform.
 
-> **Status:** Phase 1 complete, with one documented eval miss ([test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result)) · Phase 2 complete: shadow precision 42/42 (Wilson 95% 91.6–100%), with the 3-week window waived and the sample cut at 2026-11-11 14:56 UTC by the owner ([evidence](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2)); the bot now comments on PRs · Phase 3 closed (0.4.0) as an owner-accepted exception: on 9 eval cases the precision gain is inconclusive (49.1% against 33.8%, intervals overlap), the recall clause isn't met, and the labelled-PR comparison wasn't run ([evidence](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3)) · Phase 4 in progress, 9 of 16 slices merged, all off by default: a policy file, an OpenAI-compatible second provider, tool policy enforced by Claude, redaction, gate decisions, fallback to a second model, rules-only reviews when every model is down, and an eval gate on prompts and models in CI. Next is the required merge check (S10). The close needs the owner's security sign-off and a quarter of SLO data ([slices](docs/phases/phase-4/design.md)) · Evals: what exists today and the plan for Phase 5 are in [docs/eval-plan.md](docs/eval-plan.md) · **Owner:** [@sleepyshark85](https://github.com/sleepyshark85) · **Last updated:** 2026-11-16
+**Status** (last updated 2026-11-16; owner [@sleepyshark85](https://github.com/sleepyshark85)):
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 Stabilise | Done (0.1.0) | [test report](docs/phases/phase-0/test-report.md) |
+| 1 Trustworthy core | Done (0.2.0), with one accepted eval miss (`double-tax`) | [test report](docs/phases/phase-1/test-report.md#p1-s17-measure-the-real-model-and-hold-ci-to-the-result) |
+| 2 Integrated | Done (0.3.0). Shadow precision on real PRs was 42/42 (Wilson 95% 91.6–100%). The owner waived the 3-week window. The bot now comments on PRs | [test report](docs/phases/phase-2/test-report.md#p2-s12-close-phase-2) |
+| 3 Context-aware | Done (0.4.0), as an owner-accepted exception. The recall clause isn't met, and the labelled-PR comparison wasn't run. Eval precision (33.8% diff, 49.1% context) counts valid findings the answer key lacks as wrong, so it understates the bot | [test report](docs/phases/phase-3/test-report.md#p3-s15-close-phase-3), [eval plan §1.3](docs/eval-plan.md#13-precision-on-eval-cases) |
+| 4 Governed | In progress: 9 of 16 slices merged, all off by default (policy file, second provider, tool policy, redaction, gate decisions, model fallback, rules-only reviews, eval gate in CI). Next is the required merge check (S10). Closing needs the owner's security sign-off and a quarter of SLO data | [slices](docs/phases/phase-4/design.md) |
+| 5 Catalogue | Not started. Evals are planned for it | [eval plan](docs/eval-plan.md) |
 
 ## Usage
 
