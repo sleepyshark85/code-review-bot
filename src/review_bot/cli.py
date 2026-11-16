@@ -126,6 +126,11 @@ _INTERNAL_ERROR_MESSAGE: Final = (
 
 _CANNED_WARNING: Final = "review-bot: warning: MockProvider output is canned, not a real review."
 
+_DEGRADED_WARNING: Final = (
+    "review-bot: warning: degraded: no model was available, so only the rules ran. "
+    "The error below says why."
+)
+
 _NOTHING_REVIEWED_WARNING: Final = (
     "review-bot: warning: nothing was reviewed: every changed file was skipped: "
 )
@@ -471,10 +476,11 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     output = _render_report(result, settings, audit.run_id, triage)
     dropped_count = len(result.verification.dropped)
     summary = _summarise(result, settings, audit.run_id)
-    exit_code = 1 if _shown(result, triage) else 0
 
     write_output(output)
-    if not result.model_called:
+    if result.degraded is not None:
+        write_diagnostic(_DEGRADED_WARNING)
+    elif not result.model_called:
         write_diagnostic(_nothing_reviewed_warning(result.skipped_files))
     elif settings.provider == "mock":
         write_diagnostic(_CANNED_WARNING)
@@ -482,6 +488,12 @@ def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         # Otherwise the run would look clean (ADR 0006).
         write_diagnostic(_all_dropped_warning(dropped_count))
     write_diagnostic(summary)
+    if result.degraded is not None:
+        # The provider's code, so a degraded run still shows as failed (ADR 0021).
+        failure_exit_code = report_failure(result.degraded)
+        record_failed_end(audit, failure_exit_code, result.degraded)
+        return failure_exit_code
+    exit_code = 1 if _shown(result, triage) else 0
     # After stdout, so a failure here exits 17 with the report already delivered.
     audit.record(Stage.RUN, "end", {"exit_code": exit_code, "error": None})
     return exit_code
@@ -502,7 +514,8 @@ def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     ``policy`` is the policy the review is under, which ``settings`` are within. ``context`` is
     the commit the model's tools read; None reviews in diff mode. With no ``provider``, the
     settings' own is routed to the policy's fallback, if any (``build_routed_provider``), with
-    ``openai_api_key``.
+    ``openai_api_key``. If every route is unavailable, the review degrades to the rules'
+    findings as the policy's ``degrade_to_rules`` says.
 
     Raises:
         ReviewBotError: As ``run_pipeline`` does; any other ``BaseException`` the review raises
@@ -520,7 +533,13 @@ def run_review(  # noqa: PLR0913 - policy, context and the key are keyword-only
     else:
         selected_provider = provider
     review = run_pipeline(
-        diff_path, settings, selected_provider, audit, context=context, policy=policy
+        diff_path,
+        settings,
+        selected_provider,
+        audit,
+        context=context,
+        policy=policy,
+        degrade_to_rules=policy.degrade_to_rules,
     )
     if uses_own_claude(settings, provider):
         review = then_discard_unraisable(review)
