@@ -177,12 +177,13 @@ class ShadowReport:
     ``codeowners`` is the base commit's CODEOWNERS, which names each entry's owners, or None if
     the run read none: it planned no comments, or ran on a local diff. ``since`` is the last
     reviewed commit a comment mode run started from, the head or an ancestor of it, else None.
-    ``error`` is the error that ended the run, if any, for the caller's message and exit code;
-    it is never written. ``cost_usd`` is the review's cost as the provider reported it, None if
-    it reported none or the model wasn't called. ``issues`` are the issues a context review
-    read for the pull request, of which only each number and status is written. ``gate`` is the
-    run's merge-gate decision (``with_gate``): ``not_enabled`` until a gated run decides it, or
-    ``unjudged`` for ``no_config`` when the run read no valid config.
+    ``error`` is the error that ended the run, or the provider failure it degraded after, if
+    any, for the caller's message and exit code; it is never written. ``cost_usd`` is the
+    review's cost as the provider reported it, None if it reported none or the model wasn't
+    called. ``issues`` are the issues a context review read for the pull request, of which only
+    each number and status is written. ``gate`` is the run's merge-gate decision
+    (``with_gate``): ``not_enabled`` until a gated run decides it, or ``unjudged`` for
+    ``no_config`` when the run read no valid config.
     """
 
     run_id: str
@@ -242,7 +243,9 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
     comments are planned against those instead. With nothing new since that commit
     (``no_new_changes``), it is ``reviewed`` with no findings, so it only resolves comments
     whose anchored lines are gone. A comment mode summary also counts the bot's comments open
-    once the plan is applied (``reviewed_summary``). A review that skipped every file is
+    once the plan is applied (``reviewed_summary``). A review that degraded to the rules'
+    findings is planned the same way, but is ``degraded`` with its provider error's category,
+    and keeps that error, so the run exits with its code. A review that skipped every file is
     ``skipped``, ``nothing_to_review``; a refused run is ``skipped`` with its reason; a secret
     is ``blocked_secret``; a diff that can't be reviewed is ``skipped`` with its reason; an
     invalid repository config is ``failed``, ``invalid_config``; and a provider error is
@@ -289,7 +292,10 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
         # A rationale can quote a secret that withholds its comment; no file may hold it.
         document = report_document(review, settings, run_id)
         report = {key: _redacted(value) for key, value in document.items()}
-        outcome, reason = Outcome.REVIEWED, None
+        error = review.degraded
+        category = None if error is None else error.category
+        outcome = Outcome.REVIEWED if error is None else Outcome.DEGRADED
+        reason = category
         summary = reviewed_summary(
             plan,
             threshold=settings.threshold,
@@ -297,6 +303,7 @@ def build_shadow_report(  # noqa: PLR0913 - keyword-only, each a separate input 
             # Shadow mode posts nothing, so no comment of the bot's is open.
             open_comments=0 if mode is Mode.SHADOW else plan.open_after,
             codeowners=codeowners or NO_CODEOWNERS,
+            degraded=category,
         )
     elif isinstance(review, PipelineResult):
         outcome, reason, summary = _skipped(Reason.NOTHING_TO_REVIEW)

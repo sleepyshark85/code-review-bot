@@ -31,6 +31,7 @@ from review_bot.evals.formats import (
     RecordedRun,
     Recording,
     find_case_files,
+    live_recording_dir,
     load_case,
     load_recording,
 )
@@ -44,6 +45,7 @@ from review_bot.evals.score import (
 from review_bot.findings import Finding, Source
 from review_bot.governance.policy import (
     BUILTIN_POLICY,
+    ModelProvider,
     Policy,
     check_context_allowed,
     check_settings,
@@ -69,10 +71,12 @@ __all__ = [
     "case_domain_rules",
     "check_sendable",
     "freshness_fields",
+    "read_live_recording",
     "replay_both_modes",
     "replay_cases",
     "require_live",
     "score_recording",
+    "stale_text",
 ]
 
 _LIVE_COMMAND: Final = "python -m review_bot.evals live --cases DIR --runs N --max-calls M"
@@ -182,12 +186,14 @@ async def replay_cases(
     *,
     mode: EvalMode = "diff",
     policy: Policy = BUILTIN_POLICY,
+    provider: ModelProvider = "claude",
 ) -> list[CaseResult]:
     """Score every case under ``cases_dir`` on its live recording of ``mode``, or on rules alone.
 
-    ``control`` is a synthetic recording (``--recording``) of ``mode`` that replaces its case's
-    live one. A stale recording fails its case without scoring it. Each case is reviewed under
-    ``policy``, which must allow a tool in context mode.
+    Each live recording read is ``provider``'s. ``control`` is a synthetic recording
+    (``--recording``) of ``mode`` that replaces its case's live one. A stale recording fails its
+    case without scoring it. Each case is reviewed under ``policy``, which must allow a tool in
+    context mode.
 
     Raises:
         EvalInputError: If a case or a recording read is invalid, a recording sits under the
@@ -199,7 +205,7 @@ async def replay_cases(
     if mode == "context":
         check_context_allowed(policy)
     cases = [load_case(case_file) for case_file in find_case_files(cases_dir)]
-    recordings = {loaded.case.id: _live_recordings(loaded)[mode] for loaded in cases}
+    recordings = {loaded.case.id: _live_recordings(loaded, provider)[mode] for loaded in cases}
     for loaded in cases:
         _check_synthetic_recordings(loaded)
     if control is not None:
@@ -307,12 +313,8 @@ async def score_recording(
             today = _case_freshness(loaded, repo, domain_rules, policy)
             stale = [name for name, value in today.items() if getattr(recording, name) != value]
             if stale:
-                verb = "differs" if len(stale) == 1 else "differ"
-                problem = (
-                    f"the recording is stale: its {', '.join(stale)} {verb} from today's, so it "
-                    f"wasn't scored. {_refresh_advice(recording)}"
-                )
-                return CaseResult(case_id, recording, None, (problem,))
+                problem = f"the recording is {stale_text(stale)}. {_refresh_advice(recording)}"
+                return CaseResult(case_id, recording, None, (problem,), tuple(stale))
         # As ``review-bot --context-repo`` reviews: the repo isn't known to be the diff's head.
         context = (
             None
@@ -322,6 +324,12 @@ async def score_recording(
         review = _CaseReview(context=context, domain_rules=domain_rules, policy=policy)
         evidence = await _replay_case(loaded, recording, review, Path(work_dir) / "audit.jsonl")
     return CaseResult(case_id, recording, score_case(loaded.case, evidence))
+
+
+def stale_text(stale_fields: Sequence[str]) -> str:
+    """Such as ``stale: its diff_sha256 differs from today's, so it wasn't scored``."""
+    verb = "differs" if len(stale_fields) == 1 else "differ"
+    return f"stale: its {', '.join(stale_fields)} {verb} from today's, so it wasn't scored"
 
 
 def build_case_repo(loaded: LoadedCase, work_dir: Path) -> FixtureRepo:
@@ -355,29 +363,39 @@ def _refresh_advice(recording: Recording) -> str:
     )
 
 
-def _live_recordings(loaded: LoadedCase) -> dict[EvalMode, Recording | None]:
-    """The case's live recording of each mode, or None where it has none.
+def _live_recordings(
+    loaded: LoadedCase, provider: ModelProvider = "claude"
+) -> dict[EvalMode, Recording | None]:
+    """The case's live recording of each mode by ``provider``, or None where it has none.
 
     Raises:
         EvalInputError: If one is invalid, synthetic, of another case or of the other mode.
     """
-    return {mode: _live_recording(loaded, mode) for mode in MODES}
+    return {mode: read_live_recording(loaded, mode, provider) for mode in MODES}
 
 
-def _live_recording(loaded: LoadedCase, mode: EvalMode) -> Recording | None:
-    path = loaded.live_recording_path(mode)
+def read_live_recording(
+    loaded: LoadedCase, mode: EvalMode, provider: ModelProvider
+) -> Recording | None:
+    """The case's live recording of ``mode`` by ``provider``, or None if it has none.
+
+    Raises:
+        EvalInputError: If it is invalid, synthetic, of another case or of the other mode.
+    """
+    path = loaded.live_recording_path(mode, provider)
     if not path.is_file():
         return None
     recording = load_recording(path)
+    directory = live_recording_dir(mode, provider)
     if recording.kind != "live":
         raise EvalInputError(
-            f"{path} is a {recording.kind} recording under {_live_directory(mode)}. Move it to "
+            f"{path} is a {recording.kind} recording under {directory}. Move it to "
             "recordings/synthetic/: only --recording reads a synthetic one."
         )
     if recording.mode != mode:
         raise EvalInputError(
-            f"{path} is a {recording.mode}-mode recording under {_live_directory(mode)}, which "
-            f"holds {mode}-mode ones. Move it to {_live_directory(recording.mode)}."
+            f"{path} is a {recording.mode}-mode recording under {directory}, which "
+            f"holds {mode}-mode ones. Move it to {live_recording_dir(recording.mode, provider)}."
         )
     if recording.case_id != loaded.case.id:
         raise EvalInputError(
@@ -387,17 +405,13 @@ def _live_recording(loaded: LoadedCase, mode: EvalMode) -> Recording | None:
     return recording
 
 
-def _live_directory(mode: EvalMode) -> str:
-    return "recordings/live/" if mode == "diff" else "recordings/live-context/"
-
-
 def _check_synthetic_recordings(loaded: LoadedCase) -> None:
     for path in sorted((loaded.file.parent / "recordings" / "synthetic").glob("*.json")):
         recording = load_recording(path)
         if recording.kind != "synthetic":
             raise EvalInputError(
                 f"{path} is a {recording.kind} recording under recordings/synthetic/. Move it "
-                f"to {_live_directory(recording.mode)}recording.json."
+                f"to {live_recording_dir(recording.mode)}recording.json."
             )
 
 

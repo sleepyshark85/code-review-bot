@@ -125,9 +125,13 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
     reads the base commit's CODEOWNERS too (``_code_owners``), to name the owners of each
     finding.
 
+    If every route is unavailable and ``policy`` says ``degrade_to_rules``, the run is
+    ``degraded``: it reports the rules' findings, as a review would its own (P4-S8).
+
     In comment mode, the run reviews only what changed since the last commit the bot reviewed,
-    when it can (``_review``). A ``reviewed`` run plans against the bot's comments on ``pr`` and
-    applies the plan (``_apply``); a ``blocked_secret`` or ``failed`` one only writes its
+    when it can (``_review``). A ``reviewed`` or ``degraded`` run plans against the bot's
+    comments on ``pr`` and applies the plan (``_apply``), though only a ``reviewed`` one
+    records the head as reviewed; a ``blocked_secret`` or ``failed`` one only writes its
     summary; a ``skipped`` one writes nothing, and reads at most the summary. A call that fails
     stops the rest, and the report holds its error.
 
@@ -176,6 +180,7 @@ async def run_pull_request(  # noqa: PLR0913 - keyword-only collaborators, as th
         audit=audit,
         clock=clock,
         gating_on=gating_on,
+        degrade_to_rules=policy.degrade_to_rules,
     )
 
 
@@ -195,7 +200,8 @@ async def backfill_pull_request(  # noqa: PLR0913 - keyword-only collaborators, 
     A fork, or a pull request whose base or head commit isn't in the clone, is refused: the
     provider doesn't run, and the report is ``skipped`` with that reason. As in
     ``run_pull_request``, the base commit's ``.review-bot.toml`` sets the policy. The report's
-    ``origin`` is ``backfill``, and its mode ``shadow``.
+    ``origin`` is ``backfill``, and its mode ``shadow``. A backfill measures the model, so it
+    never degrades to the rules' findings, whatever ``policy`` says.
 
     Args:
         pr: The pull request, from the pulls file.
@@ -244,12 +250,13 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
     audit: AuditLog,
     clock: Callable[[], datetime],
     gating_on: bool = False,
+    degrade_to_rules: bool = False,
 ) -> ShadowReport:
     """Review the pull request unless ``refusal`` says why not, then report and apply it.
 
     A review runs under the base commit's repository config, which can set its threshold and
     the classes that gate the merge. ``github`` is given exactly in comment mode, as
-    ``run_pull_request`` checks.
+    ``run_pull_request`` checks. ``degrade_to_rules`` is as ``review_diff`` takes it.
     """
     started_at = clock()
     audit.record(
@@ -285,7 +292,17 @@ async def _run(  # noqa: PLR0913 - the run's inputs, passed through
                 issues = _LinkedIssues(pr, issue_reader)
                 context = _review_context(pr, git, issues)
             review = await _review(
-                pr, git, github, make_provider, settings, policy, config, context, audit, gated
+                pr,
+                git,
+                github,
+                make_provider,
+                settings,
+                policy,
+                config,
+                context,
+                audit,
+                gated,
+                degrade_to_rules=degrade_to_rules,
             )
     existing: tuple[BotComment, ...] = ()
     codeowners: CodeOwners | None = None
@@ -545,12 +562,15 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
     context: ReviewContext | None,
     audit: AuditLog,
     gated: _Gated | None,
+    *,
+    degrade_to_rules: bool,
 ) -> _Review:
     """Diff the pull request and review it: all of it, or only what changed since last time.
 
     The review runs under ``config``: files matching an ``exclude`` glob are skipped, as the
     built-in skips are, and its domain rules run with the built-in rules. ``context`` is what
-    the model may look up; None reviews in diff mode.
+    the model may look up; None reviews in diff mode. ``degrade_to_rules`` is as
+    ``review_diff`` takes it.
 
     The PR diff comes first, so a diff that can't be reviewed, or whose files are all skipped,
     is reported with no GitHub call. Otherwise, in comment mode, the bot's summary says the
@@ -582,6 +602,7 @@ async def _review(  # noqa: PLR0913, PLR0917 - the run's inputs, passed through
         config=config,
         context=context,
         audit=audit,
+        degrade_to_rules=degrade_to_rules,
     )
     if github is None or parsed is None:
         return _Review(await review_part(diff, name), whole_diff=whole_diff)
@@ -688,11 +709,12 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
     config: RepoConfig,
     context: ReviewContext | None,
     audit: AuditLog,
+    degrade_to_rules: bool,
 ) -> PipelineResult | ReportedError:
     """Review ``diff`` under ``config``, its exclusions and its domain rules, and ``policy``.
 
     ``context`` is the commit the model's tools read; None reviews in diff mode. An error that
-    still ends in a report is returned.
+    still ends in a report is returned. ``degrade_to_rules`` is as ``review_diff`` takes it.
     """
     try:
         return await review_diff(
@@ -705,6 +727,7 @@ async def _review_diff(  # noqa: PLR0913 - the run's inputs, keyword-only
             context=context,
             domain_rules=config.domain_rules,
             policy=policy,
+            degrade_to_rules=degrade_to_rules,
         )
     except REPORTED_ERRORS as exc:
         return exc

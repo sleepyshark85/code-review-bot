@@ -482,3 +482,131 @@ From this slice's file alone, after review round 1: `providers/router.py` 95% (l
 - **A tool-call cap failure** is covered for Claude's and the second provider's turn caps, and for the cost cap. A message asking for more calls than the cap fails `invalid_output` (P4-S6 Limits), which AC2's `invalid_output` cases cover.
 - **Routing from the second provider to Claude** isn't tested. AC1's direction and two second-provider models cover the router.
 - **The fallback's live runs** are S14's.
+
+## P4-S8: Report the rules' findings when every model is down
+
+Spec: [p4-s8-rules-only-degraded.md](slices/p4-s8-rules-only-degraded.md). Tests: [`tests/integration/test_p4_s8_rules_only_degraded.py`](../../../tests/integration/test_p4_s8_rules_only_degraded.py), 55 cases for AC1 to AC7 and the Interfaces.
+
+The tests were written from the spec's criteria and Interfaces, design.md ("Second provider and routing", "Merge gating", Report keys) and ADR 0021, while the developer built the slice and before their code was read. As in P4-S7's suite, every degraded run builds its own providers from the policy: Claude's SDK `query` is a scripted `FakeSdk`, and the second provider sends through P4-S2's scripted `HttpTransport`. `pr run` runs drive P4-S5's `GatePR` (a real git repository, the developer's `FakeGitHubClient`), with a policy listing Claude and `openai:m1`, the fallback `openai:m1` and `degrade_to_rules = true`. The controls that review normally are `MockProvider` runs on a twin pull request (same files and fixed commit dates, so the same SHAs and fingerprints), or a Claude run answering with no findings.
+
+**Status: every criterion passes (55 of 55).** The run was on the developer's uncommitted working tree (base `e76007b`).
+
+### Gate
+
+A partial run in small groups, since the full suite runs out of memory on this machine: this slice's file (55 passed), `test_p1_s10_json_output.py` (124 passed, 2 skipped), `test_p4_s4_redaction.py` with `test_p2_s1_shadow_report_local.py`, `test_p4_s7_fallback_routing.py` with `test_p2_s10_metrics.py` (137 passed), `test_p4_s5_gate_decision.py` (159 passed) and `test_p3_s8_pr_review_with_context.py` (57 passed). `ruff format --check` and `ruff check` are clean on the changed test files. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **"The rules' findings"** (AC1, AC2, AC5) are what a reviewed run of the same diff reports when the model finds nothing: the same `report/v1` findings, the same comments planned and posted, the same text output.
+- **"The summary starts"** (AC2) is read literally: the summary's text begins with "Degraded: no model was available, so only the rules ran."
+- **"The merge gate sees this head as not reviewed"** (AC2) is checked through the marker's `reviewed=`, which isn't the head; `pr gate` is S10's.
+- **AC6's findings** enter precision through `accept` shadow labels on the degraded report's would-be comments, written as `pr label` writes them (P3-S13's way). The degraded report is given usage and slow times no degraded run has, so any of it reaching latency, tokens or cost would show.
+- **AC7's "`agent` stage has `degraded` with the last category"** is one `agent` record that is a `degraded` event, or carries a `degraded` key, and whose `category` is the last attempt's.
+
+### Criteria
+
+Test names drop the `test_p4_s8_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_shadow_outcome_is_degraded_with_reason_unavailable`. `ac1_report_degraded_is_rules_only`. `ac1_exit_code_is_the_providers` (7). `ac1_findings_are_exactly_the_rules_findings` (equal to the twin's reviewed findings: one `swallowed-exception`). `ac1_both_routes_were_tried`. `ac1_without_a_fallback_the_lone_unavailable_route_degrades`. `ac1_any_routable_last_failure_degrades_with_its_category_and_exit_code` ×3 (`unavailable` then `transient`, `transient` then `rate_limit`, `rate_limit` then `unavailable`). `ac1_a_diff_without_rule_findings_degrades_to_no_findings`. After review: `ac1_fallback_skipped_for_no_key_still_degrades` (no `OPENAI_API_KEY`, so the fallback is skipped and no POST is sent) | pass (11) |
+| AC2 | `ac2_rule_findings_are_planned_and_posted_as_in_a_reviewed_run` (the same plan entries and the same posted comments as the twin's reviewed run). `ac2_summary_starts_with_the_degraded_sentence`. `ac2_first_run_keeps_reviewed_none`. `ac2_summary_keeps_the_previous_reviewed_sha` (and it isn't the head). `ac2_next_run_reviews_from_the_kept_sha` (scope `incremental` since `A`, and the degraded push's change reaches the model). `ac2_summary_is_written_with_gating_on_too` | pass (6) |
+| AC3 | `ac3_degrade_off_fails_as_today` ×2 (`false`, and the key left out). `ac3_builtin_policy_fails_as_today`. `ac3_degrade_off_comment_summary_is_the_failed_one` (nothing posted). `ac3_unroutable_primary_failure_fails_with_degrade_on` ×4 (`auth`, `refusal`, `invalid_output`, `permanent`). `ac3_unroutable_last_failure_after_an_unavailable_primary_fails` ×2 (the fallback fails `auth` or `permanent`). `ac3_a_cost_cap_failure_fails_with_degrade_on`. In diff mode: `ac5_degrade_off_prints_no_report` | pass (12) |
+| AC4 | `ac4_money_rule_finding_blocks_a_degraded_run` (`block`, exactly P4-S5's money blocker). `ac4_marker_lists_the_money_blocker_and_keeps_reviewed`. `ac4_no_blocker_is_unjudged_never_pass`. `ac4_a_carried_ai_blocker_still_blocks_a_degraded_run`. `ac4_shadow_mode_would_block_on_the_money_finding` | pass (5) |
+| AC5 | `ac5_json_report_is_rules_only_and_exit_is_the_providers`. `ac5_json_findings_are_the_rules_findings` (the sample diff's, equal to a reviewed run's). `ac5_text_output_prints_the_rule_findings_as_usual` (stdout equal to a reviewed run's). `ac5_stderr_says_the_review_is_degraded_and_why`. `ac5_degraded_after_a_transient_fallback_exits_transient` | pass (5) |
+| Interfaces | `interfaces_reviewed_report_has_degraded_null`. `interfaces_degraded_is_appended_after_route`. `interfaces_injected_mock_report_has_degraded_null` | pass (3) |
+| AC6 | `ac6_degraded_is_counted_as_its_own_outcome` (`degraded`, reason `unavailable`). `ac6_text_names_the_degraded_outcome`. `ac6_degraded_run_is_left_out_of_latency`. `ac6_degraded_run_is_left_out_of_tokens`. `ac6_degraded_run_is_left_out_of_cost` ($0.02, not $0.14). `ac6_degraded_findings_count_in_precision_by_source_rule` (2 accepted, 2 units, no orphans) | pass (6) |
+| AC7 | `ac7_pr_run_audit_agent_stage_has_degraded_with_the_category`. `ac7_degraded_record_holds_the_last_category_not_the_first` (`transient`). `ac7_rules_records_are_as_in_a_reviewed_run` (`static`/`rules`, equal to the twin's). `ac7_diff_mode_audit_has_degraded_and_the_rules_records`. `ac7_a_reviewed_run_has_no_degraded_record`. `ac7_a_failed_run_has_no_degraded_record`. `ac7_no_record_holds_diff_lines` | pass (7) |
+
+### Failures
+
+None.
+
+### Earlier suites changed
+
+Each keeps its intent. `report/v1` gains `degraded`, appended after `route`.
+
+- **`tests/fixtures/p1_s10/sample_report.golden.json`** gains `"degraded": null`.
+- **`test_p1_s10_json_output.py`**: `REPORT_KEYS` gains `degraded`, and the appended-only check covers the last six keys.
+
+### Coverage
+
+From this slice's file alone: `report.py` 90%, `providers/router.py` 83%, `pr/run_metrics.py` 86%, `pr/units.py` 92%, `pr/comments.py` 77%, `review.py` 77%, `pr/runner.py` 76%, `pr/shadow.py` 74%, `governance/policy.py` 66%, `render.py` 57% and `pr/cli.py` 58%. The shared modules' other paths belong to earlier slices' suites; the remaining S8 lines are left to the developer's unit tests.
+
+### Gaps
+
+- **`pr label`** offering a degraded report's would-be comments isn't tested; AC6 is about `metrics`, so its labels are written by hand.
+- **A `degraded` run's `over_budget`** isn't varied: no degraded run spends tokens, and `metrics` counts `over_budget` over every run, as before.
+- **The merge gate's view** (AC2) is S10's command; here it is the marker's `reviewed=`.
+
+## P4-S9: Gate prompt versions and models on evals
+
+Spec: [p4-s9-prompt-eval-gate.md](slices/p4-s9-prompt-eval-gate.md). Tests: [`tests/evals/test_p4_s9_prompt_eval_gate.py`](../../../tests/evals/test_p4_s9_prompt_eval_gate.py) (66 cases, for AC1 to AC7 and the Limits) and [`tests/integration/test_p4_s9_ci_eval_gate.py`](../../../tests/integration/test_p4_s9_ci_eval_gate.py) (10 cases, for AC8 and AC9). The tester also created [`tests/evals/gate.toml`](../../../tests/evals/gate.toml) from the developer's draft, and added the owner's two accepted misses of 2026-11-15 to it.
+
+The tests were written from the spec, design.md ("Versioned prompts and the eval gate") and ADR 0007 before the code existed. Every run goes through `review_bot.evals.main` in process. `live --provider openai` sends through P4-S2's scripted `HttpTransport`, and Claude's `live` goes through a fake `sdk_call`. Nothing calls a model.
+
+**Status: every criterion passes (76 of 76).** The first run had two failures with one cause, closed by the owner's decision of 2026-11-15 (see Failures).
+
+### Gate
+
+A partial run in small groups, since the full suite runs out of memory on this machine: the two S9 files and `tests/evals/test_p1_s16_eval_live_command.py`. `ruff format --check` and `ruff check` are clean on the changed tests. For the full gate, see the main session's run.
+
+### Seams and readings (assumed)
+
+- **AC1** changes the text by patching `prompt._SYSTEM_PROMPT` or `prompt._CONTEXT_SYSTEM_PROMPT`. Both are private, but patching them is the only way to change "the text" without editing `src/`. A second test changes the pin in `PROMPT_FINGERPRINTS` instead.
+- **"Naming the suite, the case and the reason"** (AC3) means that one output block holds all three. A block is a line at column 0 and the indented lines under it.
+- **AC7's counts:** a case whose only misses are accepted counts as passed (for example, `passed 9` with `accepted misses 2` in context mode).
+- **The owner decisions, checked:** `sample`/`double-tax` in diff mode (P1 test report, P1-S17, 2026-11-07), and `sample-context`'s `tax-discount-ordering` and `float-money` in context mode (P3 test report, P3-S15 AC2, 2026-11-10). `gate.toml` holds these three, plus the two diff-mode misses the owner accepted on 2026-11-15 (Failures).
+
+### Criteria
+
+Test names drop the `test_p4_s9_` prefix.
+
+| AC | Tests | Result |
+|---|---|---|
+| AC1 | `ac1_fingerprints_pin_the_diff_and_the_current_context_version`. `ac1_unchanged_prompts_pass_the_fingerprint_check`. `ac1_diff_prompt_text_changed_without_a_new_version_exits_1_naming_it`. `ac1_one_character_change_is_enough`. `ac1_changed_pin_for_the_current_version_exits_1_naming_it`. `ac1_context_prompt_text_changed_names_the_context_version`. `ac1_a_text_change_fails_even_with_an_empty_suite_list` | pass (7) |
+| AC2 | `ac2_committed_diff_suite_holds_the_phase_1_cases_and_the_accepted_miss`. `ac2_every_accepted_miss_has_an_approver_and_a_date`. `ac2_the_specs_one_suite_passes_on_the_committed_recordings` (the file exactly as AC2 gives it: exit 0). `ac2_gate_on_the_committed_suites_and_recordings_exits_0` | pass (4) |
+| AC3 | `ac3_missing_live_recording_exits_1_naming_suite_case_and_reason`. `ac3_synthetic_recording_alone_is_not_live_evidence`. `ac3_stale_recording_exits_1_naming_the_stale_field` ×3. `ac3_stale_prompt_version_is_named`. `ac3_two_stale_fields_are_both_named`. `ac3_another_models_recording_exits_1_naming_the_case`. `ac3_a_miss_that_isnt_accepted_exits_1_naming_the_bug`. `ac3_a_miss_accepted_for_another_bug_still_fails`. `ac3_a_new_miss_beside_the_accepted_one_still_fails`. `ac3_every_failure_is_reported_not_only_the_first` | pass (12) |
+| AC4 | `ac4_policy_model_with_no_suite_exits_1` ("no suite for openai:m1 in diff mode"). `ac4_policy_mode_with_no_suite_exits_1`. `ac4_suite_lacking_the_default_suites_cases_exits_1_naming_them`. `ac4_without_a_policy_the_default_model_needs_a_diff_suite`. `ac4_policy_with_only_the_default_model_in_diff_mode_passes`. `ac4_invalid_policy_exits_2` | pass (6) |
+| AC5 | `ac5_openai_live_diff_recording_goes_to_live_openai_with_model_m1`. `ac5_openai_live_context_recording_goes_to_live_openai_context`. `ac5_replay_with_provider_openai_scores_its_recordings`. `ac5_claude_replay_ignores_the_openai_recordings`. `ac5_claude_live_recording_path_is_unchanged`. `ac5_openai_recordings_by_m1_pass_the_gate_for_an_openai_suite` (end to end: exit 0) | pass (6) |
+| AC6 | An unknown key at the top level, in a suite and in an accepted miss. A missing suite field ×4 and a missing accepted-miss field ×3. An accepted miss with no `approved_by`. An unknown case ID in a suite and in an accepted miss. A field of the wrong type ×3. `ac6_invalid_suites_never_read_a_recording` | pass (17) |
+| Limits | A file over 64 KB (exit 2) and one just under (read). A malformed file ×4: not TOML, not UTF-8, empty, and `suite` not an array of tables. A missing file. A duplicate suite. A case ID holding a path | pass (10) |
+| AC7 | `ac7_text_has_one_line_per_suite_and_a_final_verdict`. `ac7_text_has_a_line_for_each_committed_suite`. `ac7_failed_run_says_so_in_its_final_verdict`. `ac7_json_is_eval_gate_v1_with_each_suite`. `ac7_json_on_a_failed_run_still_exits_1` | pass (5) |
+| AC8 | `ac8_gate_job_runs_evals_gate_with_the_repository_policy`. `ac8_policy_has_only_version_tools_cost_and_models`. `ac8_policy_allows_the_three_tools`. `ac8_policy_cost_ceiling_is_ci_context_cap`. `ac8_policy_has_one_model_entry_the_default_claude_model`. `ac8_bot_parses_the_policy_as_stated`. `ac8_ci_command_passes_offline_on_the_committed_files` | pass (7) |
+| AC9 | `ac9_every_mode_the_policy_lists_has_a_suite`. `ac9_context_in_the_policy_comes_with_a_claude_context_suite`. `ac9_p3_s15_has_merged_so_context_and_its_suite_are_both_in` | pass (3) |
+
+### Failures
+
+None open.
+
+**Closed by the owner's decision: two diff-mode misses on the Phase 3 cases had no recorded acceptance.** On the first run, the gate exited 1 on the committed files, so CI's new step would have failed too:
+
+```
+uv run python -m review_bot.evals gate --cases tests/evals/cases --suites tests/evals/gate.toml --policy .github/review-bot-policy.toml
+suite claude:claude-opus-5-5 diff: cases 14, fresh 14, passed 12, accepted misses 1, fail
+    case sample-context: ai bug double-tax was caught in 1 of 3 runs; it needs 2, and it isn't an accepted miss
+    case ticket-criteria: ai bug discount-column-missing was caught in 0 of 3 runs; it needs 2, and it isn't an accepted miss
+suite claude:claude-opus-5-5 context: cases 9, fresh 9, passed 9, accepted misses 2, pass
+verdict: fail
+```
+
+P3-S15's suite treated both misses as accepted in diff mode, but no owner decision was recorded for either. On 2026-11-15 the owner accepted both, as the main session relayed: `sample-context`/`double-tax` (1 of 3, needs 2) and `ticket-criteria`/`discount-column-missing` (0 of 3: diff mode sends no issue, and context mode catches it 3 of 3). The decision is recorded in the S9 spec's Notes. `gate.toml` now lists both, each with `approved_by = "sleepyshark85"` and `approved_on = 2026-11-15`. The same command now prints `passed 14, accepted misses 3, pass` for the diff suite and `verdict: pass`, with exit 0, and both tests pass. No assertion was changed.
+
+**Fixed in the tests, after the developer's notes:**
+
+- `ac3_a_new_miss_beside_the_accepted_one_still_fails` borrowed findings that verification drops. It now empties the runs of `injection-canary` instead.
+- `ac5_openai_recordings_by_m1_pass_the_gate_for_an_openai_suite` now keeps Claude's recording and asserts exit 0.
+- `limits_gate_toml_just_under_64_kb_is_read` now writes bytes, because `write_text` adds `\r` before each newline on Windows.
+
+### Earlier suites changed
+
+- **`test_p1_s16_eval_live_command.py`**, `ac6_replay_with_a_live_flag_exits_2_without_a_call`: AC5 gives `replay` a `--provider` flag. The `provider-flag` case is replaced by `model-flag` (`--model`) and `spend-flag` (`--max-usd`), and both still exit 2. A new case, `ac6_replay_with_provider_claude_makes_no_call`, checks that `replay` accepts `--provider` and calls nothing.
+
+### Coverage
+
+From the two S9 files: `evals/gate.py` 96% (lines 213-214, 238, 247 and 268 aren't covered) and `evals/cli.py` 89%. `evals/gate_render.py` and `prompt.py` are fully covered.
+
+### Gaps
+
+- **The second half of AC8** (review runs under the policy report the same findings, and `caps` shows the ceiling) needs S10's wiring, so S10 tests it.
+- **The second provider's live suite** is S14's. AC4 and AC5 use recordings made here over the fake transport.

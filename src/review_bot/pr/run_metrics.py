@@ -23,7 +23,7 @@ from review_bot.pr.feedback import (
 )
 from review_bot.pr.github import in_window
 from review_bot.pr.metrics import Precision, Verdicts, nearest_rank, to_cents
-from review_bot.pr.outcome import Outcome
+from review_bot.pr.outcome import OUTCOMES_WITH_FINDINGS, Outcome
 from review_bot.pr.units import ShadowEntry, ShadowFile, distinct_runs, would_be_comments
 from review_bot.price_flags import Prices, token_cost_usd
 
@@ -83,11 +83,12 @@ class RunMetrics:
     Runs count once per ``run_id``, and only if their ``event_at`` falls on a UTC day from
     ``since`` to ``until``, where None is no bound. End-to-end time covers the ``reviewed`` runs
     an event started, as a backfilled run's ``event_at`` is its merge time; review time, tokens
-    and cost cover every ``reviewed`` run. ``cost_usd`` is None without prices, and
-    ``cost_per_accepted_usd`` also when no shadow label accepts. ``shadow`` counts only
-    ``shadow`` mode runs' would-be comments, and ``comment`` only the comments ``comment`` mode
-    runs posted. ``orphans`` are the labels for a finding no report has, in or out of the
-    window, left out of every number.
+    and cost cover every ``reviewed`` run, so never a ``degraded`` one, which no model served.
+    ``cost_usd`` is None without prices, and ``cost_per_accepted_usd`` also when no shadow
+    label accepts. ``shadow`` counts only ``shadow`` mode runs' would-be comments, and
+    ``comment`` only the comments ``comment`` mode runs posted; both include a ``degraded``
+    run's, the rules' findings. ``orphans`` are the labels for a finding no report has, in or
+    out of the window, left out of every number.
     """
 
     since: date | None
@@ -200,14 +201,14 @@ def _would_be(runs: Sequence[ShadowFile]) -> dict[Unit, _Traits]:
 
 
 def _posted(runs: Iterable[ShadowFile]) -> dict[_PostKey, _Traits]:
-    """Each comment reviewed comment mode runs posted, with the latest such run's traits.
+    """Each comment reviewed or degraded comment mode runs posted, with the latest one's traits.
 
     A ``create`` entry whose ``applied`` isn't ``done`` never reached the pull request.
     """
     posted: dict[_PostKey, _Traits] = {}
     for run in sorted(runs, key=lambda run: run.finished_at):
         pr, review = run.pr, run.report
-        if run.mode != "comment" or run.outcome is not Outcome.REVIEWED:
+        if run.mode != "comment" or run.outcome not in OUTCOMES_WITH_FINDINGS:
             continue
         if pr is None or review is None:
             continue
