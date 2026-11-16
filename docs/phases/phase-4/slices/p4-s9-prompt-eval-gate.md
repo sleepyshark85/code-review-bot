@@ -1,6 +1,6 @@
 # P4-S9: Gate prompt versions and models on evals
 
-- **Status:** Approved
+- **Status:** Done
 - **Depends on:** P4-S7
 - **Touches:** `prompt`, `evals.gate` (new), `evals.cli`, `evals.replay`, `evals.live`, `tests/evals/gate.toml` (new), `.github/workflows/ci.yml` and `.github/review-bot-policy.toml` (main session, from this spec)
 
@@ -30,3 +30,11 @@ Rules: [design, Versioned prompts and the eval gate](../design.md#versioned-prom
 - Adding the nine Phase 3 cases to the diff suite, the context suite and the policy's `context` mode: whichever of this slice and P3-S15 merges second adds them, in this format.
 
 ## Notes
+Build choices (developer):
+- **Fingerprint:** the SHA-256 of the JSON list of what a version sends for a fixed reference input: diff mode its system and user prompts; context mode also a domain rule, a linked issue and a framed tool result. `PROMPT_FINGERPRINTS` pins only the current versions. A version with no pin fails too.
+- **Which suites run:** every suite in the file, not only those the policy lists, so S14's `openai` suite is checked before the policy lists it. The policy is resolved as `replay` resolves it (`--policy`, else `REVIEW_BOT_POLICY`, else built-in), and cases are scored under it.
+- **Stricter `gate.toml`:** a suite per provider, model and mode, no case twice, each accepted miss on one of its suite's cases and a bug of that case, `approved_on` a TOML date (as in the policy's gate classes). Each is exit 2.
+- **`live`:** gains `--provider`, `--model` and the price flags; the `openai` base URL comes from `REVIEW_BOT_OPENAI_BASE_URL`. An `openai` recording's `sdk_version` is the bot's own version, as its client is the bot's. `replay --provider openai --require-live` is refused (exit 2), as `--require-live` means Claude's default model.
+- **Placement:** the report is `evals.gate_render`, as `compare` has `compare_render`, and `evals.score` gains the miss helpers the gate needs.
+- **Accepted misses:** `gate.toml` holds only misses the owner's decision is recorded for: `sample`/`double-tax` (diff, 2026-11-07) and `sample-context`'s `tax-discount-ordering` and `float-money` (context, 2026-11-10). Diff mode's `sample-context`/`double-tax` and `ticket-criteria`/`discount-column-missing` were accepted on 2026-11-15 (next note).
+- **Owner decision (2026-11-15):** while S9 was built, the owner accepted two diff-mode misses that had no earlier decision: `sample-context`/`double-tax` (1 of 3, needs 2) and `ticket-criteria`/`discount-column-missing` (0 of 3; diff mode sends no issue). Context mode catches both 3 of 3. They are `[[suite.accepted_miss]]` entries in `gate.toml`'s Claude diff suite. No threshold changed and nothing was re-run.

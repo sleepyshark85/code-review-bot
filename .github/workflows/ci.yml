@@ -74,6 +74,9 @@ jobs:
       - name: Tests with coverage
         run: uv run pytest --cov --cov-report=term-missing
 
+      - name: Eval gate (prompt pins and model suites, offline)
+        run: uv run python -m review_bot.evals gate --cases tests/evals/cases --suites tests/evals/gate.toml --policy .github/review-bot-policy.toml
+
       - name: Audit dependencies for known vulnerabilities
         run: |
           uv export --frozen --format requirements-txt --no-emit-project > "$RUNNER_TEMP/requirements.txt"

@@ -31,6 +31,7 @@ from review_bot.context.issues import IssueText, LinkedIssue, linked_issue, read
 from review_bot.context.ledger import LineSpan, RefusalReason, ToolCall, ToolName, ToolOutcome
 from review_bot.errors import ErrorCategory, ProviderCap, ReviewBotError
 from review_bot.findings import Category, Finding, Severity, Source
+from review_bot.governance.policy import ModelProvider
 from review_bot.governance.redaction import RedactionKind
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "RecordingKind",
     "RunErrorCategory",
     "find_case_files",
+    "live_recording_dir",
     "load_case",
     "load_recording",
 ]
@@ -387,10 +389,20 @@ class LoadedCase:
             numbers, lambda number: linked_issue(number, texts[number], kinds)
         )
 
-    def live_recording_path(self, mode: EvalMode) -> Path:
-        """Where the case's live recording of ``mode`` is, whether or not it exists."""
-        directory = "live" if mode == "diff" else "live-context"
-        return self.file.parent / "recordings" / directory / "recording.json"
+    def live_recording_path(self, mode: EvalMode, provider: ModelProvider = "claude") -> Path:
+        """Where the case's live recording of ``mode`` by ``provider`` is, or would be."""
+        return self.file.parent / live_recording_dir(mode, provider) / "recording.json"
+
+
+def live_recording_dir(mode: EvalMode, provider: ModelProvider = "claude") -> str:
+    """The directory of a case's live recordings of ``mode`` by ``provider``, from the case's.
+
+    Claude's are ``recordings/live/`` and ``recordings/live-context/``, as before Phase 4; another
+    provider's are named after it (Phase 4 design, Versioned prompts and the eval gate).
+    """
+    name = "live" if provider == "claude" else f"live-{provider}"
+    suffix = "" if mode == "diff" else "-context"
+    return f"recordings/{name}{suffix}/"
 
 
 def find_case_files(cases_dir: Path) -> list[Path]:

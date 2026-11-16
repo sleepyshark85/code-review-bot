@@ -4,10 +4,12 @@ what is refused."""
 import json
 import os
 from decimal import Decimal
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 from diff_samples import FINDING_DIFF, FINDING_FIELDS
+from eval_cases import write_case
 from openai_samples import API_KEY, FakeTransport, completion, transport
 
 from review_bot import cli
@@ -404,3 +406,101 @@ def test_main_with_a_base_url_urllib_cant_send_exits_2(
     monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
 
     assert cli.main([str(diff_path), *OPENAI_M1, "--openai-base-url", url]) == 2
+
+
+EVALS_BUDGET = ("--runs", "1", "--max-calls", "1", "--max-usd", "1", "--max-cost-usd", "0.10")
+
+
+@pytest.fixture
+def eval_cases_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """One eval case, run outside CI from a working directory of the test's own."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.chdir(tmp_path)
+    write_case(tmp_path / "cases")
+    return tmp_path / "cases"
+
+
+@pytest.fixture
+def openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+
+
+def evals_live_openai(cases: Path, *flags: str) -> int:
+    return evals_cli.main(["live", "--cases", str(cases), *EVALS_BUDGET, *flags])
+
+
+def test_evals_live_with_openai_records_under_live_openai_with_its_model(
+    eval_cases_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+    scripted = transport(completion())
+    monkeypatch.setattr(openai_compat, "UrllibTransport", lambda: scripted)
+
+    evals_live_openai(eval_cases_dir, *OPENAI_M1, *PRICE_FLAGS)
+
+    recordings = eval_cases_dir / "calc" / "recordings"
+    assert [path.name for path in recordings.iterdir()] == ["live-openai"]
+    written = json.loads((recordings / "live-openai" / "recording.json").read_text("utf-8"))
+    assert (written["model"], written["sdk_version"]) == ("m1", version("review-bot"))
+    assert scripted.sent[0].headers["Authorization"] == f"Bearer {API_KEY}"
+
+
+def test_evals_replay_with_openai_scores_its_recordings_and_claudes_ignores_them(
+    eval_cases_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", API_KEY)
+    monkeypatch.setattr(openai_compat, "UrllibTransport", lambda: transport(completion()))
+    evals_live_openai(eval_cases_dir, *OPENAI_M1, *PRICE_FLAGS)
+    capsys.readouterr()
+
+    evals_cli.main(["replay", "--cases", str(eval_cases_dir), "--provider", "openai"])
+    openai_report = capsys.readouterr().out
+    evals_cli.main(["replay", "--cases", str(eval_cases_dir)])
+    claude_report = capsys.readouterr().out
+
+    assert "case calc: live recording of m1" in openai_report
+    assert "case calc: no recording" in claude_report
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (("--provider", "openai", *PRICE_FLAGS), "live --provider openai needs --model"),
+        (OPENAI_M1, "--price-input-usd-per-mtok"),
+        ((*OPENAI_M1, "--price-input-usd-per-mtok", "1"), "--price-output-usd-per-mtok"),
+    ],
+    ids=["no-model", "no-prices", "one-price"],
+)
+@pytest.mark.usefixtures("openai_key")
+def test_evals_live_with_openai_refuses_missing_settings_before_any_call(
+    eval_cases_dir: Path,
+    fake: FakeTransport,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
+    expected: str,
+) -> None:
+    exit_code = evals_live_openai(eval_cases_dir, *flags)
+
+    assert exit_code == 2
+    assert expected in capsys.readouterr().err
+    assert fake.sent == []
+
+
+def test_evals_live_with_openai_and_no_key_exits_2_before_any_call(
+    eval_cases_dir: Path, fake: FakeTransport, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = evals_live_openai(eval_cases_dir, *OPENAI_M1, *PRICE_FLAGS)
+
+    assert exit_code == 2
+    assert "OPENAI_API_KEY" in capsys.readouterr().err
+    assert fake.sent == []
+    assert not (eval_cases_dir / "calc" / "recordings").exists()
+
+
+def test_evals_replay_refuses_require_live_with_another_provider(
+    eval_cases_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["replay", "--cases", str(eval_cases_dir), "--provider", "openai", "--require-live"]
+
+    assert evals_cli.main(argv) == 2
+    assert "can't be combined with --provider openai" in capsys.readouterr().err

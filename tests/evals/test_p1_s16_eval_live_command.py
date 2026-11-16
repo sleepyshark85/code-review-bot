@@ -466,7 +466,10 @@ def test_p1_s16_ac6_ci_set_exits_2_before_any_call_even_with_every_flag(
     "live_flags",
     [
         pytest.param(["--runs", "1", "--max-calls", "1"], id="live-budget-flags"),
-        pytest.param(["--provider", "claude"], id="provider-flag"),
+        # P4-S9 AC5 gives `replay` a `--provider` (whose recordings to score); `--model` stays
+        # live-only.
+        pytest.param(["--model", "claude-opus-5-5"], id="model-flag"),
+        pytest.param(["--max-usd", "1"], id="spend-flag"),
     ],
 )
 def test_p1_s16_ac6_replay_with_a_live_flag_exits_2_without_a_call(
@@ -478,6 +481,19 @@ def test_p1_s16_ac6_replay_with_a_live_flag_exits_2_without_a_call(
     replayed = run_live("--cases", root, *live_flags, sdk=sdk, command="replay")
 
     assert replayed.exit_code == 2, replayed.output
+    assert sdk.calls == []
+
+
+def test_p1_s16_ac6_replay_with_provider_claude_makes_no_call(
+    run_live: Callable[..., Live], tmp_path: Path
+) -> None:
+    """P4-S9 AC5: `replay --provider` picks whose recordings to score; it never calls a model."""
+    root = copy_cases(tmp_path, SAMPLE)
+    sdk = ScriptedSdk(always(answer(FLOAT_MONEY)))
+
+    replayed = run_live("--cases", root, "--provider", "claude", sdk=sdk, command="replay")
+
+    assert replayed.exit_code != 2, replayed.output
     assert sdk.calls == []
 
 
