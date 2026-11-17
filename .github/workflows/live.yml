@@ -37,13 +37,13 @@ jobs:
       SMOKE_HEAD: b754b099a0cd37dd06b0476b0f0dc18b8ee59d37
     steps:
       - name: Check out main
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install the bot
         run: uv sync --locked --no-dev
@@ -84,7 +84,7 @@ jobs:
 
       - name: Upload the reports, audit logs and output
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/live/
@@ -104,7 +104,7 @@ jobs:
       issues: read
     steps:
       - name: Check out main
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -113,7 +113,7 @@ jobs:
       - name: Fetch every pull request's head commit
         run: git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'
 
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install the bot
         run: uv sync --locked --no-dev
@@ -143,7 +143,7 @@ jobs:
 
       - name: Upload the reports, audit logs and output
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-backfill-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/live/
@@ -162,12 +162,12 @@ jobs:
       contents: read
     steps:
       - name: Check out main
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install the bot
         run: uv sync --locked --no-dev
@@ -203,7 +203,7 @@ jobs:
 
       - name: Upload the recordings, audit log and output
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-evals-diff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -233,12 +233,12 @@ jobs:
       contents: read
     steps:
       - name: Check out main
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install the bot
         run: uv sync --locked --no-dev
@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload the recordings, audit log and output
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-evals-context-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
